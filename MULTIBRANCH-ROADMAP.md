@@ -22,7 +22,7 @@ These phases follow the shipped `v1.0.0` (`ROADMAP.md` phases 0–19). They are 
 
 ---
 
-# Phase M0 — Monorepo, console skeleton & environment separation
+# Phase M0 — Monorepo, console skeleton & environment separation ✅
 
 ## Goal
 Establish the two-app layout and the security boundary before any provisioning logic exists.
@@ -51,10 +51,19 @@ verified to contain **no** console code or admin credentials.
 
 ---
 
-# Phase M1 — Postgres business-schema definition & migrations
+# Phase M1 — Postgres business-schema definition & migrations ✅
 
 ## Goal
 Define the authoritative per-business schema and the migration engine that builds it.
+
+> **Done.** 19 Postgres migrations under `console/database/migrations/` build the schema;
+> `schema:migrate` / `schema:version` create and report it. Two scoping calls were made
+> against the task list below: there is **no `prices` table** (prices live on `variants` and
+> are snapshotted onto `transaction_items`, exactly as the app models them), and returns and
+> defects share one `sale_returns` table with a `type`, again mirroring the app. Two tables
+> were added: `schema_meta` (the §13 version gate) and `import_history` (the app has it and
+> it is business history). The §13 **parity test** was pulled forward from M12 — writing the
+> second schema is when drift starts. See `console/tests/Feature/`.
 
 ## Tasks
 - Author the Postgres migration set for one business schema: `users`, `categories`, `items`,

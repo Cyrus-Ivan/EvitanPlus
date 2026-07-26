@@ -17,12 +17,21 @@
         "laravel/prompts": "^0.3.0"
     },
     "require-dev": {
-        "nunomaduro/collision": "^8.6"
+        "nunomaduro/collision": "^8.6",
+        "phpunit/phpunit": "^11.5.3"
     },
     "autoload": {
         "psr-4": {
             "Provisioning\\": "app/"
         }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "tests/"
+        }
+    },
+    "scripts-descriptions": {
+        "test": "Run the console suite. Needs live admin Postgres credentials in console/.env; skips itself cleanly without them."
     },
     "scripts": {
         "post-autoload-dump": [
@@ -31,7 +40,8 @@
         ],
         "post-root-package-install": [
             "@php -r \"file_exists('.env') || copy('.env.example', '.env');\""
-        ]
+        ],
+        "test": "./vendor/bin/phpunit"
     },
     "config": {
         "optimize-autoloader": true,

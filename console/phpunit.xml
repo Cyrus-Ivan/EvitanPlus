@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Provisioning Console test suite.
+
+    Unlike the POS app's suite, these tests exercise a REAL Postgres: the
+    schema they assert on is built by Postgres DDL, so a stand-in would prove
+    nothing about the triggers and partial indexes that carry the invariants.
+    Tests::setUp() skips the whole suite when CONSOLE_DB_PASSWORD is absent, so
+    a clean clone stays green — see tests/TestCase.php.
+
+    Deliberately NOT part of `composer verify` at the repo root: that chain has
+    to stay runnable offline and without admin credentials.
+-->
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+>
+    <testsuites>
+        <testsuite name="Console">
+            <directory>tests</directory>
+        </testsuite>
+    </testsuites>
+    <source>
+        <include>
+            <directory>app</directory>
+        </include>
+    </source>
+    <php>
+        <env name="APP_ENV" value="testing"/>
+        <env name="CACHE_STORE" value="array"/>
+        <env name="QUEUE_CONNECTION" value="sync"/>
+        <env name="SESSION_DRIVER" value="array"/>
+    </php>
+</phpunit>

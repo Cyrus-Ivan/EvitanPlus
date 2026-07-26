@@ -93,6 +93,17 @@ php console/artisan key:generate
 # Paste your Supabase admin credentials into console/.env (CONSOLE_DB_*),
 # then verify the connection and its DDL capability:
 php console/artisan console:ping
+
+# Build a business schema (biz_<id>) and report its version. Idempotent —
+# re-running applies only what the schema has not seen, which is also how a
+# schema is upgraded when new Postgres migrations land.
+php console/artisan schema:migrate --business=<business-uuid>
+php console/artisan schema:version --business=<business-uuid>
+
+# Console test suite. Needs the credentials above and exercises a real
+# Postgres; skips itself cleanly without them. Deliberately NOT part of
+# `composer verify`, which must stay runnable offline.
+(cd console && composer test)
 ```
 
 Use Supabase's **session** endpoint on port `5432` — the transaction pooler on

@@ -151,7 +151,9 @@ export default function SalesShow({ transaction, canViewCost }: { transaction: T
                                                 <TableCell colSpan={canViewCost ? 4 : 3} className="text-muted-foreground text-right">
                                                     Cash Received
                                                 </TableCell>
-                                                <TableCell className="text-right tabular-nums">{pesoOrDash(transaction.cash_received, money)}</TableCell>
+                                                <TableCell className="text-right tabular-nums">
+                                                    {pesoOrDash(transaction.cash_received, money)}
+                                                </TableCell>
                                             </TableRow>
                                             <TableRow>
                                                 <TableCell colSpan={canViewCost ? 4 : 3} className="text-muted-foreground text-right">
@@ -253,7 +255,9 @@ function ReturnEventCard({ event, canViewCost }: { event: SaleReturnEvent; canVi
                                 <TableCell className="font-medium">{line.label}</TableCell>
                                 <TableCell className="text-right tabular-nums">{line.quantity}</TableCell>
                                 {canViewCost && (
-                                    <TableCell className="text-muted-foreground text-right tabular-nums">{pesoOrDash(line.cost ?? null, money)}</TableCell>
+                                    <TableCell className="text-muted-foreground text-right tabular-nums">
+                                        {pesoOrDash(line.cost ?? null, money)}
+                                    </TableCell>
                                 )}
                                 <TableCell className="text-right tabular-nums">{money(line.refund_amount)}</TableCell>
                             </TableRow>

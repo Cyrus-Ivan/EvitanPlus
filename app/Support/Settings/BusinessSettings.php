@@ -20,7 +20,7 @@ class BusinessSettings
      * @var array<string, string>
      */
     public const DEFAULTS = [
-        'business_name' => 'Evitan POS',
+        'business_name' => 'Evitan Plus',
         'business_address' => '',
         'tin' => '',
         'receipt_footer' => '',

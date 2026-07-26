@@ -31,10 +31,7 @@ export default function Profile() {
 
             <SettingsLayout>
                 <div className="space-y-6">
-                    <HeadingSmall
-                        title="Profile information"
-                        description="Your account identity. Contact an administrator to change it."
-                    />
+                    <HeadingSmall title="Profile information" description="Your account identity. Contact an administrator to change it." />
 
                     <div className="grid gap-2">
                         <Label htmlFor="name">Name</Label>

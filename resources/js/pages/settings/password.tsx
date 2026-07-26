@@ -59,8 +59,8 @@ export default function Password() {
                     <HeadingSmall title="Update password" description="Ensure your account is using a long, random password to stay secure" />
 
                     {auth.user?.must_change_password && (
-                        <div role="alert" className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
-                            You must set a new password before using Evitan POS. Your current password was issued to you and is not private.
+                        <div role="alert" className="border-destructive/50 bg-destructive/10 text-destructive rounded-md border p-3 text-sm">
+                            You must set a new password before using Evitan Plus. Your current password was issued to you and is not private.
                         </div>
                     )}
 

@@ -108,7 +108,7 @@ export default function Setup({ defaults, printerDefaults }: { defaults: Record<
                         </div>
 
                         <div className="space-y-2 text-center">
-                            <h1 className="text-xl font-medium">Welcome to Evitan POS</h1>
+                            <h1 className="text-xl font-medium">Welcome to Evitan Plus</h1>
                             <p className="text-muted-foreground text-sm">Let's set up your store. This only takes a minute.</p>
                         </div>
 
@@ -300,7 +300,12 @@ export default function Setup({ defaults, printerDefaults }: { defaults: Record<
                                     Connect a thermal receipt printer now, or skip and set it up later in Business Settings.
                                 </p>
 
-                                <PrinterSettingsFields data={data} setData={(key, value) => setData(key, value)} errors={errors} detectUrl={route('setup.printers')} />
+                                <PrinterSettingsFields
+                                    data={data}
+                                    setData={(key, value) => setData(key, value)}
+                                    errors={errors}
+                                    detectUrl={route('setup.printers')}
+                                />
                             </>
                         )}
 

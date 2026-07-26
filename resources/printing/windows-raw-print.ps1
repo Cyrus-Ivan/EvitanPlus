@@ -61,7 +61,7 @@ public static class RawPrinterHelper
         try
         {
             DOCINFO di = new DOCINFO();
-            di.pDocName = "Evitan POS receipt";
+            di.pDocName = "Evitan Plus receipt";
             di.pDatatype = "RAW";
             if (StartDocPrinter(hPrinter, 1, ref di) == 0)
                 throw new Exception("StartDocPrinter failed (" + Marshal.GetLastWin32Error() + ")");

@@ -9,7 +9,7 @@ use RuntimeException;
 /**
  * Backup and restore of the single SQLite database file (Phase 16, Owner-only).
  *
- * Evitan POS is an offline, single-user desktop app, so a file copy taken from
+ * Evitan Plus is an offline, single-user desktop app, so a file copy taken from
  * an idle menu action is a consistent snapshot — but only after a WAL
  * checkpoint: the packaged NativePHP runtime forces journal_mode=WAL on every
  * boot, leaving recent commits in a -wal sidecar the copy would miss. Every
@@ -157,10 +157,10 @@ class DatabaseBackupManager
 
         // Any valid SQLite file passes the magic check — including some other
         // app's database, which would replace ours and brick the app with no
-        // in-app way back. Require the core Evitan POS schema before touching
+        // in-app way back. Require the core Evitan Plus schema before touching
         // the live file.
         if (! $this->looksLikeEvitanSchema($source)) {
-            throw new RuntimeException('The selected file is not an Evitan POS database backup.');
+            throw new RuntimeException('The selected file is not an Evitan Plus database backup.');
         }
 
         // Safety net: snapshot the current database before overwriting it, so the
@@ -224,7 +224,7 @@ class DatabaseBackupManager
     }
 
     /**
-     * The candidate must contain the tables every Evitan POS database has had
+     * The candidate must contain the tables every Evitan Plus database has had
      * since Phase 1 — read-only, before the live file is overwritten.
      */
     private function looksLikeEvitanSchema(string $path): bool

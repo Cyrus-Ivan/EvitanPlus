@@ -15,7 +15,7 @@ return [
      * usually in the form of a reverse domain name.
      * For example: com.nativephp.app
      */
-    'app_id' => env('NATIVEPHP_APP_ID', 'com.evitan.pos'),
+    'app_id' => env('NATIVEPHP_APP_ID', 'com.evitan.plus'),
 
     /**
      * If your application allows deep linking, you can specify the scheme
@@ -31,12 +31,12 @@ return [
     /**
      * The author of your application.
      */
-    'author' => env('NATIVEPHP_APP_AUTHOR', 'Evitan POS'),
+    'author' => env('NATIVEPHP_APP_AUTHOR', 'Evitan Plus'),
 
     /**
      * The copyright notice for your application.
      */
-    'copyright' => env('NATIVEPHP_APP_COPYRIGHT', '© 2026 Evitan POS'),
+    'copyright' => env('NATIVEPHP_APP_COPYRIGHT', '© 2026 Evitan Plus'),
 
     /**
      * The description of your application.
@@ -82,6 +82,20 @@ return [
         'NATIVEPHP_AZURE_ENDPOINT',
         'NATIVEPHP_AZURE_CERTIFICATE_PROFILE_NAME',
         'NATIVEPHP_AZURE_CODE_SIGNING_ACCOUNT_NAME',
+
+        // Defense in depth for the Evitan Plus split (MULTIBRANCH-BRAINSTORM.md
+        // §18). The Provisioning Console keeps its admin credentials in
+        // console/.env, which is excluded structurally below — but CleansEnvFile
+        // only ever touches the ROOT .env, so these patterns are what protects a
+        // developer who pastes admin creds into the POS .env by mistake.
+        //
+        // NOTE: deliberately NOT 'DB_*'. The shipped app's own SQLite settings
+        // (DB_CONNECTION, DB_DATABASE, DB_FOREIGN_KEYS) live under that prefix
+        // and must survive into the build. That is precisely why the console
+        // uses CONSOLE_DB_* and the branch connection uses BRANCH_DB_*.
+        'CONSOLE_*',
+        'BRANCH_DB_*',
+        'SUPABASE_*',
     ],
 
     /**
@@ -111,6 +125,23 @@ return [
         'playwright.config.ts',
         'phpstan.neon',
         'phpstan-baseline.neon',
+
+        // The Provisioning Console is a separate Laravel app that must never
+        // ship (MULTIBRANCH-BRAINSTORM.md §18). A BARE directory name is the
+        // only form both exclusion paths understand:
+        //   - NativePHP's copier fnmatch()es each entry's relative path inside
+        //     a RecursiveCallbackFilterIterator, so rejecting the directory
+        //     prunes the entire subtree — console/.env is never even visited
+        //     (vendor/nativephp/electron/src/Traits/CopiesToBuildDirectory.php);
+        //   - Symfony Finder's exclude() in BundleCommand treats slash-free
+        //     entries as directory names but preg_quote()s anything containing
+        //     a slash, so 'console/*' would compile to a regex that can never
+        //     match.
+        // Do not "improve" this to 'console/*'.
+        // Gated by tests/Feature/Build/BuildExclusionTest.php.
+        'console',
+        'MULTIBRANCH-BRAINSTORM.md',
+        'MULTIBRANCH-ROADMAP.md',
     ],
 
     /**
@@ -122,7 +153,7 @@ return [
          * updater will only work when your application is bundled
          * for production.
          *
-         * Disabled for Evitan POS: the app is offline-first with no update
+         * Disabled for Evitan Plus: the app is offline-first with no update
          * feed configured — leaving this on makes every launch fire a failing
          * update check against the empty provider below. Releases are
          * installed manually.
@@ -170,7 +201,7 @@ return [
 
     /**
      * The queue workers that get auto-started on your application start.
-     * Evitan POS queues nothing (no jobs, no ShouldQueue anywhere), so no
+     * Evitan Plus queues nothing (no jobs, no ShouldQueue anywhere), so no
      * always-on worker process is spawned.
      */
     'queue_workers' => [],

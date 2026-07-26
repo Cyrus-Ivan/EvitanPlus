@@ -145,7 +145,7 @@ class BackupController extends Controller
         return back()
             ->with('toast', [
                 'type' => 'success',
-                'message' => 'Database restored. Restart Evitan POS to finish — a safety backup of the previous database was taken automatically.',
+                'message' => 'Database restored. Restart Evitan Plus to finish — a safety backup of the previous database was taken automatically.',
             ])
             ->with('restart_required', true);
     }

@@ -1,6 +1,6 @@
-# Evitan POS
+# Evitan Plus
 
-**Evitan POS** is an offline-first retail Point of Sale desktop app for a single business installation. It runs entirely on the local machine — no server, no cloud, no network dependency — and packages Laravel + React into a native desktop executable via NativePHP.
+**Evitan Plus** is an offline-first retail Point of Sale desktop app for a single business installation. It runs entirely on the local machine — no server, no cloud, no network dependency — and packages Laravel + React into a native desktop executable via NativePHP.
 
 The schema stays sync-compatible (UUID primary keys everywhere) so multi-branch and cloud sync remain possible later, but they are explicitly **out of scope** for the MVP.
 
@@ -24,11 +24,31 @@ The schema stays sync-compatible (UUID primary keys everywhere) so multi-branch 
 - **NativePHP (Electron)** to package the app as a native desktop executable.
 - **SQLite** as the only database (`database/nativephp.sqlite`), with foreign-key enforcement on.
 
+## Repository layout
+
+| Path | What it is |
+|---|---|
+| `/` (root) | **Evitan Plus** — the shipped desktop app. Laravel + React + NativePHP over local SQLite. |
+| `console/` | **Provisioning Console** — a developer-only Laravel CLI app with its own `composer.json`, `vendor/`, `.env` and autoload namespace (`Provisioning\`). It holds the admin Postgres credentials and owns all DDL. |
+
+`console/` is **never bundled into any build**, and the POS app contains no
+runtime reference to it. That boundary is enforced by
+`nativephp.cleanup_exclude_files` / `cleanup_env_keys`, gated in CI by
+[`tests/Feature/Build/BuildExclusionTest.php`](tests/Feature/Build/BuildExclusionTest.php),
+and re-checked by hand at release time (see "Building a release", step 4).
+Spec: [`MULTIBRANCH-BRAINSTORM.md`](MULTIBRANCH-BRAINSTORM.md) §18.
+
 ## Requirements
 
 - PHP **8.2+** and Composer
 - Node.js **24** and npm
 - SQLite
+
+To cut a desktop release you also need your dev machine's PHP minor to match the
+vendored runtime in [`build/php/`](build/php/README.md) (currently **8.5**) —
+NativePHP bundles the zip matching the host minor. That runtime, not
+`nativephp/php-bin`, is what ships inside the app: it is the only one carrying
+both `pdo_sqlite` and `pdo_pgsql`.
 
 ## Getting started
 
@@ -59,6 +79,27 @@ Default development login: **`owner` / `password`** (created by the local demo
 seed — `migrate:fresh --seed`). A packaged fresh install has no seeded account:
 the app opens an initial setup wizard that creates the Owner.
 
+### Provisioning console (developer-only)
+
+Optional for POS development; required for anything in
+[`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md). It is a self-contained
+Laravel app with its own dependency tree.
+
+```bash
+(cd console && composer install)
+cp console/.env.example console/.env
+php console/artisan key:generate
+
+# Paste your Supabase admin credentials into console/.env (CONSOLE_DB_*),
+# then verify the connection and its DDL capability:
+php console/artisan console:ping
+```
+
+Use Supabase's **session** endpoint on port `5432` — the transaction pooler on
+`6543` does not preserve session state and breaks DDL and `search_path`
+pinning. Pooler usernames are `postgres.<project-ref>`, not plain `postgres`.
+**Never copy `CONSOLE_DB_*` values into the root `.env`.**
+
 ## Common commands
 
 ```bash
@@ -69,24 +110,59 @@ npm run format            # Prettier
 ./vendor/bin/pint         # Laravel Pint (PHP formatting)
 npm run build             # Production frontend build
 php artisan native:build  # Build the native desktop executable
+
+php console/artisan console:ping   # Verify the console's admin Supabase connection
 ```
 
 ## Building a release
 
 1. Bump the version default in `config/nativephp.php` and add an entry to
    [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
-2. Run every gate: `php artisan test`, `./vendor/bin/pint --test`,
-   `./vendor/bin/phpstan analyse --memory-limit=1G`, `npm run types`,
-   `npm run lint:check`, `npm run build`, `npm run e2e`.
+2. Run every gate with `composer verify`. It chains them fail-fast, cheapest
+   first: `pint --test` → `phpstan` → `php artisan test` → `npm run types` →
+   `npm run lint:check` → `npm run format:check` → `npm run e2e` (which builds
+   the frontend before it starts Playwright). The M0 build gates —
+   [`BuildExclusionTest`](tests/Feature/Build/BuildExclusionTest.php) (no
+   console code or admin credentials in a build) and
+   [`PhpBinaryTest`](tests/Feature/Build/PhpBinaryTest.php) (the shipped PHP
+   runtime carries both `pdo_sqlite` and `pdo_pgsql`) — run inside
+   `php artisan test`.
 3. Build: `php artisan native:build linux` — artifacts land in `dist/` as
-   `Evitan POS-<version>.AppImage` and `evitan-pos_<version>_amd64.deb`;
-   rename the AppImage to `evitan-pos-<version>.AppImage` (no spaces) before
+   `Evitan Plus-<version>.AppImage` and `evitan-plus_<version>_amd64.deb`;
+   rename the AppImage to `evitan-plus-<version>.AppImage` (no spaces) before
    distributing.
 4. Inspect the artifact before shipping: extract the AppImage
    (`--appimage-extract`) and confirm the bundled `.env` carries no
    `APP_KEY` / `APP_ENV` / `APP_DEBUG` (stripped via
    `nativephp.cleanup_env_keys`), no `*.sqlite` files or repo internals are
-   inside, and `public/icon.png` is the Evitan mark.
+   inside, and `public/icon.png` is the Evitan mark. **Also confirm the
+   developer/admin boundary held** — no `console/` directory, no
+   `MULTIBRANCH-*.md`, and no `CONSOLE_*` / `BRANCH_DB_*` / `SUPABASE_*` keys
+   in the bundled `.env`:
+
+   ```bash
+   ./evitan-plus-<version>.AppImage --appimage-extract >/dev/null
+   # Payload lives at resources/app.asar.unpacked/resources/app; the find keeps
+   # this robust if electron-builder's layout changes.
+   APP=$(find squashfs-root -type d -name app -path '*resources*' | head -1)
+
+   test ! -e "$APP/console" && echo "OK: no console/" || echo "FAIL: console/ shipped"
+   ls "$APP"/MULTIBRANCH-*.md >/dev/null 2>&1 \
+       && echo "FAIL: design docs shipped" || echo "OK: no design docs"
+   grep -qE '^(CONSOLE_|BRANCH_DB_|SUPABASE_)' "$APP/.env" \
+       && echo "FAIL: admin keys shipped" || echo "OK: no admin env keys"
+
+   # The bundled PHP runtime must carry BOTH drivers, or the app cannot read
+   # its own SQLite database / cannot reach its branch Postgres.
+   PHP_BIN=$(find squashfs-root -type f -path '*resources/php/php' | head -1)
+   "$PHP_BIN" -r 'echo implode(",", PDO::getAvailableDrivers()), PHP_EOL;'  # → pgsql,sqlite
+   rm -rf squashfs-root
+   ```
+
+   [`tests/Feature/Build/BuildExclusionTest.php`](tests/Feature/Build/BuildExclusionTest.php)
+   and [`tests/Feature/Build/PhpBinaryTest.php`](tests/Feature/Build/PhpBinaryTest.php)
+   gate the same invariants in CI; this step is the belt-and-braces check
+   against the real artifact.
 5. Smoke-test the installed app with a scratch `HOME`: the initial setup
    wizard (create the Owner, business details, timezone/currency, optional
    printer), a sale, a backup, a restore + restart.
@@ -94,6 +170,37 @@ php artisan native:build  # Build the native desktop executable
 The packaged app provisions itself on every launch (migrate → stock
 reconcile) and generates a per-install `APP_KEY` on first boot; a fresh
 install (no users yet) opens the setup wizard before anything else.
+
+## Developer onboarding: standing up a branch
+
+> **Status:** this is the target flow for **Evitan Plus** (multi-branch). Steps
+> tagged *(planned — Phase Mx)* are **not implemented** as of `v1.0.0`; today a
+> device is still a single, self-contained install set up by the existing setup
+> wizard. Phase status lives in [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md).
+
+Every branch device is prepared by a developer, in this order:
+
+1. **Provision** — in `console/`, create the business schema (`biz_<id>`) or add
+   a branch to an existing one, create the least-privilege `branch_<id>`
+   Postgres role, and emit that branch's credentials JSON.
+   *(planned — Phases M1/M2. M0 ships only `console:ping`.)*
+2. **Hardware** — prepare the till: OS install, operator account, receipt
+   printer, cash drawer.
+3. **AppImage** — build the release and copy it to the device (see
+   "Building a release" above). Credential rotation is delivered the same way:
+   a fresh AppImage plus a new JSON, never an in-place swap.
+4. **Wizard** — run the setup wizard on the device: import the JSON (stored
+   encrypted at rest under the per-install `APP_KEY`), verify version
+   compatibility, run the local SQLite migrations, and hydrate the branch
+   baseline — catalog, all users, settings/identity, and this branch's stock
+   snapshot. *(planned — Phases M5/M6. The current wizard creates the Owner
+   locally instead.)*
+
+The business then simply powers on a ready device and logs in as the Owner
+created during provisioning. The credentials JSON is one-time: after a
+successful import the wizard prompts to remove it. Admin/service credentials
+never leave `console/.env`. See
+[`MULTIBRANCH-BRAINSTORM.md`](MULTIBRANCH-BRAINSTORM.md) §2, §9, §16.
 
 ## Architecture & invariants
 
@@ -112,6 +219,8 @@ Deeper documentation lives in the repo:
 - [`ROADMAP.md`](ROADMAP.md) — phased build plan
 - [`CLAUDE.md`](CLAUDE.md) — invariants and working guidance
 - [`docs/`](docs/) — after-sales and receipt-printing design of record
+- [`MULTIBRANCH-BRAINSTORM.md`](MULTIBRANCH-BRAINSTORM.md) — Evitan Plus (multi-branch, provisioning, sync) spec of record
+- [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md) — Evitan Plus phased build plan (M0–M12)
 
 ## Project status
 

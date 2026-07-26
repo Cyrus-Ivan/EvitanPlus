@@ -84,6 +84,6 @@ class SetupController extends Controller
 
         return redirect()
             ->route('pos')
-            ->with('toast', ['type' => 'success', 'message' => 'Welcome to Evitan POS — setup complete.']);
+            ->with('toast', ['type' => 'success', 'message' => 'Welcome to Evitan Plus — setup complete.']);
     }
 }

@@ -53,7 +53,7 @@ export default function Backup({ backups, isDesktop }: { backups: Backup[]; isDe
                 description:
                     'Choose a database file to restore. This replaces the current database. A safety backup of the current database is taken automatically before restoring. ' +
                     'Restoring an older backup permanently discards sales made after it was created, and their receipt numbers will be reissued to future sales. ' +
-                    'After restoring, restart Evitan POS to finish.',
+                    'After restoring, restart Evitan Plus to finish.',
                 destructive: true,
                 confirmLabel: 'Choose file…',
             })
@@ -72,7 +72,7 @@ export default function Backup({ backups, isDesktop }: { backups: Backup[]; isDe
                 description:
                     'This replaces the current database with the selected backup. A safety backup of the current database is taken automatically before restoring. ' +
                     'Restoring an older backup permanently discards sales made after it was created, and their receipt numbers will be reissued to future sales. ' +
-                    'After restoring, restart Evitan POS to finish.',
+                    'After restoring, restart Evitan Plus to finish.',
                 destructive: true,
                 confirmLabel: 'Restore',
             })
@@ -109,9 +109,7 @@ export default function Backup({ backups, isDesktop }: { backups: Backup[]; isDe
                         role="alert"
                         className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm"
                     >
-                        <p>
-                            Database restored. Restart Evitan POS to finish — stock counts are re-checked against the ledger on launch.
-                        </p>
+                        <p>Database restored. Restart Evitan Plus to finish — stock counts are re-checked against the ledger on launch.</p>
                         {isDesktop && (
                             <Button size="sm" variant="outline" onClick={restartApp} disabled={processing}>
                                 <RotateCw className="size-4" /> Restart now

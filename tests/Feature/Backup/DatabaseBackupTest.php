@@ -82,7 +82,7 @@ class DatabaseBackupTest extends TestCase
     }
 
     /**
-     * A real SQLite file carrying the core Evitan POS tables (the restore
+     * A real SQLite file carrying the core Evitan Plus tables (the restore
      * schema check requires them) and a marker row findable in the raw bytes.
      */
     private function writeEvitanDb(string $path, string $marker): void

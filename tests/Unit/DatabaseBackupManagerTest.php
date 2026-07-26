@@ -36,7 +36,7 @@ class DatabaseBackupManagerTest extends TestCase
     }
 
     /**
-     * A real SQLite file carrying the core Evitan POS tables (the restore
+     * A real SQLite file carrying the core Evitan Plus tables (the restore
      * schema check requires them) and a marker row whose text is findable in
      * the raw bytes, preserving the string-based content assertions.
      */
@@ -223,7 +223,7 @@ class DatabaseBackupManagerTest extends TestCase
         unset($pdo);
 
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('not an Evitan POS database backup');
+        $this->expectExceptionMessage('not an Evitan Plus database backup');
 
         $this->manager()->restoreFromPath($external);
     }

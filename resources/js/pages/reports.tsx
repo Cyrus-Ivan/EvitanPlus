@@ -5,8 +5,8 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import AppLayout from '@/layouts/app-layout';
 import { useCurrency } from '@/hooks/use-currency';
+import AppLayout from '@/layouts/app-layout';
 import type { BreadcrumbItem, ReportChartBucket, ReportChartItem, ReportPeriod, ReportRow, ReportTotals } from '@/types';
 import { Head, router } from '@inertiajs/react';
 import { ChartColumn, ChevronLeft, ChevronRight, FileDown } from 'lucide-react';
@@ -214,9 +214,7 @@ export default function Reports({
                                                     {money(row.uncosted_sales ?? '0')}
                                                 </TableCell>
                                             )}
-                                            {canViewCost && (
-                                                <TableCell className="text-right tabular-nums">{money(row.profit ?? '0')}</TableCell>
-                                            )}
+                                            {canViewCost && <TableCell className="text-right tabular-nums">{money(row.profit ?? '0')}</TableCell>}
                                         </TableRow>
                                     ))}
                                 </TableBody>
@@ -238,9 +236,7 @@ export default function Reports({
                                             </TableCell>
                                         )}
                                         {canViewCost && (
-                                            <TableCell className="text-right font-semibold tabular-nums">
-                                                {money(totals.profit ?? '0')}
-                                            </TableCell>
+                                            <TableCell className="text-right font-semibold tabular-nums">{money(totals.profit ?? '0')}</TableCell>
                                         )}
                                     </TableRow>
                                 </TableFooter>

@@ -27,7 +27,7 @@ class NativeAppServiceProvider implements ProvidesPhpIni
         }
 
         Window::open()
-            ->title('Evitan POS')
+            ->title('Evitan Plus')
             ->width(1280)
             ->height(800)
             ->minWidth(1024)

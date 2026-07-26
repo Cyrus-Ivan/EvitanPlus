@@ -91,19 +91,45 @@ return [
             ]) : [],
         ],
 
+        /*
+         * The shipped POS app talks to Postgres as a least-privilege *branch*
+         * role (MULTIBRANCH-BRAINSTORM.md §7). Those credentials never live in
+         * a build: the setup wizard (§16) imports them from the provisioning
+         * JSON and stores them encrypted at rest under the per-install APP_KEY
+         * (§9). Phase M5 hydrates this array at runtime, before the first
+         * query:
+         *
+         *     config(['database.connections.pgsql' => $credentials]);
+         *     DB::purge('pgsql');
+         *
+         * The defaults below are therefore deliberately EMPTY: a build with no
+         * imported credentials must fail closed rather than reach some
+         * unrelated database. The BRANCH_DB_* keys are a developer escape
+         * hatch for phases M1–M4 only. They use their own prefix — never DB_*,
+         * which belongs to the local SQLite connection and must keep working
+         * inside shipped builds — and are stripped from every build by
+         * nativephp.cleanup_env_keys.
+         *
+         * `sqlite` remains the default connection; see 'default' above.
+         */
         'pgsql' => [
             'driver' => 'pgsql',
-            'url' => env('DB_URL'),
-            'host' => env('DB_HOST', '127.0.0.1'),
-            'port' => env('DB_PORT', '5432'),
-            'database' => env('DB_DATABASE', 'laravel'),
-            'username' => env('DB_USERNAME', 'root'),
-            'password' => env('DB_PASSWORD', ''),
-            'charset' => env('DB_CHARSET', 'utf8'),
+            'url' => env('BRANCH_DB_URL'),
+            'host' => env('BRANCH_DB_HOST'),
+            'port' => env('BRANCH_DB_PORT', '5432'),
+            'database' => env('BRANCH_DB_DATABASE'),
+            'username' => env('BRANCH_DB_USERNAME'),
+            'password' => env('BRANCH_DB_PASSWORD'),
+            'charset' => 'utf8',
             'prefix' => '',
             'prefix_indexes' => true,
-            'search_path' => 'public',
-            'sslmode' => 'prefer',
+            // Pinned to the branch's business schema (biz_<id>) at runtime.
+            // NULL, not '': PostgresConnector::configureSearchPath only fires
+            // when the key isset(), and an empty string would emit
+            // `set search_path to ""` — a schema literally named "".
+            'search_path' => env('BRANCH_DB_SEARCH_PATH') ?: null,
+            // Supabase requires TLS. 'prefer' would silently downgrade.
+            'sslmode' => env('BRANCH_DB_SSLMODE', 'require'),
         ],
 
         'sqlsrv' => [

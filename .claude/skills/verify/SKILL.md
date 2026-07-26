@@ -1,9 +1,9 @@
 ---
 name: verify
-description: Build, launch, and drive Evitan POS headlessly to verify UI/backend changes end-to-end (php -S + chrome-headless-shell over raw CDP)
+description: Build, launch, and drive Evitan Plus headlessly to verify UI/backend changes end-to-end (php -S + chrome-headless-shell over raw CDP)
 ---
 
-# Verifying Evitan POS end-to-end
+# Verifying Evitan Plus end-to-end
 
 ## Launch (isolated — never touches the real DB or the user's native:serve on :8100)
 

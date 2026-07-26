@@ -1,8 +1,8 @@
 {
     "$schema": "https://getcomposer.org/schema.json",
-    "name": "evitan/pos",
+    "name": "evitan/plus",
     "type": "project",
-    "description": "Evitan POS — offline-first retail point of sale desktop app (Laravel + React + NativePHP + SQLite).",
+    "description": "Evitan Plus — offline-first retail point of sale desktop app (Laravel + React + NativePHP + SQLite).",
     "keywords": [
         "pos",
         "nativephp",
@@ -40,6 +40,9 @@
             "Tests\\": "tests/"
         }
     },
+    "scripts-descriptions": {
+        "verify": "Run every release gate, fail-fast, cheapest first: pint, phpstan, backend tests, tsc, eslint, prettier, Playwright e2e."
+    },
     "scripts": {
         "post-autoload-dump": [
             "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
@@ -63,6 +66,17 @@
         "native:dev": [
             "Composer\\Config::disableProcessTimeout",
             "npx concurrently -k -c \"#93c5fd,#c4b5fd\" \"php artisan native:serve --no-interaction\" \"npm run dev\" --names=app,vite"
+        ],
+        "console": "@php console/artisan",
+        "verify": [
+            "Composer\\Config::disableProcessTimeout",
+            "./vendor/bin/pint --test",
+            "./vendor/bin/phpstan analyse --memory-limit=1G",
+            "@php artisan test",
+            "npm run types",
+            "npm run lint:check",
+            "npm run format:check",
+            "npm run e2e"
         ]
     },
     "extra": {

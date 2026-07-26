@@ -3,7 +3,7 @@
 # Evitan Plus — Multi-Branch, Provisioning Console & Sync
 
 > This document is the functional spec for the **Evitan Plus** initiative: evolving the
-> single-install **Evitan POS** (`v1.0.0`) into a **multi-branch, cloud-connected** product
+> single-install **Evitan Plus** (`v1.0.0`) into a **multi-branch, cloud-connected** product
 > backed by Supabase (Postgres), plus a **developer-only Provisioning Console** that
 > oversees every business instance.
 >
@@ -21,7 +21,7 @@
 
 ## 1. Overview & goals
 
-Evitan POS today is a self-contained offline app for **one business installation**. Evitan
+Evitan Plus today is a self-contained offline app for **one business installation**. Evitan
 Plus keeps that offline resilience but makes it the client of a **per-business Postgres
 schema** on Supabase, so a single business can run **multiple branches** that share one
 authoritative dataset, while the developer operates a console that provisions and monitors

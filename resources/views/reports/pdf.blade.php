@@ -13,7 +13,7 @@
     $peso = fn ($value) => $symbol . number_format((float) $value, 2);
     // Returns/defects read as reductions; show them signed when non-zero.
     $minus = fn ($value) => (float) $value > 0 ? '−' . $peso($value) : $peso($value);
-    $businessName = $business['business_name'] !== '' ? $business['business_name'] : 'Evitan POS';
+    $businessName = $business['business_name'] !== '' ? $business['business_name'] : 'Evitan Plus';
 
     // Compact money for the chart's y-axis ticks: ₱1.2k / ₱3.4M, sign preserved.
     $compact = function ($value) use ($symbol) {

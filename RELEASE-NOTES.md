@@ -1,4 +1,15 @@
-# Evitan POS — Release Notes
+# Evitan Plus — Release Notes
+
+> **Naming:** the product was renamed from **Evitan POS** to **Evitan Plus**
+> after v1.0.0. The v1.0.0 entry below is left as released — it shipped under
+> the old name, and its file paths (`~/.config/evitan-pos/`) are where a real
+> v1.0.0 install actually stores its database, backups, and encryption key.
+> Builds from the rename onward use the name **Evitan Plus**, application id
+> `com.evitan.plus`, artifacts `Evitan Plus-<version>.AppImage` /
+> `evitan-plus_<version>_amd64.deb`, and data under `~/.config/evitan-plus/`.
+> Because the application identity changed, a new build does **not** adopt a
+> v1.0.0 install's data — treat it as a fresh install (or copy the old
+> directory across deliberately).
 
 ## v1.0.0 (2026-07-20)
 

@@ -19,17 +19,17 @@ interface AppLogoIconProps {
  */
 export default function AppLogoIcon({ className, variant = 'auto' }: AppLogoIconProps) {
     if (variant === 'onLight') {
-        return <img src="/logo-black.png" alt="Evitan POS" className={className} />;
+        return <img src="/logo-black.png" alt="Evitan Plus" className={className} />;
     }
 
     if (variant === 'onDark') {
-        return <img src="/logo-white.png" alt="Evitan POS" className={className} />;
+        return <img src="/logo-white.png" alt="Evitan Plus" className={className} />;
     }
 
     return (
         <>
-            <img src="/logo-black.png" alt="Evitan POS" className={cn('block dark:hidden', className)} />
-            <img src="/logo-white.png" alt="Evitan POS" className={cn('hidden dark:block', className)} />
+            <img src="/logo-black.png" alt="Evitan Plus" className={cn('block dark:hidden', className)} />
+            <img src="/logo-white.png" alt="Evitan Plus" className={cn('hidden dark:block', className)} />
         </>
     );
 }

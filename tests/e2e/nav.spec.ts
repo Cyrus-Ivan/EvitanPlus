@@ -19,6 +19,7 @@ const DESTINATIONS: Array<[path: string, title: RegExp]> = [
     ['/settings/profile', /^Profile settings -/],
     ['/settings/password', /^Profile settings -/],
     ['/settings/appearance', /^Appearance settings -/],
+    ['/settings/about', /^About -/],
 ];
 
 test('every nav destination renders for the owner', async ({ page }) => {
@@ -30,4 +31,18 @@ test('every nav destination renders for the owner', async ({ page }) => {
         // The error boundary renders in-page without changing the title.
         await expect(page.getByText('Something went wrong')).toBeHidden();
     }
+});
+
+test('the app identifies itself as Evitan Plus', async ({ page }) => {
+    // The rename is a product decision, not a cosmetic one: About renders the
+    // configured app name, and every page title is suffixed with it.
+    await login(page, 'owner');
+    await page.goto('/settings/about');
+
+    // Scoped to About's identity block — the sidebar logo hardcodes the name,
+    // but this one comes from config, which is what the rename actually moved.
+    const productName = page.getByText('Offline-first retail point of sale').locator('xpath=preceding-sibling::p[1]');
+
+    await expect(productName).toHaveText('Evitan Plus');
+    await expect(page).toHaveTitle(/- Evitan Plus$/);
 });

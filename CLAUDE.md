@@ -8,11 +8,11 @@ The Laravel + React (Inertia) + NativePHP + SQLite app is **released — all 19 
 
 `BRAINSTORM.md` is the full functional spec and `ROADMAP.md` is the phased build plan. `docs/returns-refunds-voids-design.md` (after-sales) and `docs/receipt-printing-design.md` (printing) are the designs of record for their areas — where `BRAINSTORM.md`/`ROADMAP.md` disagree with them, the design docs win.
 
-Note: the product is named **Evitan POS**. Use "Evitan POS" for user-facing names unless told otherwise.
+Note: the product is named **Evitan Plus**. Use "Evitan Plus" for user-facing names unless told otherwise.
 
 ## What this is
 
-Evitan POS is an **offline-first retail Point of Sale** desktop app for a **single business installation**. No server, no cloud, no network dependency. Multi-branch and cloud sync are explicitly out of scope for the MVP but the schema should stay sync-compatible (hence UUIDs everywhere).
+Evitan Plus is an **offline-first retail Point of Sale** desktop app for a **single business installation**. No server, no cloud, no network dependency. Multi-branch and cloud sync are explicitly out of scope for the MVP but the schema should stay sync-compatible (hence UUIDs everywhere).
 
 ## Stack
 
@@ -61,6 +61,9 @@ These rules span the entire codebase and are the reason the architecture looks t
 
 **Auditability**
 - Every significant action (auth events, user/inventory/price changes, imports/exports, backups, restores, settings changes) writes an audit log entry.
+
+**The Provisioning Console never ships** (Evitan Plus)
+- `console/` is a separate, developer-only Laravel CLI app holding admin Postgres credentials. Its code and credentials must never appear in any AppImage/deb/build. Enforced structurally (separate app, no runtime reference from the POS app) plus `nativephp.cleanup_exclude_files` / `cleanup_env_keys`, and gated by `tests/Feature/Build/BuildExclusionTest.php`. See `MULTIBRANCH-BRAINSTORM.md` §18.
 
 ## Build order
 

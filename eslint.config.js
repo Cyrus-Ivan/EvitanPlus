@@ -38,7 +38,10 @@ export default [
         },
     },
     {
-        ignores: ['vendor', 'node_modules', 'public', 'bootstrap/ssr', 'tailwind.config.js', 'dist'],
+        // `console` is the provisioning console — a separate, frontend-free
+        // Laravel app. `npm run lint` is an unfiltered `eslint .`, so without
+        // this it would descend into console/vendor.
+        ignores: ['vendor', 'node_modules', 'public', 'bootstrap/ssr', 'tailwind.config.js', 'dist', 'console'],
     },
     prettier, // Turn off all rules that might conflict with Prettier
 ];

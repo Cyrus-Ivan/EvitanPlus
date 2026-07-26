@@ -16,7 +16,7 @@ These phases follow the shipped `v1.0.0` (`ROADMAP.md` phases 0–19). They are 
 - Branch DB roles stay **least-privilege** (SELECT/INSERT broadly; UPDATE only on
   `branch_status`, `stock_snapshots`, `inventory_update_queue.status`; **no DELETE**; one
   schema only).
-- Original Evitan POS invariants (immutable history, append-only ledger, ledger-derived
+- Original Evitan Plus invariants (immutable history, append-only ledger, ledger-derived
   inventory, never delete records, UUID PKs, one Owner, Item Cost Owner-only, negative
   inventory never allowed) remain in force.
 
@@ -33,6 +33,10 @@ Establish the two-app layout and the security boundary before any provisioning l
   by the console, never by the shipped app.
 - Confirm/adjust the shipped app's **`pgsql` connection** in `config/database.php` (the custom
   binary carries the pgsql driver) and keep `sqlite` as the default local connection.
+- **Vendor the custom PHP runtime:** ship a static PHP with both `pdo_sqlite` and `pdo_pgsql`
+  under `build/php/` and point `NATIVEPHP_PHP_BINARY_PATH` at it — NativePHP's stock
+  `nativephp/php-bin` has no Postgres driver, and the build bundles exactly one binary.
+  Gated by `tests/Feature/Build/PhpBinaryTest.php`; see `build/php/README.md`.
 - **Verify build exclusion:** prove `console/` and its `.env` are **not** bundled by
   `native:build`; add any needed ignore config. Add console-only/admin keys to the POS build's
   `cleanup_env_keys` as defense-in-depth.

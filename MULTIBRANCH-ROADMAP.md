@@ -82,10 +82,53 @@ its schema version.
 
 ---
 
-# Phase M2 — Provision a business (schema + migrate + seed + role + JSON)
+# Phase M2 — Provision a business (schema + migrate + seed + role + JSON) ✅
 
 ## Goal
 One console command turns owner/business/branch input into a live, connectable schema.
+
+> **Done.** `business:provision` (plus `console:migrate` for the audit store) does the
+> whole flow; `console/tests/` covers it, including the M12 negative-grant tests, pulled
+> forward for the same reason M1 pulled the parity guard forward — grants are authored
+> once, and that is the moment to prove them. Scoping calls and findings:
+>
+> - **Create-only.** An existing schema is a refusal, not an upgrade path; adding a
+>   branch to an existing business is M3. This is what makes the failure path safe:
+>   atomicity is a **compensating undo stack**, not one transaction (Laravel's migrator
+>   commits per migration, `CREATE ROLE` is cluster-global on another connection, and
+>   writing the JSON is not a database operation at all), so "drop the schema" can never
+>   destroy data this run did not create. The original error is always what the operator
+>   is shown; cleanup failures are appended with the exact SQL to finish by hand.
+> - **The grant matrix is complete through M8** and lives in `BranchGrants`, enumerated
+>   per table — no `ON ALL TABLES`, no `ALTER DEFAULT PRIVILEGES`, because both would
+>   silently extend a branch's reach to any table a later migration adds. **Therefore M9's
+>   migrate-on-update must call `BranchRole::reapplyGrants()` for every schema it
+>   advances.** A test asserts the live grants equal the matrix exactly.
+> - §7 says "UPDATE only on `inventory_update_queue.status`", which is **unusable**:
+>   `check ((status = 'pending') = (resolved_at is null))` means status can never move
+>   without `resolved_at` moving in the same statement. The grant is the four columns one
+>   resolution touches (`status, resolved_at, rejection_reason, ledger_entry_id`) — still
+>   far less than table-level UPDATE.
+> - **Role name is `branch_<32hex of the BRANCH uuid>`.** Postgres roles are cluster-wide
+>   while branch codes are unique only per business, so a code-derived name would collide
+>   across businesses — and the collision would be one business's till authenticating into
+>   another's role.
+> - **`DROP OWNED BY` is not usable on Supabase**: the admin is not a superuser and gets
+>   "Only roles with privileges of role … may drop objects owned by it". `BranchRole::drop()`
+>   revokes explicitly instead, which needs only table ownership.
+> - **Pooler usernames differ from role names.** Supavisor expects `<role>.<project-ref>`,
+>   so the JSON carries both `role.name` and `connection.username`. Provisioning
+>   **connects as the new role and reads the seeded rows before reporting success**, so a
+>   JSON that cannot authenticate is impossible to ship silently.
+> - **Console self-audit lives in `evitan_console`** (its own schema, own migration set,
+>   own `console:migrate`), never in a `biz_*` schema — it is not business history, and the
+>   parity guard enumerates what a business schema may contain. It is append-only by
+>   trigger, so it binds the console itself. Provisioning **refuses to run** when it is
+>   missing: an unauditable provision is not one this tool performs.
+> - Owner password is developer-typed (spec-literal §8.1) with `must_change_password = false`.
+>   Not written to the JSON or the audit trail. No RLS: within its own schema a branch
+>   credential could still write rows tagged with another branch's `branch_id` — stated
+>   plainly rather than overclaimed, and deferred.
 
 ## Tasks
 - Laravel Prompts flow collecting **Owner**, **Business**, and **first Branch** (incl. unique
@@ -230,6 +273,9 @@ Safe rollout of schema changes across independently-updated branches.
   surface "update required" in-app and version-behind in the console.
 - Console command to apply pending Postgres migrations to **one or all** schemas, bumping
   schema/min-app versions appropriately (additive migrations don't raise min-app).
+- **Call `BranchRole::reapplyGrants()` for every schema advanced.** M2 grants per table on
+  purpose (see its note), so a migration that adds a table leaves every branch role without
+  privileges on it until grants are re-applied.
 
 ## Milestone
 Migrating a schema ahead of an old app freezes only that branch's sync (not its selling);

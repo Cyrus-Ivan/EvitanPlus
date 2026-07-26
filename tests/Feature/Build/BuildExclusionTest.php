@@ -114,9 +114,17 @@ class BuildExclusionTest extends TestCase
             'console/bootstrap/cache/packages.php',
             'console/config/database.php',
             'console/app/Console/Commands/PingCommand.php',
+            'console/app/Console/Commands/BusinessProvisionCommand.php',
+            'console/app/Support/BranchRole.php',
+            'console/app/Support/BusinessProvisioner.php',
             'console/database/migrations/.gitkeep',
+            'console/database/migrations-admin/2026_07_27_000001_create_provisioning_audit_table.php',
             'console/vendor/autoload.php',
             'console/storage/logs/laravel.log',
+            // Phase M2's delivery artifact: a branch's credentials JSON holds a
+            // live database password in plaintext. It must be as unshippable as
+            // the console code that produced it.
+            'console/storage/app/credentials/biz_deadbeef-MNL-20260727T091244Z.json',
             'MULTIBRANCH-BRAINSTORM.md',
             'MULTIBRANCH-ROADMAP.md',
         ]);

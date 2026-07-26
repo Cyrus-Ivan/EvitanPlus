@@ -45,3 +45,9 @@ yarn-error.log
 # console/.env is already covered by the unanchored `.env` rule above, and
 # console/{bootstrap/cache,storage} carry their own per-directory .gitignore.
 /console/vendor
+
+# Branch credentials JSON (Phase M2) — plaintext database passwords. Already
+# ignored via console/storage/app/.gitignore, but that file is framework-owned
+# and a future Laravel upgrade could rewrite it; committing a branch credential
+# is not a mistake worth leaving to one `*` in a vendor-managed file.
+/console/storage/app/credentials/

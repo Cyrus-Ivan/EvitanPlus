@@ -1,0 +1,157 @@
+<?php
+
+namespace Tests\Feature;
+
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+use Provisioning\Support\BranchRole;
+use Provisioning\Support\BusinessProvisioner;
+use Provisioning\Support\ProvisioningAudit;
+use Provisioning\Support\RoleName;
+use Provisioning\Support\SchemaConnection;
+use Provisioning\Support\SchemaName;
+use RuntimeException;
+use Tests\TestCase;
+use Throwable;
+
+/**
+ * The console's self-audit store (§8.6) and the compensating-cleanup path that
+ * writes to it.
+ *
+ * The rollback case is the reason this class provisions at all: a failure AFTER
+ * the schema exists is the only situation in which "transactional" has to be
+ * delivered by compensation rather than by the database, so it is the one worth
+ * proving. It is induced by making a progress step throw, which is deterministic
+ * and needs no fault injection into Postgres itself.
+ */
+class ProvisioningAuditTest extends TestCase
+{
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // The audit store is the precondition for provisioning at all.
+        Artisan::call('console:migrate');
+    }
+
+    public function test_console_migrate_is_idempotent(): void
+    {
+        $this->assertSame(0, Artisan::call('console:migrate'));
+        $this->assertSame(0, Artisan::call('console:migrate'));
+
+        $console = SchemaConnection::pinConsole();
+
+        $this->assertTrue(
+            $console->getSchemaBuilder()->hasTable('provisioning_audit'),
+            'console:migrate must leave the audit table in place.'
+        );
+    }
+
+    public function test_the_audit_store_is_not_readable_by_public(): void
+    {
+        $granted = DB::connection('pgsql_admin')->select(
+            'select privilege_type from information_schema.usage_privileges
+             where object_schema = ? and grantee = ?',
+            [SchemaName::CONSOLE, 'PUBLIC'],
+        );
+
+        $this->assertSame([], $granted, 'PUBLIC must hold nothing on the console schema.');
+    }
+
+    public function test_audit_entries_can_never_be_changed_or_removed(): void
+    {
+        $console = SchemaConnection::pinConsole();
+        $audit = new ProvisioningAudit('immutability-test');
+
+        $audit->record('test.immutability', ProvisioningAudit::SUCCEEDED, [
+            'schema_name' => 'biz_'.str_repeat('0', 32),
+        ]);
+
+        $id = $console->table('provisioning_audit')
+            ->where('action', 'test.immutability')
+            ->value('id');
+
+        $this->assertNotNull($id);
+
+        // Append-only, enforced by trigger — so it binds the console itself,
+        // which is the only thing that ever reaches this schema.
+        foreach ([
+            fn () => $console->table('provisioning_audit')->where('id', $id)->update(['actor' => 'someone else']),
+            fn () => $console->table('provisioning_audit')->where('id', $id)->delete(),
+        ] as $mutation) {
+            try {
+                $console->transaction($mutation);
+                $this->fail('The provisioning audit trail accepted a mutation.');
+            } catch (Throwable $e) {
+                $this->assertStringContainsString('immutable', $e->getMessage());
+            }
+        }
+    }
+
+    public function test_a_failure_after_the_schema_exists_rolls_everything_back(): void
+    {
+        $businessId = (string) Str::orderedUuid();
+        $branchId = (string) Str::orderedUuid();
+
+        $schema = SchemaName::forBusiness($businessId);
+        $role = RoleName::forBranch($branchId);
+        $path = sys_get_temp_dir().'/evitan-rollback-'.Str::lower(Str::random(8)).'.json';
+
+        $provisioner = new BusinessProvisioner(new ProvisioningAudit('rollback-test'));
+
+        try {
+            $provisioner->provision(
+                [
+                    'business_id' => $businessId,
+                    'branch_id' => $branchId,
+                    'owner_name' => 'Rollback Owner',
+                    'username' => 'rollback_owner',
+                    'password' => 'rollback-Passw0rd!',
+                    'business_name' => 'Rollback Business',
+                    'business_address' => '',
+                    'tin' => '',
+                    'receipt_footer' => '',
+                    'timezone' => 'Asia/Manila',
+                    'currency_symbol' => '₱',
+                    'branch_name' => 'Rollback Branch',
+                    'branch_code' => 'RBK',
+                    'branch_address' => '',
+                    'out' => $path,
+                ],
+                // Fail at the last possible moment: by now the schema is
+                // migrated, seeded, and the role exists with its grants — so
+                // every undo step has real work to do.
+                function (string $step): void {
+                    if (str_starts_with($step, 'Writing the credentials JSON')) {
+                        throw new RuntimeException('induced failure');
+                    }
+                },
+            );
+
+            $this->fail('The induced failure did not surface.');
+        } catch (RuntimeException $e) {
+            // The ORIGINAL cause must be what the operator is told, not a
+            // cleanup error that happened afterwards.
+            $this->assertStringContainsString('induced failure', $e->getMessage());
+            $this->assertStringContainsString('Nothing was left behind', $e->getMessage());
+        }
+
+        // Nothing survives: no schema, no role, no credentials file.
+        $this->assertFalse(SchemaConnection::exists($schema), 'Rollback left the schema behind.');
+        $this->assertFalse(BranchRole::exists($role), 'Rollback left the Postgres role behind.');
+        $this->assertFileDoesNotExist($path, 'Rollback left a credentials file behind.');
+
+        // And the attempt is on the record, naming what it was trying to build.
+        $entry = SchemaConnection::pinConsole()
+            ->table('provisioning_audit')
+            ->where('schema_name', $schema)
+            ->first();
+
+        $this->assertNotNull($entry, 'A failed provision must still be audited.');
+        $this->assertSame(BusinessProvisioner::ACTION, $entry->action);
+        $this->assertSame(ProvisioningAudit::ROLLED_BACK, $entry->outcome);
+        $this->assertSame('RBK', $entry->branch_code);
+        $this->assertStringContainsString('induced failure', (string) $entry->detail);
+    }
+}

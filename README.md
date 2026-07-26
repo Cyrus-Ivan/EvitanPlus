@@ -94,9 +94,19 @@ php console/artisan key:generate
 # then verify the connection and its DDL capability:
 php console/artisan console:ping
 
+# Create the console's OWN schema (evitan_console) — the provisioning audit
+# trail. Once per Supabase project; provisioning refuses to run without it.
+php console/artisan console:migrate
+
+# Provision a business: schema + migration + Owner/settings/first branch +
+# least-privilege branch role + credentials JSON, in one flow. Interactive by
+# default; every prompt also has an option, so it scripts cleanly.
+php console/artisan business:provision
+
 # Build a business schema (biz_<id>) and report its version. Idempotent —
 # re-running applies only what the schema has not seen, which is also how a
-# schema is upgraded when new Postgres migrations land.
+# schema is upgraded when new Postgres migrations land. business:provision calls
+# schema:migrate itself; these are for inspecting or upgrading an existing one.
 php console/artisan schema:migrate --business=<business-uuid>
 php console/artisan schema:version --business=<business-uuid>
 
@@ -111,6 +121,13 @@ Use Supabase's **session** endpoint on port `5432` — the transaction pooler on
 pinning. Pooler usernames are `postgres.<project-ref>`, not plain `postgres`.
 **Never copy `CONSOLE_DB_*` values into the root `.env`.**
 
+`business:provision` writes each branch's credentials JSON to
+`console/storage/app/credentials/` at mode `0600` (git-ignored, and pruned from
+every build). That file is the **only** copy of the branch's database password —
+the console never prints it. Treat it as one-time: deliver it, import it in the
+setup wizard, then remove it. Prefer the interactive password prompt over
+`--owner-password`, which is visible in `ps` and shell history.
+
 ## Common commands
 
 ```bash
@@ -122,7 +139,9 @@ npm run format            # Prettier
 npm run build             # Production frontend build
 php artisan native:build  # Build the native desktop executable
 
-php console/artisan console:ping   # Verify the console's admin Supabase connection
+php console/artisan console:ping        # Verify the console's admin Supabase connection
+php console/artisan console:migrate     # Create the console's provisioning audit schema
+php console/artisan business:provision  # Provision a business + its first branch
 ```
 
 ## Building a release
@@ -194,10 +213,13 @@ install (no users yet) opens the setup wizard before anything else.
 
 Every branch device is prepared by a developer, in this order:
 
-1. **Provision** — in `console/`, create the business schema (`biz_<id>`) or add
-   a branch to an existing one, create the least-privilege `branch_<id>`
-   Postgres role, and emit that branch's credentials JSON.
-   *(planned — Phases M1/M2. M0 ships only `console:ping`.)*
+1. **Provision** — in `console/`, run `business:provision`: it creates the
+   business schema (`biz_<id>`), migrates it, seeds the Owner, business identity
+   and first branch, creates the least-privilege `branch_<id>` Postgres role, and
+   emits that branch's credentials JSON. It verifies the JSON by connecting as
+   the new role before reporting success.
+   *(shipped — Phase M2. Adding a branch to an existing business, and rotating or
+   disabling a branch's credentials, are planned — Phase M3.)*
 2. **Hardware** — prepare the till: OS install, operator account, receipt
    printer, cash drawer.
 3. **AppImage** — build the release and copy it to the device (see

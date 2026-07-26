@@ -26,6 +26,17 @@ final class SchemaName
      */
     public const MAX_LENGTH = 63;
 
+    /**
+     * The console's own schema, holding the developer-side provisioning audit
+     * trail (§8.6). It is deliberately NOT a biz_ schema: it is not business
+     * history, no branch role may reach it, and a table inside a business
+     * schema would also break the parity and invariants allowlists.
+     *
+     * A fixed constant needs no validation, so it is admitted by name rather
+     * than by widening the pattern below.
+     */
+    public const CONSOLE = 'evitan_console';
+
     /** Lowercase, digits and underscores only, always under the biz_ prefix. */
     private const PATTERN = '/^biz_[a-z0-9_]{1,58}$/';
 
@@ -56,6 +67,10 @@ final class SchemaName
      */
     public static function validate(string $schema): string
     {
+        if ($schema === self::CONSOLE) {
+            return $schema;
+        }
+
         if (strlen($schema) > self::MAX_LENGTH) {
             throw new InvalidArgumentException(
                 "Schema name [{$schema}] exceeds Postgres's ".self::MAX_LENGTH.'-byte identifier limit.'
@@ -91,6 +106,16 @@ final class SchemaName
         }
 
         if ($schema !== null) {
+            // validate() admits the console's own schema because interpolating
+            // it is safe, but these options target a BUSINESS schema: pointing
+            // the business migration set at evitan_console would build 19 of
+            // the wrong tables inside the audit store.
+            if ($schema === self::CONSOLE) {
+                throw new InvalidArgumentException(
+                    'The console schema ['.self::CONSOLE.'] is not a business schema; migrate it with console:migrate.'
+                );
+            }
+
             return self::validate($schema);
         }
 

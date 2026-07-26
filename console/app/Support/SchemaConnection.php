@@ -24,14 +24,24 @@ final class SchemaConnection
     public const NAME = 'pgsql_business';
 
     /**
-     * Point self::NAME at $schema and return the live connection.
+     * Connection name reserved for the console's own schema (SchemaName::CONSOLE).
+     *
+     * A second name rather than re-pinning NAME: provisioning holds a business
+     * schema pinned while it seeds, and writes its audit entry in the middle of
+     * that work. Sharing one name would purge the business connection out from
+     * under the flow and re-pin it on every audit write.
+     */
+    public const CONSOLE_NAME = 'pgsql_console';
+
+    /**
+     * Point a connection name at $schema and return the live connection.
      *
      * Always purges first: connections are cached by name, so re-pinning
      * without a purge would silently keep talking to the previous schema —
      * which, in a tool that provisions many businesses in one run, would write
      * one business's data into another's.
      */
-    public static function pin(string $schema): Connection
+    public static function pin(string $schema, string $as = self::NAME): Connection
     {
         $schema = SchemaName::validate($schema);
 
@@ -39,12 +49,12 @@ final class SchemaConnection
         // Purging unconditionally would drop a perfectly good session — and
         // silently null the PDO on any Connection object the caller is still
         // holding, so their next query reconnects.
-        if (config('database.connections.'.self::NAME.'.search_path') === $schema) {
-            return DB::connection(self::NAME);
+        if (config('database.connections.'.$as.'.search_path') === $schema) {
+            return DB::connection($as);
         }
 
         config([
-            'database.connections.'.self::NAME => array_merge(
+            'database.connections.'.$as => array_merge(
                 config('database.connections.pgsql_admin'),
                 ['search_path' => $schema],
             ),
@@ -53,9 +63,20 @@ final class SchemaConnection
         // Re-targeting: the cached connection is pinned to the PREVIOUS schema,
         // so it must go. Without this, provisioning a second business in one
         // run would write into the first one's schema.
-        DB::purge(self::NAME);
+        DB::purge($as);
 
-        return DB::connection(self::NAME);
+        return DB::connection($as);
+    }
+
+    /**
+     * The console's own schema, created if absent and returned pinned on
+     * CONSOLE_NAME. Its tables are built by console:migrate, not by this.
+     */
+    public static function pinConsole(): Connection
+    {
+        self::ensureExists(SchemaName::CONSOLE);
+
+        return self::pin(SchemaName::CONSOLE, self::CONSOLE_NAME);
     }
 
     /**

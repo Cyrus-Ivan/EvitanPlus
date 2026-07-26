@@ -1,0 +1,214 @@
+<?php
+
+namespace Tests\Feature;
+
+use Illuminate\Support\Facades\DB;
+use Provisioning\Support\BranchCredentials;
+use Provisioning\Support\BusinessProvisioner;
+use Provisioning\Support\BusinessSettingKeys;
+use Provisioning\Support\ProvisioningAudit;
+use Provisioning\Support\SchemaConnection;
+use Tests\Concerns\ProvisionsBusiness;
+use Tests\TestCase;
+
+/**
+ * The M2 milestone (MULTIBRANCH-ROADMAP.md): one command yields a populated
+ * schema, a least-privilege branch role, and a JSON a pgsql client can use to
+ * connect and read the seeded data.
+ *
+ * One provision serves every assertion here — see ProvisionsBusiness for why.
+ * The grant boundary itself is asserted separately in BranchRoleGrantsTest.
+ */
+class BusinessProvisionTest extends TestCase
+{
+    use ProvisionsBusiness;
+
+    public static function tearDownAfterClass(): void
+    {
+        self::tearDownProvisionedBusiness();
+
+        parent::tearDownAfterClass();
+    }
+
+    public function test_it_creates_and_fully_migrates_the_business_schema(): void
+    {
+        $this->assertTrue(SchemaConnection::exists($this->schema()));
+
+        $business = SchemaConnection::pin($this->schema());
+
+        $meta = $business->selectOne('select schema_version, min_app_version from schema_meta');
+        $this->assertSame(1, (int) $meta->schema_version);
+        $this->assertSame('1.0.0', $meta->min_app_version);
+
+        // Every migration, not just enough of them to seed.
+        $applied = (int) $business->selectOne('select count(*) as total from migrations')->total;
+        $this->assertSame(19, $applied);
+    }
+
+    public function test_it_seeds_exactly_one_owner_whose_password_the_app_can_verify(): void
+    {
+        $users = SchemaConnection::pin($this->schema())->table('users')->get();
+
+        $this->assertCount(1, $users);
+        $this->assertSame('owner', $users[0]->role);
+        $this->assertSame('fixture_owner', $users[0]->username);
+        $this->assertSame('Fixture Owner', $users[0]->name);
+        $this->assertNull($users[0]->deleted_at);
+
+        // must_change_password stays false: the developer sets the password
+        // during provisioning and hands it over, so there is nothing to force.
+        $this->assertFalse((bool) $users[0]->must_change_password);
+
+        // The whole point of hashing here rather than in the app: the shipped
+        // app's 'password' => 'hashed' cast must be able to verify this.
+        $this->assertTrue(password_verify(self::OWNER_PASSWORD, $users[0]->password));
+    }
+
+    public function test_it_seeds_every_business_setting_as_a_string(): void
+    {
+        $settings = SchemaConnection::pin($this->schema())
+            ->table('settings')
+            ->pluck('value', 'key')
+            ->all();
+
+        $keys = array_keys($settings);
+        $expected = BusinessSettingKeys::KEYS;
+        sort($keys);
+        sort($expected);
+        $this->assertSame($expected, $keys, 'Exactly the app-recognised setting keys must be seeded.');
+
+        $this->assertSame('Fixture Business', $settings['business_name']);
+        $this->assertSame('Asia/Manila', $settings['timezone']);
+        $this->assertSame('₱', $settings['currency_symbol']);
+        $this->assertSame('000-111-222-333', $settings['tin']);
+
+        foreach (BusinessSettingKeys::KEYS as $key) {
+            $this->assertArrayHasKey($key, $settings);
+            // Never null: the app applies read-time defaults, so a null would
+            // surface as the default instead of the chosen value.
+            $this->assertIsString($settings[$key]);
+        }
+    }
+
+    public function test_it_seeds_the_first_branch_with_a_canonical_code(): void
+    {
+        $branches = SchemaConnection::pin($this->schema())->table('branches')->get();
+
+        $this->assertCount(1, $branches);
+        // Provisioned as 'fix'; the receipt prefix must have one spelling.
+        $this->assertSame('FIX', $branches[0]->code);
+        $this->assertSame('Fixture Branch', $branches[0]->name);
+        $this->assertNull($branches[0]->disabled_at);
+        // timestampsTz has no database default and nothing here goes through
+        // Eloquent, so these prove the seed set them explicitly.
+        $this->assertNotNull($branches[0]->created_at);
+        $this->assertNotNull($branches[0]->updated_at);
+    }
+
+    public function test_it_does_not_seed_rows_that_belong_to_later_phases(): void
+    {
+        $business = SchemaConnection::pin($this->schema());
+
+        // branch_status is upserted by the till on its first heartbeat (M10).
+        $this->assertSame(0, (int) $business->selectOne('select count(*) as t from branch_status')->t);
+        // No stock exists until a ledger entry says so.
+        $this->assertSame(0, (int) $business->selectOne('select count(*) as t from stock_snapshots')->t);
+        // The migration owns the singleton; a second insert would be rejected.
+        $this->assertSame(1, (int) $business->selectOne('select count(*) as t from schema_meta')->t);
+    }
+
+    public function test_it_creates_a_login_role_with_no_cluster_powers(): void
+    {
+        $role = DB::connection('pgsql_admin')->selectOne(
+            'select rolcanlogin, rolsuper, rolcreaterole, rolcreatedb, rolreplication, rolbypassrls, rolinherit, rolconfig
+             from pg_roles where rolname = ?',
+            [$this->roleName()],
+        );
+
+        $this->assertNotNull($role, 'The branch role was not created.');
+        $this->assertTrue((bool) $role->rolcanlogin);
+
+        foreach (['rolsuper', 'rolcreaterole', 'rolcreatedb', 'rolreplication', 'rolbypassrls', 'rolinherit'] as $attribute) {
+            $this->assertFalse((bool) $role->{$attribute}, "{$attribute} must be off for a branch role.");
+        }
+
+        // The search_path pin lives on the ROLE, so a client that never sets it
+        // still lands in the right business (§7).
+        $this->assertStringContainsString('search_path='.$this->schema(), (string) $role->rolconfig);
+    }
+
+    public function test_it_writes_a_private_credentials_json_that_matches_the_database(): void
+    {
+        $path = $this->credentialsPath();
+        $document = $this->provisioned();
+
+        // The file holds a live credential: owner-only, always.
+        $this->assertSame('0600', substr(sprintf('%o', fileperms($path)), -4));
+
+        $this->assertSame(BranchCredentials::FORMAT, $document['format']);
+        $this->assertSame(BranchCredentials::FORMAT_VERSION, $document['format_version']);
+
+        $this->assertSame('FIX', $document['branch']['code']);
+        $this->assertSame('Fixture Business', $document['business']['name']);
+        $this->assertSame($this->schema(), $document['business']['schema']);
+        $this->assertSame($this->schema(), $document['connection']['search_path']);
+        $this->assertSame(1, $document['versions']['schema_version']);
+        $this->assertSame('1.0.0', $document['versions']['min_app_version']);
+
+        // Key-for-key the shipped app's pgsql connection, so M5 can assign it.
+        $this->assertSame(
+            ['driver', 'host', 'port', 'database', 'username', 'password', 'search_path', 'sslmode'],
+            array_keys($document['connection']),
+        );
+
+        // The bare role and the login name are both present because a pooler
+        // endpoint makes them differ.
+        $this->assertSame($this->roleName(), $document['role']['name']);
+        $this->assertStringStartsWith($this->roleName(), (string) $document['connection']['username']);
+
+        // The ids in the JSON must be the rows that exist.
+        $business = SchemaConnection::pin($this->schema());
+        $this->assertSame(
+            $document['branch']['id'],
+            (string) $business->selectOne('select id from branches')->id,
+        );
+    }
+
+    public function test_the_credentials_json_never_carries_admin_credentials(): void
+    {
+        $raw = (string) file_get_contents($this->credentialsPath());
+
+        // §18: admin credentials never leave console/.env.
+        foreach ([config('database.connections.pgsql_admin.password'),
+            config('database.connections.pgsql_admin.username')] as $secret) {
+            $this->assertIsString($secret);
+            $this->assertStringNotContainsString($secret, $raw);
+        }
+
+        // Nor the Owner's password: it is not needed to connect, and §9 does not
+        // list it.
+        $this->assertStringNotContainsString(self::OWNER_PASSWORD, $raw);
+    }
+
+    public function test_it_records_one_successful_audit_entry(): void
+    {
+        $entry = SchemaConnection::pinConsole()
+            ->table('provisioning_audit')
+            ->where('schema_name', $this->schema())
+            ->first();
+
+        $this->assertNotNull($entry, 'The provision was not audited.');
+        $this->assertSame(BusinessProvisioner::ACTION, $entry->action);
+        $this->assertSame(ProvisioningAudit::SUCCEEDED, $entry->outcome);
+        $this->assertSame('FIX', $entry->branch_code);
+        $this->assertSame($this->roleName(), $entry->role_name);
+        $this->assertNotEmpty($entry->actor);
+
+        // The trail must never become a place secrets accumulate.
+        $this->assertStringNotContainsString(
+            (string) $this->provisioned()['connection']['password'],
+            (string) $entry->detail,
+        );
+        $this->assertStringNotContainsString(self::OWNER_PASSWORD, (string) $entry->detail);
+    }
+}

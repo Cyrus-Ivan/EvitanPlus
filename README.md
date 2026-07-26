@@ -119,9 +119,12 @@ php console/artisan console:ping   # Verify the console's admin Supabase connect
 1. Bump the version default in `config/nativephp.php` and add an entry to
    [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 2. Run every gate with `composer verify`. It chains them fail-fast, cheapest
-   first: `pint --test` → `phpstan` → `php artisan test` → `npm run types` →
-   `npm run lint:check` → `npm run format:check` → `npm run e2e` (which builds
-   the frontend before it starts Playwright). The M0 build gates —
+   first: `composer audit` → `pint --test` → `phpstan` → `php artisan test` →
+   `npm run types` → `npm run lint:check` → `npm run format:check` →
+   `npm run e2e` (which builds the frontend before it starts Playwright).
+   The audit step needs network access and ignores *abandoned* packages —
+   `nativephp/electron` and `nativephp/laravel` are deliberate pins, not
+   oversights. The M0 build gates —
    [`BuildExclusionTest`](tests/Feature/Build/BuildExclusionTest.php) (no
    console code or admin credentials in a build) and
    [`PhpBinaryTest`](tests/Feature/Build/PhpBinaryTest.php) (the shipped PHP

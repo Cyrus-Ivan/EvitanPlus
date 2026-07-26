@@ -41,7 +41,7 @@
         }
     },
     "scripts-descriptions": {
-        "verify": "Run every release gate, fail-fast, cheapest first: pint, phpstan, backend tests, tsc, eslint, prettier, Playwright e2e."
+        "verify": "Run every release gate, fail-fast, cheapest first: composer audit, pint, phpstan, backend tests, tsc, eslint, prettier, Playwright e2e. The audit step needs network; abandoned packages are ignored because nativephp/electron and nativephp/laravel are deliberate pins."
     },
     "scripts": {
         "post-autoload-dump": [
@@ -70,6 +70,7 @@
         "console": "@php console/artisan",
         "verify": [
             "Composer\\Config::disableProcessTimeout",
+            "@composer audit --abandoned=ignore",
             "./vendor/bin/pint --test",
             "./vendor/bin/phpstan analyse --memory-limit=1G",
             "@php artisan test",

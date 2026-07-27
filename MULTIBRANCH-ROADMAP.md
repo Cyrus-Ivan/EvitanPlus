@@ -15,7 +15,9 @@ These phases follow the shipped `v1.0.0` (`ROADMAP.md` phases 0–19). They are 
   build exclusion + `cleanup_env_keys`).
 - Branch DB roles stay **least-privilege** (SELECT/INSERT broadly; UPDATE only on
   `branch_status`, `stock_snapshots`, `inventory_update_queue.status`; **no DELETE**; one
-  schema only).
+  schema only). *As built (M2): the queue grant is four columns, not `status` alone — a check
+  constraint makes `status` alone unusable. `BranchGrants` is the operative matrix; see M2's
+  note and `MULTIBRANCH-BRAINSTORM.md` §7.*
 - Original Evitan Plus invariants (immutable history, append-only ledger, ledger-derived
   inventory, never delete records, UUID PKs, one Owner, Item Cost Owner-only, negative
   inventory never allowed) remain in force.
@@ -254,7 +256,10 @@ Let online branch-targeted adjustments happen without ever driving stock negativ
   entry) when reconciled stock stays `≥ 0`; **reject** a subtractive adjustment that would go
   `< 0`.
 - **Flag rejected adjustments in the in-app admin** (Owner/Admin screens) for review/re-issue.
-- Grant `UPDATE` on `inventory_update_queue.status` to the branch role (still least-privilege).
+- ~~Grant `UPDATE` on `inventory_update_queue.status` to the branch role~~ — **already done in
+  M2**, and as four columns (`status, resolved_at, rejection_reason, ledger_entry_id`), because
+  a check constraint ties `status` to `resolved_at`. M8 writes the resolution logic against
+  that existing grant; it does not issue a new one.
 
 ## Milestone
 A subtract-more-than-available adjustment issued while the branch is offline is rejected on

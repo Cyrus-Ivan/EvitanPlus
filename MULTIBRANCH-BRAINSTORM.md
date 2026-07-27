@@ -16,6 +16,12 @@
 > **connection/sync engine** (bidirectional sync, status/heartbeat monitoring, and
 > Owner-facing consolidated cross-branch reporting). The full column-by-column sync mapping
 > of *every* auxiliary table is refined during the build; the core loop is in scope now.
+>
+> **Reading the "As built" annotations.** Blockquotes marked **As built** record where the
+> implementation deliberately diverged from the prose above them, and why. Where one appears,
+> **it wins** — the original prose is kept unchanged so the intent stays legible, but it is
+> no longer a description of the system. Each names the phase that made the call; the full
+> reasoning and its test coverage live in that phase's note in `MULTIBRANCH-ROADMAP.md`.
 
 ---
 
@@ -111,6 +117,10 @@ during provisioning.
   data. A business never spans more than one schema.
 - **One Postgres role per branch**, least-privilege, scoped to that business's schema only.
 
+> **As built (M1).** The table list inside the diagram is the design's vocabulary, not the
+> schema's — `prices`, `returns` and `defects` do not exist as tables, and three tables it
+> omits do. See §5's annotation for the real set.
+
 ---
 
 ## 4. Non-negotiable invariants (this initiative)
@@ -152,6 +162,15 @@ records, UUID PKs, one Owner, Item Cost Owner-only, negative inventory never all
   where it reads/appends and **UPDATE** only on the few mutable rows (its `branch_status`
   row, `stock_snapshots`, and `inventory_update_queue` status). It has **no DELETE** — DB
   grants enforce immutability, not just app logic and triggers.
+
+> **As built (M2).** Two qualifications, both load-bearing:
+>
+> - The `inventory_update_queue` grant is **four columns**, not `status` alone — see §7.
+> - The isolation this bullet promises is **schema-level, not row-level**. Within its own
+>   business schema, a compromised branch credential can insert rows tagged with *another
+>   branch's* `branch_id`: a grant cannot see row contents. Row-level security is the fix
+>   and is **not built** (§19). Read this invariant as "one business cannot reach another
+>   business's data" — it is not "one branch cannot forge another branch's data."
 
 **The Provisioning Console never ships**
 - Console code and its powerful admin credentials must never appear in any AppImage/deb/build.
@@ -200,6 +219,21 @@ Written **only** on the till, append-only/immutable, pushed as brand-new UUID-ke
 > business-wide to satisfy any-user/any-branch offline login. The full multi-branch dataset
 > lives only in Postgres.
 
+> **As built (M1/M2).** The table *names* in §5.1–§5.3 are design vocabulary; the schema is
+> shaped like the app, which is what the parity guard (§13) requires. Corrections:
+>
+> - **There is no `prices` table.** A selling price lives on `variants` and is snapshotted
+>   onto `transaction_items` at time of sale — exactly as the app already models it.
+> - **There are no separate `returns` and `defects` tables.** Both are one
+>   `sale_returns` + `sale_return_items` pair, distinguished by a `type` column. They differ
+>   only in whether stock is restored, which is a value, not a shape.
+> - **Two tables §5 never classifies exist.** `schema_meta` (the §13 version gate) is
+>   online-authoritative and read-only to the till, which reads it every sync to decide
+>   whether it may sync at all. `import_history` is currently treated as
+>   online-authoritative too — the branch role has SELECT but **no INSERT** on it, which
+>   means in-app CSV imports do **not** sync upward today. That was a grant-matrix
+>   consequence, not a considered product decision; **M6 must settle it** (§19).
+
 ---
 
 ## 6. Users, roles & offline login
@@ -230,6 +264,39 @@ Written **only** on the till, append-only/immutable, pushed as brand-new UUID-ke
   - `search_path` pinned to the business schema.
 - The console (admin/superuser connection) owns all DDL, migrations, and role management.
 
+> **As built (M2).** The privilege matrix lives in `console/app/Support/BranchGrants.php` and
+> a test asserts the **live** grants in Postgres equal it exactly, so that file — not this
+> section — is the operative spec. Five corrections:
+>
+> - **The role name derives from the branch UUID** (`branch_<32 hex>`), never the branch
+>   code. Postgres roles are **cluster-wide**, while branch codes are unique only *within one
+>   business*. Two businesses each opening a "MNL" branch would want the same role name, and
+>   the collision would be one business's till authenticating into another's role. The branch
+>   code keeps its real job: the receipt serial prefix (§12).
+> - **`UPDATE` on `inventory_update_queue` is four columns, not `status` alone.** As written,
+>   the grant permits nothing: the table carries
+>   `check ((status = 'pending') = (resolved_at is null))`, so a statement moving `status` off
+>   `pending` *must* set `resolved_at` in the same statement or the constraint rejects it. The
+>   grant is the four columns one resolution touches — `status`, `resolved_at`,
+>   `rejection_reason`, `ledger_entry_id` — still far below table-level `UPDATE`, which would
+>   also expose `quantity`, `variant_id`, `branch_id` and `issued_by`.
+> - **`INSERT` is narrower than "mirrored/append tables" suggests.** Only the nine local-write
+>   and derived tables of §5.2/§5.3 are insertable. `SELECT` is schema-wide (minus Laravel's
+>   `migrations` ledger), because the till mirrors the catalog, all users, settings and its
+>   own history.
+> - **Grants are enumerated per table on purpose** — no `GRANT ... ON ALL TABLES`, no
+>   `ALTER DEFAULT PRIVILEGES`. Both would silently extend a branch's reach to whatever a
+>   future migration adds, which is the opposite of a least-privilege matrix. The accepted
+>   cost: a new table lands with **no** branch privileges, so **M9's migrate-on-update must
+>   call `BranchRole::reapplyGrants()` for every schema it advances**, and M3's re-created
+>   roles use the same call.
+> - **"and nothing on other schemas" is not literally true.** Some privileges come from the
+>   implicit `PUBLIC` role and cannot be revoked from a single grantee: `CONNECT` on the
+>   database (required), `USAGE` on the empty `public` schema, `TEMPORARY`, and reads of
+>   `pg_catalog`/`information_schema`. That leaks other schema *names*, never their rows —
+>   `information_schema` is privilege-filtered. The negative tests assert this real boundary
+>   rather than a flattering one.
+
 ---
 
 ## 8. The Provisioning Console (developer-only)
@@ -251,6 +318,24 @@ Only when complete does it:
 3. populate `users` (Owner), business `settings`/identity, and the first `branches` row;
 4. `CREATE ROLE branch_<id>` with least-privilege grants (§7);
 5. emit a **credentials JSON** (§9) for that branch.
+
+> **As built (M2).** `business:provision` performs exactly these five steps, but **not
+> "transactionally"** — that is not achievable as written and the command does not pretend
+> otherwise. Laravel's migrator commits per migration (19 of them), `CREATE ROLE` is
+> cluster-global and runs on a separate connection, and writing the JSON is not a database
+> operation at all. Atomicity is a **compensating undo stack**: the run records what it
+> created and unwinds it in reverse on failure.
+>
+> What makes that safe is a scoping decision, not a coding one: provisioning is
+> **create-only**. An existing schema is a **refusal**, never an upgrade path — so an undo
+> can only ever remove what this run just created, and "drop the schema" can never destroy
+> data that was already there. Adding a branch to an existing business is §8.2 / M3. The
+> operator is always shown the *original* error; a cleanup that itself fails is appended with
+> the exact SQL to finish by hand.
+>
+> The **Owner's password is developer-typed** and seeded with `must_change_password = false`
+> (the business logs in as a ready Owner, per §16). It is written to neither the credentials
+> JSON nor the audit trail.
 
 ### 8.2 Provision a **branch** (under an existing business)
 1. Insert a `branches` row (name, unique **branch code**, address) in the existing schema;
@@ -281,6 +366,15 @@ pulled by the new branch at hydrate.)
 - Every provision/migrate/rotate/disable/delete writes a developer-side provisioning audit
   entry (who/what/when/target).
 
+> **As built (M2).** The trail lives in its own Postgres schema, **`evitan_console`**, with
+> its own migration set and its own `console:migrate` command — never inside a `biz_*`
+> schema. It is not business history, no branch role may reach it, and the §13 parity guard
+> enumerates what a business schema may contain, so a table there would break it. It is
+> **append-only by trigger**, binding the console itself the way the app's audit log binds
+> the app. **Provisioning refuses to run when it is missing**: an unauditable provision is
+> not one this tool performs. `console:migrate` is therefore a once-per-Supabase-project
+> prerequisite, ahead of the first `business:provision`.
+
 ---
 
 ## 9. Credential JSON & on-device credential storage
@@ -301,6 +395,30 @@ pulled by the new branch at hydrate.)
   delete/move it, so the powerful credential does not linger in plaintext on disk.
 - The `pgsql` connection decrypts credentials **only at runtime**.
 - **Rotation = fresh AppImage + new JSON + re-sync** (not an in-place swap).
+
+> **As built (M2) — read this before writing M5's importer.**
+>
+> - The document is a **versioned envelope**: `format` (`evitan.branch-credentials`),
+>   `format_version`, `issued_at`. M5 should reject a shape it does not recognise rather than
+>   half-read it.
+> - **The credential is two values, not one.** `connection.username` is what you authenticate
+>   with — through Supabase's Supavisor pooler that is `<role>.<project-ref>`, **not** the
+>   role name — while `role.name` is the bare Postgres role, which is what M3's
+>   rotate/disable/delete operate on. Collapsing them back into one field reintroduces a bug
+>   that only surfaces in the field, at setup, on a customer's device.
+> - The `connection` block is **key-for-key the shipped app's `config('database.connections.pgsql')`**
+>   (`driver, host, port, database, username, password, search_path, sslmode`), so importing
+>   it is an assignment, not a translation.
+> - `versions` (`schema_version`, `min_app_version`) is **read back from `schema_meta`**,
+>   never assumed — it is what M5's version gate (§13) compares the app against.
+> - **The Owner's password is deliberately absent.** It is not needed to connect, and it has
+>   no business sitting in a file on a developer's laptop.
+> - Provisioning **connects as the new role and reads the seeded rows before reporting
+>   success**, so a JSON that cannot authenticate cannot ship silently.
+> - The file is written with an **exclusive create** at mode `0600` inside a `0700` directory,
+>   and the path is reserved *before* any database work begins. An existing path is a refusal,
+>   never an overwrite: the file it would replace may be the only copy of a credential already
+>   delivered to a branch.
 
 ---
 
@@ -509,3 +627,14 @@ provisioning. It requires internet on first run and:
 - **Cross-timezone branches** — business timezone is business-level for now (Asia/Manila
   default); revisit if branches span zones.
 - **Full column-by-column sync mapping** of every auxiliary table beyond the core loop.
+
+Added by the build (see the annotations that reference them):
+
+- **Row-level isolation between branches inside one business schema (RLS)** — grants stop at
+  the schema boundary, so a compromised branch credential can insert rows tagged with another
+  branch's `branch_id` (§4, §7). Not a theoretical gap: it is the difference between what §4
+  currently claims and what the system enforces.
+- **Whether `import_history` syncs upward** — the branch role has SELECT but no INSERT on it,
+  so in-app CSV imports stay branch-local today (§5). A grant-matrix side effect, not a
+  decision. Settle it in M6, and if imports must sync, add the table to `BranchGrants::INSERT`
+  and re-run `reapplyGrants()` across existing schemas.

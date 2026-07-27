@@ -620,14 +620,14 @@ synced, and rebuilt by a re-install.
 
 ## 3. ERD — the console's own schema (`evitan_console`)
 
-**Status: `provisioning_audit` is built (M2); `credential_issuance` is proposed for M3.**
+**Status: `provisioning_audit` is built (M2); `credential_issuance` is built (M3).**
 This schema lives outside every business schema. No branch role can reach it.
 
 ```mermaid
 erDiagram
     provisioning_audit {
         uuid id PK
-        varchar action "business.provision | branch.provision | branch.rotate | branch.disable | schema.migrate"
+        varchar action "business.provision | branch.provision | branch.rotate | branch.recreate | branch.disable | branch.enable | branch.delete"
         varchar outcome "succeeded | rolled_back | cleanup_failed"
         uuid business_id "nullable — a failure can precede the target"
         varchar schema_name
@@ -639,17 +639,17 @@ erDiagram
         tstz created_at "IMMUTABLE — trigger"
     }
     credential_issuance {
-        uuid id PK "PROPOSED (M3)"
+        uuid id PK
         uuid business_id
         varchar schema_name
         uuid branch_id
         varchar role_name
-        varchar fingerprint "hash of the issued password — never the password"
-        int generation "1, 2, 3… — rotation counter"
+        varchar fingerprint "sha256 of the issued password — never the password"
+        int generation "1, 2, 3… — rotation counter; unique per branch"
         varchar reason "provision | rotate | recreate"
-        tstz issued_at
-        tstz superseded_at "set when a later generation is issued"
         varchar actor
+        tstz issued_at
+        tstz superseded_at "null = live; UNIQUE per branch where null"
     }
     migrations {
         int id PK "Laravel's own ledger, per schema"
@@ -681,13 +681,32 @@ business schemas — and here the trigger is doing real work, because the *only*
 ever reaches this schema is the admin one, which grants would never constrain. An audit trail the
 tool writing it can also rewrite is not an audit trail.
 
-**`credential_issuance` (proposed) closes the rotation loop.** Today, rotation is
-"fresh AppImage + new JSON" (§9), and nothing records what was issued to whom. Storing a
-**fingerprint** — never the password — plus a `generation` counter lets the console answer two
-questions it currently cannot: *is the credential this branch is using the current one?* (compare
-against `instance_secret.fingerprint`, which the branch can safely report in its heartbeat), and
-*how many times has this branch been re-issued?* `superseded_at` makes an old JSON found on a
-desk identifiable as stale.
+**`credential_issuance` closes the rotation loop.** Rotation is "fresh AppImage + new JSON" (§9),
+and `provisioning_audit` records only that a rotation *happened*. Storing a **fingerprint** —
+never the password — plus a `generation` counter lets the console answer two questions the audit
+trail cannot: *is the credential this branch is using the current one?* (compare against
+`instance_secret.fingerprint`, which the branch can safely report in its heartbeat), and *how many
+times has this branch been re-issued?* `superseded_at` makes an old JSON found on a desk
+identifiable as stale.
+
+**It had to be built in M3, not later.** Generations and supersede times could be reconstructed
+from the audit trail afterwards; a fingerprint could not. The password is generated, written to
+one `0600` file and forgotten inside a single command, so a credential issued without a
+fingerprint can never acquire one.
+
+**The fingerprint is a deterministic sha256, not a password hash** (`BranchSecret::fingerprint`).
+Nothing here ever verifies a login — the only operation is comparison between a value computed on
+a device and one computed by the console, and a per-row salt would make that impossible. The input
+is 32 characters of `BranchSecret`'s alphabet (~190 bits), so the digest is no shortcut to the
+secret.
+
+**Two constraints carry real weight.** A partial unique index on `(branch_id) where superseded_at
+is null` means *at most one live credential per branch* — enforced by the database rather than by
+the order a command happens to run its steps, because two live rows would make the central
+question unanswerable. And the append-only trigger here is narrower than
+`evitan_reject_mutation()`: `superseded_at` must stay writable, so the trigger rejects all
+DELETEs, rejects any UPDATE touching another column, and lets `superseded_at` move exactly once.
+A row goes from live to superseded and never back.
 
 **There is deliberately no `businesses` registry table.** The console discovers businesses by
 enumerating `biz_*` schemas and reads their identity from each schema's own `settings` and

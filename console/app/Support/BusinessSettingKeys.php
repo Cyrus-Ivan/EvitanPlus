@@ -34,6 +34,17 @@ final class BusinessSettingKeys
         'currency_symbol' => '₱',
     ];
 
+    /**
+     * The registered business name.
+     *
+     * Named because M3 reads it back: a branch command targets a schema, and
+     * both its confirmation prompt and the credentials JSON need to say which
+     * business that is. There is no businesses registry to ask (see
+     * docs/evitan-plus-erds.md §3) — each schema's own settings row is the
+     * source of truth.
+     */
+    public const BUSINESS_NAME = 'business_name';
+
     /** @var list<string> */
     public const KEYS = [
         'business_name',

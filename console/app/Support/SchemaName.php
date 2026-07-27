@@ -60,6 +60,37 @@ final class SchemaName
     }
 
     /**
+     * The business UUID a schema name was derived from — forBusiness reversed.
+     *
+     * M3's commands start from a schema (the operator targets a business that
+     * already exists), but the credentials JSON they emit carries
+     * `business.id`. Recovering it here beats the alternatives: there is no
+     * businesses registry to look it up in — deliberately, see
+     * docs/evitan-plus-erds.md §3 — and re-prompting for a UUID the schema name
+     * already contains invites a mismatch nothing would catch.
+     */
+    public static function toBusinessUuid(string $schema): string
+    {
+        $schema = self::validate($schema);
+
+        $hex = substr($schema, strlen('biz_'));
+
+        if (! preg_match('/^[0-9a-f]{32}$/', $hex)) {
+            throw new InvalidArgumentException(
+                "Schema [{$schema}] was not derived from a business UUID."
+            );
+        }
+
+        return implode('-', [
+            substr($hex, 0, 8),
+            substr($hex, 8, 4),
+            substr($hex, 12, 4),
+            substr($hex, 16, 4),
+            substr($hex, 20, 12),
+        ]);
+    }
+
+    /**
      * Accept a schema name only if it is safe to interpolate into DDL.
      *
      * Returns the name so callers can write `SchemaName::validate($raw)` at the

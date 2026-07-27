@@ -344,6 +344,19 @@ Only when complete does it:
 (No new schema, no re-migration; the catalog/users/settings are already there and will be
 pulled by the new branch at hydrate.)
 
+> **As built (M3).** `branch:provision` performs exactly these three steps, and the interesting
+> part is the failure path, which is **not** M2's. §8.1's compensation is safe because that
+> command is create-only — it made the schema, so dropping it can destroy nothing that
+> predated the run. Everything in §8.2 and §8.3 writes into a schema that already holds other
+> branches' sales history, so **the schema is never in the undo stack**. The undo is exactly
+> the three objects the run created: one `branches` row (keyed by a UUID minted seconds
+> earlier), one role, one credentials file. A cleanup that itself fails prints
+> `BranchRole::dropRoleSql()`, deliberately not `cleanupSql()`, whose first line is a
+> `DROP SCHEMA ... CASCADE`.
+>
+> Branch-code uniqueness is checked before anything is created, but `branches_code_unique`
+> stays the authority — the check only turns a constraint violation into a sentence.
+
 ### 8.3 Credential lifecycle
 - **Rotate** a branch's password. Per the delivery model (§9), a rotation is delivered as a
   **fresh AppImage + new JSON** to that branch, which re-imports and re-syncs as that branch.
@@ -352,6 +365,67 @@ pulled by the new branch at hydrate.)
   restores sync and flushes the outbox.
 - **Delete** a branch role (and **re-create** later when needed — re-create emits a new JSON
   and follows the rotation delivery path).
+
+> **As built (M3).** Five corrections and findings, the third of which is the one to read
+> before touching any of this:
+>
+> - **Rotate and re-create are one command**, `branch:rotate --recreate`: the same act under
+>   two starting conditions. The flag is required in **both** directions — rotating a missing
+>   role is refused without it, re-creating a live one is refused with it — so a rotation can
+>   never silently become a re-creation, which would leave an operator believing a role's
+>   grants had been preserved when they had just been rebuilt. The audit still distinguishes
+>   `branch.rotate` from `branch.recreate`.
+> - **A rotated password cannot be undone.** The previous secret was written to one file and
+>   never stored, so ordering is the whole mitigation: the new credentials file is reserved
+>   *before* the `ALTER ROLE`. A failure past that point reports plainly that the password HAS
+>   changed and that re-running is safe, rather than implying a rollback that did not happen.
+> - **A re-issue must never roll back on a failed verification, and the first implementation
+>   did.** Verification is the last step, and by the time it runs the role already holds a new
+>   secret that exists in exactly one place — the credentials file this run reserved. Rolling
+>   back discarded that file, which would leave a branch whose password had genuinely changed
+>   with **no way to ever learn the new one**. So a re-issue that cannot verify keeps
+>   everything and reports `verified => false`, loudly and into the audit detail. A
+>   **provision** still rolls back in full: it created the branch row, the role and the file in
+>   the same run, so undoing all three destroys nothing that existed before it. The rule is
+>   therefore not "tolerate flaky infrastructure" but "never destroy the only copy of a live
+>   secret", and §9's guarantee that an unusable JSON is never shipped *silently* still holds —
+>   an unverified one is announced, not hidden.
+> - **Supabase's pooler caches roles by username.** `DROP ROLE` followed by `CREATE ROLE` under
+>   the **same name** serves `invalid role OID` for **~126 seconds**, and a rotation on a role
+>   with warm connections can lag as well (an isolated probe reported "instant"; the test suite
+>   disagreed, which is why the retry covers both re-issue paths). `--verify-wait` sets the
+>   budget, default 180s. The window is invisible in the field, since delivery is a fresh
+>   AppImage that takes far longer than two minutes to reach a device.
+> - **This bullet's "revoke `LOGIN`" is not sufficient on its own.** Postgres checks `LOGIN`
+>   only at connect time, and Supavisor satisfies new clients from its warm pool without
+>   re-authenticating them — so a branch disabled by `ALTER ROLE ... NOLOGIN` alone was measured
+>   **still connecting 90 seconds later**. A disable that does not disable is worse than no
+>   feature at all, because the operator believes a suspect credential is dead while it is still
+>   serving. `BranchRole::setLogin()` therefore terminates the role's backends as well, making
+>   cut-off immediate (0s, with four warm connections). `setPassword()` does the same, for the
+>   same reason — a rotation is often performed *because* the old credential is suspect, and a
+>   warm pooled session would otherwise keep it working. Nothing about the till changes: a
+>   dropped connection is a failed sync, and a failed sync never stops it selling (§4).
+> - **"Delete" is `branch:revoke`.** It deletes a *role*; the branch row, its sales and its
+>   ledger are untouched, and deleting them is forbidden outright. `branch:delete` invites
+>   exactly the wrong reading at exactly the wrong hour, and a confirmation prompt is a weak
+>   defence against a name that is already misleading. The audit action stays `branch.delete`.
+> - **Disable is `LOGIN`-only and does not touch `branches.disabled_at`.** That column is
+>   business state, pulled down to every till. A credential disabled because it may have leaked
+>   is not a branch that has closed, and conflating them would make re-enabling a credential
+>   silently reopen a branch — a business-visible write as a side effect of a security action.
+>
+> One addition beyond the roadmap: **`branch:list`**, because every command here targets
+> `--branch`/`--branch-code` and there was nowhere to read those values from. It joins
+> `branches` against `pg_roles`, which is what makes "this branch has no role" and "this
+> branch's role cannot log in" distinguishable. It is not §14's monitor: it reports what the
+> console did, not what a branch is doing.
+>
+> **What was issued is now recorded.** `credential_issuance` in `evitan_console` (proposed for
+> M3 in `docs/evitan-plus-erds.md` §3) stores a **fingerprint** — a deterministic sha256, never
+> the password — plus a `generation` counter and `superseded_at`. It had to be built now rather
+> than later: generations could be reconstructed from the audit trail, but a fingerprint cannot
+> be, because the secret is gone the moment the command exits.
 
 ### 8.4 Migrate schemas on updates
 - The console holds the Postgres migration set and can apply pending migrations to **one or

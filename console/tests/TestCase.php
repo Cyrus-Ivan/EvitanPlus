@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Facade;
 use Illuminate\Support\Str;
+use Provisioning\Support\BranchConnection;
 use Provisioning\Support\SchemaConnection;
 use Provisioning\Support\SchemaName;
 use Throwable;
@@ -126,8 +127,30 @@ abstract class TestCase extends BaseTestCase
             }
         }
 
-        // Release the class's session so the next class starts with a free
-        // slot in the pooler.
+        // Release every session this class opened, so the next class starts
+        // with free slots in the pooler.
+        //
+        // Purging by name is not belt-and-braces: Application::flush() drops
+        // the container bindings but does not close the PDOs behind the
+        // connections a class pinned, and Supavisor frees session-mode clients
+        // lazily. A class that pinned a business schema, the console schema and
+        // a branch role therefore leaked three of the pooler's fifteen slots
+        // into the next class — which is exactly how the M3 suite first failed:
+        // every later class died with EMAXCONNSESSION while the classes that
+        // caused it all passed.
+        foreach ([
+            'pgsql_admin',
+            SchemaConnection::NAME,
+            SchemaConnection::CONSOLE_NAME,
+            BranchConnection::NAME,
+        ] as $connection) {
+            try {
+                DB::purge($connection);
+            } catch (Throwable) {
+                // A connection this class never opened; nothing to release.
+            }
+        }
+
         self::$sharedPdo = null;
 
         if (self::$sharedApp !== null) {

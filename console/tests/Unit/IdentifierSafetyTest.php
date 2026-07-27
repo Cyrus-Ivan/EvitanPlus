@@ -140,4 +140,62 @@ class IdentifierSafetyTest extends TestCase
 
         BranchSecret::generate(8);
     }
+
+    /**
+     * M3's commands start from a schema name and still have to put the business
+     * UUID in the credentials JSON, so the derivation has to run backwards. The
+     * round trip is the guarantee: there is no registry to fall back on if it
+     * ever stopped agreeing with itself.
+     */
+    public function test_a_business_uuid_survives_the_round_trip_to_a_schema_name(): void
+    {
+        $uuid = '0198f4c2-3a1b-7c4d-8e9f-0a1b2c3d4e5f';
+
+        $schema = SchemaName::forBusiness($uuid);
+
+        $this->assertSame('biz_0198f4c23a1b7c4d8e9f0a1b2c3d4e5f', $schema);
+        $this->assertSame($uuid, SchemaName::toBusinessUuid($schema));
+
+        // Case and dashes are normalised on the way in, so the way back is
+        // canonical rather than a copy of whatever was typed.
+        $this->assertSame($uuid, SchemaName::toBusinessUuid(SchemaName::forBusiness(strtoupper($uuid))));
+    }
+
+    public function test_a_schema_not_derived_from_a_uuid_has_no_business_uuid(): void
+    {
+        // Valid to interpolate, but not something forBusiness ever produced —
+        // the test schemas are exactly this shape.
+        $this->expectException(InvalidArgumentException::class);
+
+        SchemaName::toBusinessUuid('biz_test_abcdef123456');
+    }
+
+    /**
+     * The fingerprint is compared, never verified: M5 computes it on the device
+     * and M10 compares the two. Determinism is therefore the whole contract, and
+     * a well-meant switch to a salted hash would break it silently.
+     */
+    public function test_a_fingerprint_is_deterministic_and_reveals_nothing(): void
+    {
+        $secret = BranchSecret::generate();
+
+        $this->assertSame(BranchSecret::fingerprint($secret), BranchSecret::fingerprint($secret));
+        $this->assertNotSame(BranchSecret::fingerprint(BranchSecret::generate()), BranchSecret::fingerprint($secret));
+
+        $fingerprint = BranchSecret::fingerprint($secret);
+
+        $this->assertStringStartsWith('sha256:', $fingerprint);
+        $this->assertStringNotContainsString($secret, $fingerprint);
+
+        // Domain-separated, so it cannot collide with a bare sha256 of the same
+        // string computed somewhere else for some other purpose.
+        $this->assertNotSame('sha256:'.hash('sha256', $secret), $fingerprint);
+    }
+
+    public function test_an_empty_secret_is_never_fingerprinted(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+
+        BranchSecret::fingerprint('');
+    }
 }

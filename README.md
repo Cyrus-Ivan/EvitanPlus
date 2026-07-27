@@ -110,6 +110,15 @@ php console/artisan business:provision
 php console/artisan schema:migrate --business=<business-uuid>
 php console/artisan schema:version --business=<business-uuid>
 
+# Branch lifecycle. Every one of these targets a business with --business=<uuid>
+# or --schema=<name>, and a branch with --branch=<uuid> or --branch-code=<code>.
+php console/artisan branch:list    --business=<business-uuid>
+php console/artisan branch:provision --business=<business-uuid>   # + role + JSON
+php console/artisan branch:rotate  --business=<business-uuid> --branch-code=MNL
+php console/artisan branch:disable --business=<business-uuid> --branch-code=MNL
+php console/artisan branch:enable  --business=<business-uuid> --branch-code=MNL
+php console/artisan branch:revoke  --business=<business-uuid> --branch-code=MNL
+
 # Console test suite. Needs the credentials above and exercises a real
 # Postgres; skips itself cleanly without them. Deliberately NOT part of
 # `composer verify`, which must stay runnable offline.
@@ -127,6 +136,32 @@ every build). That file is the **only** copy of the branch's database password �
 the console never prints it. Treat it as one-time: deliver it, import it in the
 setup wizard, then remove it. Prefer the interactive password prompt over
 `--owner-password`, which is visible in `ps` and shell history.
+
+### Branch credentials
+
+`branch:provision` and `branch:rotate` each emit a **new** JSON; the previous
+one is dead the moment they succeed. Delivery is a **fresh AppImage plus the new
+JSON**, re-imported through the setup wizard — never an in-place password swap.
+
+Two commands look similar and are not:
+
+- **`branch:disable`** revokes the role's `LOGIN`. Reversible in one statement
+  with `branch:enable`, grants preserved, and it does **not** touch
+  `branches.disabled_at` — a credential you suspect has leaked is not a branch
+  that has closed. While disabled the till keeps selling offline and its outbox
+  flushes when you re-enable it.
+- **`branch:revoke`** drops the Postgres role. The branch row, its sales and its
+  history stay; only the login goes. The way back is `branch:rotate --recreate`.
+
+**A re-created role is unusable for about two minutes.** Supabase's pooler keys
+warm connections by username, so dropping a role and creating one with the same
+name leaves it serving `invalid role OID` until the cache expires. The credential
+is valid throughout. `branch:rotate` waits (`--verify-wait`, default 180s) and,
+if the wait runs out, **keeps everything and reports `Verified: not yet`**. That
+is deliberate: by then the role already holds the new password and the JSON is
+its only copy, so discarding it would strand the branch permanently. Deliver it,
+or re-run to confirm. `branch:provision` still rolls back in full on any failure
+— it created everything in that run, so undoing it destroys nothing.
 
 ## Common commands
 

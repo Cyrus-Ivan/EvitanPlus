@@ -148,10 +148,89 @@ that a `pgsql` client can use to connect and read the seeded data.
 
 ---
 
-# Phase M3 — Provision a branch & credential lifecycle
+# Phase M3 — Provision a branch & credential lifecycle ✅
 
 ## Goal
 Add branches to an existing business and manage branch credentials.
+
+> **Done.** Six commands — `branch:provision`, `branch:rotate` (with
+> `--recreate`), `branch:disable`, `branch:enable`, `branch:revoke` and
+> `branch:list` — over a shared `BranchIssuer`, plus a `credential_issuance`
+> record in `evitan_console`. Scoping calls and findings:
+>
+> - **The schema is never in the undo stack.** This is the one line that
+>   separates M3 from M2. `BusinessProvisioner` can compensate with
+>   `DROP SCHEMA ... CASCADE` because it created the schema in the same run;
+>   everything in M3 writes into a schema holding other branches' sales history.
+>   So the undo is exactly three objects — one `branches` row keyed by a UUID
+>   minted seconds earlier, one role, one file — and a failed cleanup prints
+>   `BranchRole::dropRoleSql()`, **not** `cleanupSql()`, which starts with a
+>   `DROP SCHEMA` that would be catastrophic here. `branches` carries no
+>   immutability trigger (those cover the seven history tables), so the row
+>   delete is permitted; it is the only DELETE in the console that touches a
+>   business schema.
+> - **Re-create folded into rotate**, as `branch:rotate --recreate`. They are
+>   one act differing only in whether the role exists, and the flag is required
+>   in **both** directions — rotating a missing role is refused without it, and
+>   re-creating a live one is refused with it — so a rotation can never silently
+>   become a re-creation. The audit still distinguishes `branch.rotate` from
+>   `branch.recreate`.
+> - **A rotated password cannot be rolled back.** The previous secret was never
+>   stored (§9), so ordering is the whole mitigation: the credentials file is
+>   reserved *before* the `ALTER ROLE`. A failure past that point reports
+>   `cleanup_failed` and says plainly that the password HAS changed and that
+>   re-running is safe, rather than implying a rollback that did not happen.
+> - **A re-issue never rolls back on a failed verification** — the correction
+>   that mattered most, and it was caught by the tests rather than by review.
+>   Verification is the last step, and by then the role already holds a secret
+>   that exists in exactly one place: the credentials file this run reserved.
+>   The original code rolled back on a failed verify, which *discarded that
+>   file* — leaving a branch whose password had genuinely changed with no way to
+>   ever learn the new one. So a failed re-issue keeps everything and reports
+>   `verified => false`, loudly and into the audit detail. A **provision** still
+>   rolls back in full: it created the branch row, the role and the file in the
+>   same run, so undoing all three destroys nothing that existed before.
+> - **Supabase's pooler caches roles by username**, which produced two findings
+>   the design had to absorb. `DROP ROLE` followed by `CREATE ROLE` under the
+>   **same name** yields `invalid role OID` for **~126 seconds**, and a rotation
+>   on a role with warm connections can lag too (the isolated probe said
+>   "instant"; the suite disagreed) — hence the retry budget `--verify-wait`,
+>   default 180s, on both re-issue paths. See `PoolerLag` for the timing table
+>   and the three error wordings.
+> - **`NOLOGIN` on its own does not disable anything**, which is the finding
+>   with the sharpest edge: Supavisor satisfies new clients from its warm pool
+>   without re-authenticating, so a "disabled" branch was measured **still
+>   connecting after 90 seconds**. A disable that does not disable is worse than
+>   no feature — the operator believes a suspect credential is dead while it is
+>   still serving. `BranchRole::setLogin()` therefore also terminates the role's
+>   backends, which makes cut-off immediate (measured at 0s with four warm
+>   connections). `setPassword()` does the same, for the same reason — a
+>   rotation is often performed *because* the old credential is suspect, and a
+>   warm pooled session would keep it working. The till is unaffected either
+>   way: a dropped connection is a failed sync, and a failed sync never stops it
+>   selling.
+> - **`branch:revoke`, not `branch:delete`** — a deliberate deviation from
+>   §8.3's word. It deletes a *role*; the branch row, its sales and its ledger
+>   are untouched and could not be deleted from here. `branch:delete` invites
+>   exactly the wrong reading at exactly the wrong hour. The audit action stays
+>   `branch.delete`.
+> - **Disable is `LOGIN`-only.** `branches.disabled_at` is business state pulled
+>   down to every till; a credential disabled on suspicion of a leak is not a
+>   branch that has closed, and conflating them would make re-enabling a
+>   credential silently reopen a branch. Left for a future closure command.
+> - **`credential_issuance` was built** (proposed for M3 in
+>   `docs/evitan-plus-erds.md` §3). `generation` and `superseded_at` could be
+>   reconstructed from `provisioning_audit` later; the password **fingerprint
+>   could not** — the secret is gone when the command exits. A partial unique
+>   index enforces at most one live credential per branch, and a narrowed
+>   append-only trigger allows `superseded_at` to move exactly once.
+>   `provisioning_audit` needed no migration: its three outcomes already cover
+>   M3.
+> - **`branch:list` was added** though the task list does not name it: every
+>   other command targets `--branch`/`--branch-code`, and there was nowhere to
+>   read those from. It joins `branches` with `pg_roles`, which is what makes
+>   "no role" and "disabled" distinguishable at all. It is not M10's monitor —
+>   it reports what the console did, not what a branch is doing.
 
 ## Tasks
 - **Provision branch**: insert a `branches` row (unique branch code) + create its role + emit

@@ -8,6 +8,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use Provisioning\Support\BranchGrants;
 use Provisioning\Support\SchemaConnection;
 use Provisioning\Support\SchemaName;
+use Tests\Concerns\AssertsBranchGrants;
 use Tests\Concerns\ProvisionsBusiness;
 use Tests\TestCase;
 use Throwable;
@@ -29,6 +30,7 @@ use Throwable;
  */
 class BranchRoleGrantsTest extends TestCase
 {
+    use AssertsBranchGrants;
     use ProvisionsBusiness;
 
     /** A second business, to prove cross-schema isolation. */
@@ -260,50 +262,7 @@ class BranchRoleGrantsTest extends TestCase
      */
     public function test_the_live_grants_match_the_documented_matrix(): void
     {
-        $rows = DB::connection('pgsql_admin')->select(
-            'select table_name, privilege_type
-             from information_schema.table_privileges
-             where grantee = ? and table_schema = ?',
-            [$this->roleName(), $this->schema()],
-        );
-
-        $actual = [];
-
-        foreach ($rows as $row) {
-            $actual[$row->privilege_type][] = $row->table_name;
-        }
-
-        foreach (['SELECT' => BranchGrants::SELECT,
-            'INSERT' => BranchGrants::INSERT,
-            'UPDATE' => BranchGrants::UPDATE] as $privilege => $expected) {
-            $granted = $actual[$privilege] ?? [];
-            sort($granted);
-            $expected = array_values($expected);
-            sort($expected);
-
-            $this->assertSame($expected, $granted, "The live {$privilege} grants differ from BranchGrants.");
-        }
-
-        // Nothing beyond the three privileges above is granted at table level.
-        $this->assertSame(
-            ['INSERT', 'SELECT', 'UPDATE'],
-            collect(array_keys($actual))->sort()->values()->all(),
-        );
-
-        // Column-level UPDATE is exactly the documented resolution columns.
-        foreach (BranchGrants::UPDATE_COLUMNS as $table => $columns) {
-            $granted = collect(DB::connection('pgsql_admin')->select(
-                'select column_name
-                 from information_schema.column_privileges
-                 where grantee = ? and table_schema = ? and table_name = ? and privilege_type = \'UPDATE\'',
-                [$this->roleName(), $this->schema(), $table],
-            ))->pluck('column_name')->sort()->values()->all();
-
-            $expected = $columns;
-            sort($expected);
-
-            $this->assertSame($expected, $granted, "Column UPDATE grants on {$table} differ from BranchGrants.");
-        }
+        $this->assertGrantsMatchMatrix($this->roleName(), $this->schema());
     }
 
     /**

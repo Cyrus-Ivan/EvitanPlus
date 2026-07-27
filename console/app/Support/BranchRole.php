@@ -4,6 +4,7 @@ namespace Provisioning\Support;
 
 use Illuminate\Database\Connection;
 use Illuminate\Support\Facades\DB;
+use Throwable;
 
 /**
  * Creates and manages a branch's Postgres login role (§7).
@@ -98,6 +99,112 @@ final class BranchRole
     }
 
     /**
+     * Replace the role's password (§8.3 rotate).
+     *
+     * There is no "old password" parameter and no way to put one back: the
+     * previous secret was written to one credentials file and never stored
+     * anywhere the console can read. That is the design (§9), and it makes this
+     * a one-way door — BranchIssuer reserves the new credentials file BEFORE
+     * calling this, so the window in which a password can change without a file
+     * to carry it is as close to zero as it can be made.
+     *
+     * Existing sessions are terminated, for the same reason disabling does it
+     * (see setLogin). Postgres checks the password at connect time only, and
+     * the pooler keeps warm connections keyed by username — so without this a
+     * client holding the OLD password keeps working through an already-open
+     * pooled session. Rotation is often performed precisely because the old
+     * credential is suspect, and leaving it usable would defeat the point.
+     *
+     * The disruption is nil: the till keeps selling regardless, and a dropped
+     * sync cycle simply retries (§4).
+     */
+    public static function setPassword(string $role, string $password): void
+    {
+        $role = RoleName::validate($role);
+        $secret = BranchSecret::quote($password);
+
+        self::admin()->statement("alter role \"{$role}\" with password {$secret}");
+
+        self::terminateSessions($role);
+    }
+
+    /**
+     * Revoke / grant LOGIN (§8.3 disable-enable).
+     *
+     * The whole of "disable" — grants are left exactly as they are. A role that
+     * cannot log in cannot use them, and leaving them intact means enabling is
+     * a single statement rather than a re-derivation of the privilege matrix
+     * that could silently differ from what the branch had before.
+     *
+     * Deliberately NOT touched: branches.disabled_at. That column is business
+     * state, pulled down to every till; a credential disabled because it may
+     * have leaked is not a branch that has closed, and conflating the two would
+     * make re-enabling a credential silently reopen a branch.
+     *
+     * Idempotent: ALTER ROLE ... NOLOGIN on an already-disabled role is a
+     * no-op, so callers can report the resulting state rather than guarding.
+     *
+     * ## Disabling also terminates the role's sessions, and must
+     *
+     * Postgres checks LOGIN only at connect time, so NOLOGIN alone leaves
+     * established sessions running. Behind Supabase's pooler that is not the
+     * mild caveat it sounds like: Supavisor keeps warm server connections keyed
+     * by username and satisfies NEW clients from that pool without
+     * re-authenticating, so a disabled branch was measured still connecting
+     * more than 90 seconds later. A "disable" that does not disable is worse
+     * than no feature at all — the operator believes a suspect credential is
+     * dead while it is still serving.
+     *
+     * Terminating the backends empties that pool and forces the next client
+     * through authentication, where NOLOGIN refuses it. The till is unaffected
+     * either way: a dropped connection is a failed sync, and a failed sync
+     * never stops it selling (§4).
+     */
+    public static function setLogin(string $role, bool $canLogin): void
+    {
+        $role = RoleName::validate($role);
+
+        self::admin()->statement(
+            "alter role \"{$role}\" with ".($canLogin ? 'login' : 'nologin')
+        );
+
+        if (! $canLogin) {
+            self::terminateSessions($role);
+        }
+    }
+
+    /**
+     * Close every open session belonging to a role.
+     *
+     * Best-effort by design: the admin is not a superuser, and if a future
+     * Supabase change withdraws this privilege the disable itself has still
+     * happened. Reporting a failure here would suggest the role is still
+     * enabled, which is the opposite of the truth.
+     */
+    public static function terminateSessions(string $role): void
+    {
+        try {
+            self::admin()->select(
+                'select pg_terminate_backend(pid) from pg_stat_activity where usename = ?',
+                [RoleName::validate($role)],
+            );
+        } catch (Throwable) {
+            // Deliberately swallowed; see the docblock.
+        }
+    }
+
+    /** Null when the role does not exist, so callers can tell that apart from disabled. */
+    public static function canLogin(string $role): ?bool
+    {
+        $row = self::admin()->selectOne(
+            'select rolcanlogin from pg_roles where rolname = ?',
+            [RoleName::validate($role)],
+        );
+
+        return $row === null ? null : (bool) $row->rolcanlogin;
+    }
+
+    /**
      * Drop the role, revoking its grants first when its schema still stands.
      *
      * Postgres refuses to drop a role while any ACL entry references it, so the
@@ -145,6 +252,28 @@ final class BranchRole
     {
         return [
             "drop schema if exists \"{$schema}\" cascade;",
+            "drop role if exists \"{$role}\";",
+        ];
+    }
+
+    /**
+     * The statements that remove ONE ROLE and nothing else.
+     *
+     * Separate from cleanupSql() because that one starts with
+     * `drop schema ... cascade`, which is correct for a business provision that
+     * created the schema in the same run and catastrophic for anything in M3,
+     * where the schema holds other branches' sales history. Handing an operator
+     * the wrong list at the moment something has already gone wrong is how a
+     * recovery becomes an incident, so the two lists are different methods
+     * rather than one with a flag.
+     *
+     * @return list<string>
+     */
+    public static function dropRoleSql(string $role, string $schema): array
+    {
+        return [
+            "revoke all privileges on all tables in schema \"{$schema}\" from \"{$role}\";",
+            "revoke all privileges on schema \"{$schema}\" from \"{$role}\";",
             "drop role if exists \"{$role}\";",
         ];
     }

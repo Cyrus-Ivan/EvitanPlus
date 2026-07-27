@@ -75,34 +75,9 @@ final class ProvisioningAudit
             'branch_id' => $target['branch_id'] ?? null,
             'branch_code' => $target['branch_code'] ?? null,
             'role_name' => $target['role_name'] ?? null,
-            'actor' => $this->resolveActor(),
+            'actor' => OperatorIdentity::resolve($this->actor),
             'detail' => $detail === [] ? null : json_encode($detail, JSON_THROW_ON_ERROR),
             'created_at' => now(),
         ]);
-    }
-
-    /**
-     * Who performed the action.
-     *
-     * There are no accounts in the console — it is a developer CLI — so the
-     * operator is identified by OS user and host, which is what actually
-     * distinguishes one developer's laptop from another's. --actor or
-     * CONSOLE_ACTOR override it for CI or a shared jump box.
-     */
-    private function resolveActor(): string
-    {
-        foreach ([$this->actor, env('CONSOLE_ACTOR')] as $override) {
-            if (is_string($override) && trim($override) !== '') {
-                return trim($override);
-            }
-        }
-
-        $user = get_current_user();
-
-        if ($user === '') {
-            $user = (string) (getenv('USER') ?: 'unknown');
-        }
-
-        return $user.'@'.(gethostname() ?: 'unknown-host');
     }
 }

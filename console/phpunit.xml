@@ -1,15 +1,25 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    Provisioning Console test suite.
+    Provisioning Console test suite, in two halves.
 
-    Unlike the POS app's suite, these tests exercise a REAL Postgres: the
-    schema they assert on is built by Postgres DDL, so a stand-in would prove
-    nothing about the triggers and partial indexes that carry the invariants.
-    Tests::setUp() skips the whole suite when CONSOLE_DB_PASSWORD is absent, so
-    a clean clone stays green — see tests/TestCase.php.
+    Feature exercises a REAL Postgres: the schema it asserts on is built by
+    Postgres DDL, so a stand-in would prove nothing about the triggers and
+    partial indexes that carry the invariants. Tests\TestCase::setUp() skips it
+    when CONSOLE_DB_PASSWORD is absent, so a clean clone stays green.
+
+    Unit needs nothing. It boots the console application but opens no
+    connection, which is what lets the endpoint and command logic be pinned on
+    every push instead of only on a developer machine with a live project.
+
+    CI runs the Unit suite with the "fail on skipped" flag. That flag is the
+    honesty guard: a credential-gated test dropped into tests/Unit would
+    otherwise shrink the CI suite silently, and a run of 165 skipped tests still
+    exits 0. Never run the bare suite in CI for that reason.
 
     Deliberately NOT part of `composer verify` at the repo root: that chain has
-    to stay runnable offline and without admin credentials.
+    to stay runnable offline and without admin credentials, and wiring this in
+    would quietly make `(cd console && composer install)` mandatory for everyone
+    working on the POS app. `composer verify:console` runs the Unit half.
 -->
 <phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
@@ -17,8 +27,13 @@
          colors="true"
 >
     <testsuites>
-        <testsuite name="Console">
-            <directory>tests</directory>
+        <!-- Credential-free. Runs on a fresh clone and in CI. -->
+        <testsuite name="Unit">
+            <directory>tests/Unit</directory>
+        </testsuite>
+        <!-- Needs live admin Postgres credentials in console/.env. -->
+        <testsuite name="Feature">
+            <directory>tests/Feature</directory>
         </testsuite>
     </testsuites>
     <source>

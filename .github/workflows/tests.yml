@@ -22,6 +22,10 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: 8.4
+          # pdo_pgsql is required by console/composer.json. Without it the
+          # console install fails on platform requirements, which reads as an
+          # unrelated dependency error rather than a missing extension.
+          extensions: pdo_pgsql
           tools: composer:v2
           coverage: xdebug
 
@@ -51,3 +55,15 @@ jobs:
 
       - name: Tests
         run: ./vendor/bin/phpunit
+
+      # The provisioning console is a separate app with its own dependency tree.
+      # Only its credential-free half runs here; the Feature half needs a live
+      # Supabase project and stays a developer-machine gate.
+      - name: Install Console Dependencies
+        run: composer install --working-dir=console --no-interaction --prefer-dist --optimize-autoloader
+
+      # --fail-on-skipped, not politeness: Tests\TestCase skips itself without
+      # credentials, so a suite that silently became credential-gated would exit
+      # 0 having run nothing. Green here has to mean the tests executed.
+      - name: Console Tests (credential-free)
+        run: console/vendor/bin/phpunit -c console/phpunit.xml --testsuite=Unit --fail-on-skipped

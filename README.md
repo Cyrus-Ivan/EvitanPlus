@@ -124,10 +124,12 @@ php console/artisan branch:disable --business=<business-uuid> --branch-code=MNL
 php console/artisan branch:enable  --business=<business-uuid> --branch-code=MNL
 php console/artisan branch:revoke  --business=<business-uuid> --branch-code=MNL
 
-# Console test suite. Needs the credentials above and exercises a real
-# Postgres; skips itself cleanly without them. Deliberately NOT part of
-# `composer verify`, which must stay runnable offline.
-(cd console && composer test)
+# Console test suite, in two halves. The Feature half needs the credentials
+# above and exercises a real Postgres; it skips itself cleanly without them, and
+# is deliberately NOT part of `composer verify`, which must stay runnable
+# offline. The Unit half needs nothing and is the half CI runs.
+(cd console && composer test)          # both halves
+composer verify:console                # the credential-free half only
 ```
 
 **Two endpoints, one Supabase project.** They are not interchangeable:

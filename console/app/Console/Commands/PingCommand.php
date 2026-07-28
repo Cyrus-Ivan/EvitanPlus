@@ -29,6 +29,14 @@ use Throwable;
  * nineteen migrations, a seed, a role and the whole grant matrix had been
  * created — and then rolled back. That check still exists and still gates the
  * JSON; this command just makes the same answer available before the work.
+ *
+ * ## Nothing here short-circuits
+ *
+ * A failed admin connection, a failed DDL probe and an unreachable branch
+ * endpoint are three independent misconfigurations, and a fresh project
+ * routinely has more than one. Each is reported in full and each contributes to
+ * the exit code, so one run gives one complete diagnosis rather than uncovering
+ * the next problem only after the previous one is fixed.
  */
 class PingCommand extends Command
 {
@@ -90,6 +98,14 @@ class PingCommand extends Command
                 'The direct host db.<project-ref>.supabase.co is IPv6-only without the IPv4 add-on; use the session pooler host instead.',
                 'Supabase pooler usernames are "postgres.<project-ref>", not plain "postgres".',
             ]);
+
+            // Report the branch endpoint anyway, for the same reason the DDL
+            // probe no longer short-circuits: an operator setting up a fresh
+            // project usually has both values wrong at once, and one diagnosis
+            // per run is what this command exists to stop. Nothing below needs
+            // the admin CONNECTION — only the admin config array — so there is
+            // no reason for a failed connect to hide it.
+            $this->reportBranchEndpoint();
 
             return self::FAILURE;
         }

@@ -160,17 +160,26 @@ class BusinessProvisionTest extends TestCase
         // about to hand back. M5's importer must assign this as-is.
         $this->assertNull($document['connection']['search_path']);
 
-        // Branches get the TRANSACTION pooler; the console keeps the session
-        // pooler. Asserting both halves, because the failure that matters is not
-        // "the port is wrong" but "a branch was handed the console's endpoint".
-        $this->assertSame(
-            SupabaseEndpoint::TRANSACTION_POOLER_PORT,
-            (int) $document['connection']['port'],
-        );
-        $this->assertNotSame(
-            (int) config('database.connections.pgsql_admin.port'),
-            (int) $document['connection']['port'],
-            'A branch must never be issued the console admin session endpoint.',
+        // The JSON carries the endpoint the console would ISSUE, not the one it
+        // administers through. Deriving the expectation from forBranch() is the
+        // point: what this proves is that document() was built from the branch
+        // endpoint rather than from pgsql_admin — the exact regression M3.1
+        // fixed. WHICH port that is, and that it is never the admin's, is
+        // settled deterministically in Tests\Unit\SupabaseEndpointTest, where
+        // every configuration is reachable in one run.
+        $endpoint = SupabaseEndpoint::forBranch();
+
+        $this->assertSame($endpoint->host, $document['connection']['host']);
+        $this->assertSame($endpoint->port, (int) $document['connection']['port']);
+        $this->assertSame($endpoint->database, $document['connection']['database']);
+        $this->assertSame($endpoint->sslmode, $document['connection']['sslmode']);
+
+        // TLS must never silently downgrade. config/database.php warns that
+        // 'prefer' does exactly that, and nothing enforced it.
+        $this->assertContains(
+            $document['connection']['sslmode'],
+            ['require', 'verify-ca', 'verify-full'],
+            'A branch credential must not ship a downgradeable TLS mode.',
         );
         $this->assertSame(1, $document['versions']['schema_version']);
         $this->assertSame('1.0.0', $document['versions']['min_app_version']);
@@ -182,9 +191,15 @@ class BusinessProvisionTest extends TestCase
         );
 
         // The bare role and the login name are both present because a pooler
-        // endpoint makes them differ.
+        // endpoint makes them differ. Asserting the EXACT login name, not a
+        // prefix: assertStringStartsWith passed with or without the pooler
+        // suffix, and a missing suffix is the one thing that can be wrong here —
+        // it authenticates nowhere.
         $this->assertSame($this->roleName(), $document['role']['name']);
-        $this->assertStringStartsWith($this->roleName(), (string) $document['connection']['username']);
+        $this->assertSame(
+            $endpoint->loginName($this->roleName()),
+            $document['connection']['username'],
+        );
 
         // The ids in the JSON must be the rows that exist.
         $business = SchemaConnection::pin($this->schema());
@@ -192,6 +207,41 @@ class BusinessProvisionTest extends TestCase
             $document['branch']['id'],
             (string) $business->selectOne('select id from branches')->id,
         );
+    }
+
+    /**
+     * The pooling-mode claim, against whatever project this suite is pointed at.
+     *
+     * States its precondition instead of asserting a falsehood. An earlier
+     * version asserted unconditionally that the branch port differs from the
+     * admin's — which is wrong for a legitimate configuration: with no Supavisor
+     * in the path (a direct db.<ref>.supabase.co host, or a local Postgres)
+     * there is no 6543 to move to and forBranch() inherits the admin port BY
+     * DESIGN, so the assertion failed a correct setup.
+     *
+     * Both branches of that are proven deterministically in
+     * Tests\Unit\SupabaseEndpointTest. This one exists to confirm the project
+     * the developer is actually provisioning against is configured the way the
+     * initiative intends.
+     */
+    public function test_a_branch_is_never_issued_the_console_admin_session_endpoint(): void
+    {
+        $endpoint = SupabaseEndpoint::forBranch();
+
+        if ($endpoint->projectRef === null) {
+            $this->markTestSkipped(
+                'No pooler tenant on this project; the branch endpoint legitimately inherits the admin port.'
+            );
+        }
+
+        if (trim((string) env('CONSOLE_BRANCH_DB_PORT')) !== '') {
+            $this->markTestSkipped('CONSOLE_BRANCH_DB_PORT is set explicitly; the operator chose this port.');
+        }
+
+        $port = (int) $this->provisioned()['connection']['port'];
+
+        $this->assertSame(SupabaseEndpoint::TRANSACTION_POOLER_PORT, $port);
+        $this->assertNotSame((int) config('database.connections.pgsql_admin.port'), $port);
     }
 
     public function test_the_credentials_json_never_carries_admin_credentials(): void

@@ -100,11 +100,26 @@ final class SupabaseEndpoint
         );
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The admin connection this endpoint derives its identity from.
+     *
+     * Refuses rather than falling back. Every read below is `?? default`-guarded,
+     * so without this a console with no `pgsql_admin` would quietly produce an
+     * endpoint on host `''` — and ship it inside a credentials JSON, where the
+     * operator would meet it much later as an opaque connect failure. Same rule
+     * the port parser follows, and the same rule RoleName and SchemaName follow.
+     *
+     * @return array<string, mixed>
+     */
     private static function adminConfig(): array
     {
-        /** @var array<string, mixed> $config */
         $config = config('database.connections.pgsql_admin');
+
+        if (! is_array($config) || $config === []) {
+            throw new InvalidArgumentException(
+                'No [pgsql_admin] connection is configured; a branch endpoint is derived from it.'
+            );
+        }
 
         return $config;
     }

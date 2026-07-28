@@ -41,7 +41,8 @@
         }
     },
     "scripts-descriptions": {
-        "verify": "Run every release gate, fail-fast, cheapest first: composer audit, pint, phpstan, backend tests, tsc, eslint, prettier, Playwright e2e. The audit step needs network; abandoned packages are ignored because nativephp/electron and nativephp/laravel are deliberate pins."
+        "verify": "Run every release gate, fail-fast, cheapest first: composer audit, pint, phpstan, backend tests, tsc, eslint, prettier, Playwright e2e. The audit step needs network; abandoned packages are ignored because nativephp/electron and nativephp/laravel are deliberate pins.",
+        "verify:console": "Run the provisioning console's credential-free tests (the half CI also runs). Needs (cd console && composer install) first, which is why this is separate from `verify` rather than part of it. The console's Feature half needs a live Supabase project: (cd console && composer test)."
     },
     "scripts": {
         "post-autoload-dump": [
@@ -78,6 +79,9 @@
             "npm run lint:check",
             "npm run format:check",
             "npm run e2e"
+        ],
+        "verify:console": [
+            "console/vendor/bin/phpunit -c console/phpunit.xml --testsuite=Unit --fail-on-skipped"
         ]
     },
     "extra": {

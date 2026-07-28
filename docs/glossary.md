@@ -1,7 +1,7 @@
 # Evitan Plus — Glossary
 
 > **This document is normative.** Where it and any prose in `MULTIBRANCH-BRAINSTORM.md`,
-> `MULTIBRANCH-ROADMAP.md`, `BRAINSTORM.md`, `ROADMAP.md` or `docs/evitan-plus-erds.md`
+> `MULTIBRANCH-ROADMAP.md`, `BRAINSTORM.md` or `ROADMAP.md`
 > disagree on what a word means, **this document wins** — the same convention those specs
 > already use for their "As built" annotations.
 >
@@ -114,7 +114,7 @@ correct when a branch gains a second till.
 ### `instance`
 Reserved for the **local SQLite singleton table** holding branch identity (business id, schema
 name, branch id, branch code, versions, `hydrated_at`). Proposed for M5.
-*Anchor:* `docs/evitan-plus-erds.md` §2.
+*Anchor:* `MULTIBRANCH-BRAINSTORM.md` §11.6.
 ✗ **Not** a synonym for a device or a business. "App instance" and "business instance" are
 retired; say *branch device* or *business*.
 
@@ -150,15 +150,16 @@ The **branch device's SQLite database** — branch-scoped for everything except 
 mirrored business-wide so any user can log in at any branch offline. It is the **only store
 that can be thrown away**: everything in it is either re-derivable from Postgres or already
 pushed there.
-*Anchor:* `database/nativephp.sqlite`; `docs/evitan-plus-erds.md` §2.
+*Anchor:* `database/nativephp.sqlite`; `database/migrations/` (the mirrored tables);
+`MULTIBRANCH-BRAINSTORM.md` §11.6 (the sync tables).
 
 ### Mirrored (of a table)
 A table whose **structure must agree** on both sides, enforced by the parity guard. Exactly 14
 tables today.
 *Anchor:* `console/tests/Feature/SchemaParityTest.php` `MIRRORED`.
-✗ **Not** "readable", and ✗ **not** "pulled". The three sets are different sizes and different
-memberships — see below. `MULTIBRANCH-BRAINSTORM.md`'s old phrase "mirrored/append tables" is
-retired precisely because it blurred them.
+✗ **Not** "readable", ✗ **not** "pulled", and ✗ **not** "local-only". The four sets are different
+sizes and different memberships — see below. `MULTIBRANCH-BRAINSTORM.md`'s old phrase
+"mirrored/append tables" is retired precisely because it blurred them.
 
 ### Readable (of a table)
 A table the **branch role may `SELECT`**. Effectively the whole business schema minus Laravel's
@@ -176,6 +177,20 @@ A table written **only** on the till, append-only, pushed **insert-only** keyed 
 `transactions`, `transaction_items`, `sale_returns`, `sale_return_items`, `inventory_ledger`
 (sale/return/defect rows), `login_history`, `audit_logs`.
 *Anchor:* `BranchGrants::INSERT`.
+
+### Local-only (of a table)
+A table that exists in the **local mirror and nowhere else** — it has no Postgres counterpart and
+is exempt from the parity guard. Today the list is Laravel's own infrastructure (`sessions`,
+`cache`, `cache_locks`, `jobs`, `job_batches`, `failed_jobs`, `migrations`, and `sqlite_sequence`,
+which SQLite materialises for the AUTOINCREMENT on `migrations`). M6's sync tables and M8's
+narrowed `inventory_update_queue` join it.
+*Anchor:* `SchemaParityTest::SQLITE_LOCAL_ONLY` (added in M4).
+✗ **Not** "mirrored" — and the distinction is the whole reason this set exists rather than the
+tables being folded into `MIRRORED`. A local-only table is deliberately a *different, narrower*
+table than any Postgres one, so putting it in `MIRRORED` would make the guard demand a similarity
+nobody wants (`MULTIBRANCH-BRAINSTORM.md` §11.6).
+✗ **Not** "Postgres-only" (`SchemaParityTest::POSTGRES_ONLY`), which is the same idea pointing the
+other way.
 
 ### Hydrate
 The setup wizard's **one-time first fill** of a new branch device: catalog, all users,
@@ -255,7 +270,7 @@ The order is load-bearing. Push runs first so the pulled baseline already reflec
 branch's own movements; the queue runs after push so adjustments validate against true
 reconciled stock; the heartbeat runs last so it describes the cycle that just finished.
 A cycle **owns its connection**: connect → run → `DB::disconnect('pgsql')` in a `finally`.
-*Anchor:* `MULTIBRANCH-BRAINSTORM.md` §11.2/§11.5; `docs/evitan-plus-erds.md` §5.
+*Anchor:* `MULTIBRANCH-BRAINSTORM.md` §11.2/§11.5.
 ✗ **Not** a session. No `SET`, no `LISTEN`, no temp tables, no advisory locks, no transaction
 spanning steps — a branch connects through the **transaction** pooler (`6543`), where no
 session state survives.
@@ -290,7 +305,7 @@ one.
 `sync_outbox` — the local FIFO of **rows waiting to push**. Stores *pointers, not payloads*:
 every local-write table is immutable, so a row can be re-read at push time and cannot have
 changed. `sequence` is an autoincrement integer because the outbox needs strict FIFO.
-*Anchor:* `docs/evitan-plus-erds.md` §2 (proposed, M6).
+*Anchor:* `MULTIBRANCH-BRAINSTORM.md` §11.6 (proposed, M6).
 ✗ **Not** the inventory update queue. Two unrelated structures, opposite directions: the outbox
 holds *this branch's* work going **up**; the queue holds *adjustments issued elsewhere* coming
 **down**. Reserve the bare word "queue" for the latter; use "outbox" or "backlog" for the
@@ -300,7 +315,7 @@ former.
 `count(*) where synced_at is null` in the outbox. One definition, one place, no counter to
 drift.
 *Anchor:* `branch_status.unsynced_count` (`check (unsynced_count >= 0)`);
-`docs/evitan-plus-erds.md` §2 rationale.
+`MULTIBRANCH-BRAINSTORM.md` §11.6 rationale.
 
 ---
 
@@ -444,7 +459,7 @@ the same business.
 `unauthorized` = the branch role was disabled by the console; `version_blocked` = the §6 gate
 refused; `offline` = no connectivity. The heartbeat copies the local value straight up.
 *Anchor:* `branch_status.connection_state`; `sync_status.connection_state`
-(`docs/evitan-plus-erds.md` §2).
+(`MULTIBRANCH-BRAINSTORM.md` §11.6).
 The distinction earns its place twice: at the till all three failure kinds look identical and
 only one is fixed by waiting; in the console monitor, a disabled credential and a dead internet
 connection would otherwise be the same row. **None of the four stop the till selling.**

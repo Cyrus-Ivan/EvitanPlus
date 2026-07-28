@@ -66,7 +66,7 @@ final class SchemaName
      * already exists), but the credentials JSON they emit carries
      * `business.id`. Recovering it here beats the alternatives: there is no
      * businesses registry to look it up in — deliberately, see
-     * docs/evitan-plus-erds.md §3 — and re-prompting for a UUID the schema name
+     * console/database/migrations-admin/ — and re-prompting for a UUID the schema name
      * already contains invites a mismatch nothing would catch.
      */
     public static function toBusinessUuid(string $schema): string

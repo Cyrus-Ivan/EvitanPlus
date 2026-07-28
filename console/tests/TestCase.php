@@ -16,16 +16,25 @@ use Provisioning\Support\SchemaName;
 use Throwable;
 
 /**
- * Base case for the console suite.
+ * Base case for the Feature suite — the half that needs a database.
  *
- * These tests need a REAL Postgres. The invariants this phase exists to
- * establish — immutability triggers, partial unique indexes, check
- * constraints — are Postgres features; asserting them against anything else
- * would prove nothing about the schema that actually ships to Supabase.
+ * These tests need a REAL Postgres. The invariants M1 exists to establish —
+ * immutability triggers, partial unique indexes, check constraints — are
+ * Postgres features; asserting them against anything else would prove nothing
+ * about the schema that actually ships to Supabase.
  *
- * So the suite skips itself when no admin credentials are configured, which
- * keeps a fresh clone green and is why it stays out of the repo-root
- * `composer verify` chain.
+ * That Postgres is the Supabase project, always. Some tests here would run
+ * against any Postgres (SchemaParityTest, SchemaInvariantsTest: DDL and
+ * information_schema, nothing more) and some would not (Supavisor's pooling and
+ * role caching are the subject rather than the setting). Standing up a second
+ * database for the first group would buy a faster run in exchange for an
+ * install to maintain, a dialect to keep in sync, and a class of failure that
+ * only reproduces in the place the tests do not run. One target, and it is the
+ * real one.
+ *
+ * The suite skips itself when no admin credentials are configured, which keeps
+ * a fresh clone green and is why it stays out of the repo-root `composer
+ * verify` chain. `composer verify:console` is where it runs.
  *
  * ## Why one schema per class, not per test
  *
@@ -102,7 +111,7 @@ abstract class TestCase extends BaseTestCase
         // booting an application for.
         if (! $this->hasAdminCredentials()) {
             $this->markTestSkipped(
-                'No admin Postgres credentials — set CONSOLE_DB_* in console/.env to run the console suite.'
+                'No admin Postgres credentials — set CONSOLE_DB_* in console/.env to run the Feature suite.'
             );
         }
 
@@ -124,8 +133,14 @@ abstract class TestCase extends BaseTestCase
             $schema = self::$classSchema;
             self::$classSchema = null;
 
-            // Leaking this would accumulate biz_test_* schemas in the real
-            // Supabase project, one per run.
+            // Best effort, and deliberately nothing more. A run that is
+            // cancelled or dies never reaches here and leaves its schema behind
+            // in the real project. There is no throwaway database to discard it
+            // for us, so this is the only cleanup — and a rare manual sweep is
+            // still cheaper than a reaper worth trusting:
+            //
+            //   select schema_name from information_schema.schemata
+            //   where schema_name like 'biz_test_%';
             try {
                 DB::connection('pgsql_admin')->statement("drop schema if exists \"{$schema}\" cascade");
             } catch (Throwable) {

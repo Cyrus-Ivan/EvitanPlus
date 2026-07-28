@@ -61,12 +61,16 @@ every branch.
 5. **Central oversight.** The developer console can provision, migrate, rotate credentials,
    enable/disable, and monitor every branch's version and sync status.
 
-**Explicit non-goals for this deliverable** (deferred, but the design must not preclude them):
+**Explicit non-goals for this deliverable** — deferred, and **not designed around**. If one of
+these is ever needed it gets designed then, against the system as it actually exists. An earlier
+draft required that "the design must not preclude them", which sounds free and is not: it quietly
+funds structure today for features that may never be built, and one person maintains everything
+built under it.
 
 - Multiple POS tills per branch (MVP is **one device per branch**).
 - A live push/command channel from console to branch (Supabase Realtime) — status is
   polled from a per-schema status table for now.
-- OS-level network-change listeners (we use a webview signal + probe + polling — see §11).
+- OS-level network-change listeners (we use a webview signal + probe + one poll — see §11).
 
 ---
 
@@ -256,6 +260,7 @@ Written **only** on the till, append-only/immutable, pushed as brand-new UUID-ke
 > | **mirrored** | structure must match on both sides, enforced by the parity guard (§13) | 14 tables — `SchemaParityTest::MIRRORED` |
 > | **readable** | the branch role may `SELECT` it | 18 tables — `BranchGrants::SELECT` (everything but `migrations`) |
 > | **pulled** | online-authoritative; flows down, never written locally | §5.1 — catalog, `users`, `settings`, `branches`, `schema_meta` |
+> | **local-only** | in the local mirror and nowhere else; exempt from the guard | `SchemaParityTest::SQLITE_LOCAL_ONLY` (M4) — Laravel's infrastructure, plus M6's sync tables |
 >
 > The differences are load-bearing, not pedantic. `branch_status` and `inventory_update_queue`
 > are **readable but not mirrored** (Postgres-only coordination). `inventory_ledger` is
@@ -505,8 +510,8 @@ pulled by the new branch at hydrate.)
 > branch's role cannot log in" distinguishable. It is not §14's monitor: it reports what the
 > console did, not what a branch is doing.
 >
-> **What was issued is now recorded.** `credential_issuance` in `evitan_console` (proposed for
-> M3 in `docs/evitan-plus-erds.md` §3) stores a **fingerprint** — a deterministic sha256, never
+> **What was issued is now recorded.** `credential_issuance` in `evitan_console`
+> (`console/database/migrations-admin/`) stores a **fingerprint** — a deterministic sha256, never
 > the password — plus a `generation` counter and `superseded_at`. It had to be built now rather
 > than later: generations could be reconstructed from the audit trail, but a fingerprint cannot
 > be, because the secret is gone the moment the command exits.
@@ -711,20 +716,29 @@ finished. Deltas are detected via `updated_at`/change markers on the authoritati
 cycle opens the Postgres connection and closes it again on the way out — see §11.5.
 
 ### 11.3 Connectivity detection (near-instant, no OS-specific code)
+
+Everything below feeds one `probe → sync` path, and **nothing below has a tuning knob**. Two
+triggers (the webview event and one timer), one confirmation step, one manual override. M6's
+opportunistic post-checkout sync enters the same path and is not a fourth detection mechanism —
+it detects nothing, it just asks for a cycle at the moment there is something to push.
+
 - **Instant trigger:** the React/Inertia UI runs in the NativePHP webview, so it listens to
   the browser `online`/`offline` events (`navigator.onLine`) and pings the backend the moment
-  the link returns.
+  the link returns. This is what makes reconnect near-instant; the rest is safety net.
 - **Confirming probe:** because `navigator.onLine`/OS "up" is optimistic (captive portals,
   Supabase down), a lightweight probe **always confirms** before a real sync runs. It must not
-  be a Postgres connection — an offline till probing every 10–20s would hold a pooler client
+  be a Postgres connection — an offline till probing on a timer would hold a pooler client
   slot forever, which is the one thing §11.5 forbids.
-- **Adaptive polling (backend safety net):** probe **fast while offline** (~10–20s) and
-  **slow while stably online**, so worst-case reconnect is seconds without any native plumbing.
-- **Backstop timer:** a configurable interval (default 15 min) as a long backstop.
-- **Manual "sync now"** button always available.
+- **One fixed-interval probe** as the backstop, for the case where the webview event does not
+  fire at all. **One interval, hard-coded, the same online and offline.** An earlier draft had
+  two rates (fast-offline / slow-online) *plus* a separately configurable 15-minute backstop —
+  three tuning surfaces for a behaviour that nobody will ever tune, on a product with one
+  maintainer. The instant trigger already covers the common case; the timer only has to
+  guarantee the till is never stuck offline indefinitely, and a single interval does that.
+- **Manual "sync now"** button always available. Kept deliberately: it is the one control worth
+  having when talking a store through a problem over the phone.
 - *Deferred:* OS network-change listeners and a Supabase **Realtime** channel (the latter
-  would also give the console a live monitor/command channel) — both reuse the same
-  probe→sync path and can drop in later.
+  would also give the console a live monitor/command channel).
 
 ### 11.4 Idempotency & atomicity
 - All pushes are inserts keyed by UUID → re-push is a harmless upsert-by-UUID.
@@ -766,6 +780,157 @@ Normatively, from M5 onward:
 
 None of this weakens §4's offline guarantee. A dropped or refused connection is a failed sync,
 and a failed sync never stops a till selling.
+
+### 11.6 The local sync tables (proposed, M5–M9)
+
+The sections above describe what a cycle *does*. This one names the tables it needs on the
+device, and is a **proposal for M5–M9** — none of it is built. The mirrored tables are not
+listed: they keep their v1.0.0 shape and `database/migrations/` defines them.
+
+```mermaid
+erDiagram
+    instance ||--|| instance_secret : "credentials for"
+    instance ||--o{ sync_cursor : "pull position"
+    sync_outbox }o--|| instance : "pushed as"
+
+    instance {
+        int id PK "check id = 1 — singleton"
+        uuid business_id "from the credentials JSON"
+        varchar schema_name "biz_xxxx"
+        uuid branch_id "stamped onto every pushed row"
+        varchar branch_code "serial prefix — MNL"
+        varchar branch_name
+        int schema_version "last verified against schema_meta"
+        varchar min_app_version "the gate the app must clear"
+        tstz hydrated_at "null until M5 hydration completes"
+        tstz created_at
+        tstz updated_at
+    }
+    instance_secret {
+        int id PK "check id = 1 — singleton"
+        text dsn_ciphertext "pg host/port/db/user/password, sealed with per-install APP_KEY"
+        varchar fingerprint "hash of the credential — matches console issuance"
+        tstz imported_at
+        tstz rotated_at
+    }
+    sync_outbox {
+        int sequence PK "autoincrement — strict FIFO push order"
+        uuid id "the row's own uuid — idempotency key"
+        varchar table_name "pointer, not payload"
+        uuid group_id "one sale = one atomic push batch"
+        int attempts
+        text last_error
+        datetime last_attempt_at
+        datetime synced_at "null = unsynced; count = unsynced_count"
+        datetime created_at
+    }
+    sync_cursor {
+        varchar table_name PK "one row per pulled table"
+        datetime pulled_through "max updated_at applied"
+        datetime last_pulled_at
+    }
+    sync_status {
+        int id PK "check id = 1 — singleton"
+        datetime last_sync_at
+        datetime last_probe_at
+        varchar connection_state "online | offline | unauthorized | version_blocked"
+        varchar last_error_kind "auth | version | network | conflict"
+        text last_error
+        datetime blocked_since
+    }
+    inventory_update_queue {
+        uuid id PK "branch-scoped mirror of the queue rows"
+        uuid variant_id FK
+        int quantity
+        varchar status "pending | accepted | rejected"
+        text rejection_reason
+        uuid ledger_entry_id
+        datetime resolved_at
+        datetime acknowledged_at "Owner dismissed the in-app flag"
+    }
+```
+
+**The mirrored tables keep their v1.0.0 shape, minus `branch_id`.** This is the single most
+important property of the local schema: the till's tables are the *same* tables, so every model,
+policy, report and test written across 19 phases keeps working untouched. A device holds only its
+own branch's rows, so a `branch_id` column would be a constant on every row — dead weight that
+also invites branch-scoped queries the till can never need. `branch_id` is stamped **at push
+time** from `instance`, which is the one place it lives locally.
+
+**The one exception to branch-scoping is `users`.** Every device caches *all* business users
+including password hashes, because the requirement is that any user can log in at any branch
+**offline** (§4). That is a deliberate trade: a stolen device exposes the business's password
+hashes, which is why they stay hashes and why the DB credentials next to them are encrypted.
+
+**`instance` is a singleton, and it is not `settings`.** The obvious place for "which branch am
+I" is the `settings` table — but `settings` is *mirrored and pulled from Postgres*, so a local
+write there would be overwritten by the next pull, or worse, pushed and become another branch's
+setting. Branch identity is local-only, arrives from the credentials JSON, and belongs in its own
+table. The `check (id = 1)` singleton makes "two identities on one device" unrepresentable.
+
+**`instance_secret` is split from `instance` for exposure, not normalization.** `branch_code` is
+read on every checkout (it prefixes the serial, §12); the sealed DSN is read only when a sync
+cycle opens a connection. Separating them means the hot path never loads ciphertext into memory,
+and rotation replaces exactly one row. The `fingerprint` column lets the console answer "is this
+device still holding the credential I last issued?" without either side ever transmitting the
+password — it matches `credential_issuance.fingerprint` (§8).
+
+**The outbox stores pointers, not payloads.** Every local-write table is immutable, so a row can
+be re-read at push time and *cannot* have changed since it was queued — a copied payload would
+add a second representation that can only ever drift. `sequence` is an autoincrement integer, not
+a UUID, because the outbox needs **strict FIFO** and a UUID gives no order. `group_id` batches a
+sale's rows (transaction + items + ledger entries) so they land in Postgres inside one
+transaction; a partially-pushed sale would be visible to consolidated reporting as a sale with
+missing lines. `synced_at IS NULL` is the definition of `unsynced_count` in `branch_status` —
+one place, no counter to drift.
+
+**Cursors are per table, not one global watermark.** `sync_cursor` keyed by `table_name` means a
+failure pulling `variants` does not roll back the progress made on `users`, and a newly added
+mirrored table starts from zero without re-pulling everything else.
+
+**`sync_status` is where "why is it not syncing" lives.** The distinction between
+`unauthorized` (role disabled by the console), `version_blocked` (the §13 gate refused) and
+`network` matters enormously to the person standing at the till — all three look identical
+without it, and only one of them is fixed by waiting. None of them stop selling.
+
+> **Settled (M10): `connection_state` carries these same four values in Postgres too.** The
+> heartbeat is a straight copy rather than a lossy one. Collapsing `branch_status` to
+> `online | offline` would make a branch whose credential you disabled and a branch whose
+> internet is down the same row in the console monitor — two states needing opposite responses.
+> No migration is required, since the column has no check constraint; M10 should add one, which
+> is the only thing that would make the set enforceable rather than conventional. See
+> `docs/glossary.md` §8 and §14.
+
+**The local `inventory_update_queue` mirror is a proposal with a cost.** §10 lists this table as
+Postgres-only "coordination, not branch data", and `SchemaParityTest::POSTGRES_ONLY` records
+that. But a rejected adjustment must be **visible in the in-app admin**, including after the
+branch goes offline again — so the branch needs a local copy of the rows it resolved, plus an
+`acknowledged_at` that exists only locally (dismissing a flag is not business history). Adopting
+this means moving `inventory_update_queue` out of `POSTGRES_ONLY` and either into `MIRRORED`
+(accepting that Postgres has `branch_id` and `issued_by` the till may not carry) or into a new
+`SQLITE_LOCAL_ONLY` allowlist. **Recommendation: a third allowlist**, because the local table is
+intentionally a *different, narrower* table, not a mirror — pretending otherwise would make the
+parity test enforce a similarity that is not wanted.
+
+> **Settled (M4): the third allowlist exists, and the recommendation was adopted.**
+> `SchemaParityTest::SQLITE_LOCAL_ONLY` is now a real constant with a test behind it, so M8 adds
+> its local queue table to that list rather than arguing the question again at the point of
+> writing it. Two things fell out of building it that this paragraph did not anticipate:
+>
+> - **The SQLite side previously had no undocumented-table check at all.** The guard read only
+>   the 14 mirrored tables out of SQLite, so the question "is this table classified?" was asked
+>   of Postgres and never of the local mirror. A new local table was not merely un-allowlisted —
+>   it was invisible. The allowlist is therefore half of the work; the check that reads it is the
+>   other half, and it is the one that would have caught M6's `sync_outbox` drifting in unnoticed.
+> - **The list is longer than the infrastructure paragraph below.** `sqlite_sequence` also
+>   belongs on it: Laravel's migration repository uses `increments('id')`, SQLite implements that
+>   as `AUTOINCREMENT`, and SQLite then materialises `sqlite_sequence` on its own. Nothing in the
+>   migration set mentions it, which is exactly why it was missed until the check enumerated real
+>   tables instead of expected ones.
+
+**Local infrastructure tables** (`sessions`, `cache`, `cache_locks`, `jobs`, `job_batches`,
+`failed_jobs`, `migrations`) are deliberately out of scope here: they are Laravel's, never
+synced, and rebuilt by a re-install. They are the current contents of `SQLITE_LOCAL_ONLY`.
 
 ---
 
@@ -816,8 +981,8 @@ easiest way to build the gate wrong, so they are named precisely (`docs/glossary
 dialect expresses its own triggers/constraints naturally), guarded by an **automated parity
 test** that introspects both schemas and asserts the **mirrored** tables agree on column
 names and types through a known type map (`uuid↔text`, `timestamptz↔text`, `numeric↔real`,
-`boolean↔integer`, …). Forget one side → CI fails. (The databases are deliberately *not*
-identical: Postgres has extra tables the till never mirrors.)
+`boolean↔integer`, …). Forget one side → `composer verify:console` fails. (The databases are
+deliberately *not* identical: Postgres has extra tables the till never mirrors.)
 
 ---
 
@@ -836,7 +1001,7 @@ identical: Postgres has extra tables the till never mirrors.)
 
 > **Settled: `connection_state` carries four values on both sides** —
 > `online | offline | unauthorized | version_blocked` — so the local `sync_status` table
-> (`docs/evitan-plus-erds.md` §2) and `branch_status` agree, and the heartbeat is a
+> (§11.6) and `branch_status` agree, and the heartbeat is a
 > straight copy rather than a lossy one.
 >
 > The distinction earns its place twice over. **At the till**, `unauthorized` (role disabled by

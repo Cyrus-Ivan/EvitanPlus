@@ -1,25 +1,41 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    Provisioning Console test suite, in two halves.
-
-    Feature exercises a REAL Postgres: the schema it asserts on is built by
-    Postgres DDL, so a stand-in would prove nothing about the triggers and
-    partial indexes that carry the invariants. Tests\TestCase::setUp() skips it
-    when CONSOLE_DB_PASSWORD is absent, so a clean clone stays green.
+    Provisioning Console test suite, in two halves — split by WHETHER A TEST
+    NEEDS A DATABASE, which is the only distinction that changes how you run it.
 
     Unit needs nothing. It boots the console application but opens no
-    connection, which is what lets the endpoint and command logic be pinned on
-    every push instead of only on a developer machine with a live project.
+    connection, so the endpoint logic, the command wiring and the SchemaDiff
+    comparison can be pinned on any machine, including a fresh clone.
 
-    CI runs the Unit suite with the "fail on skipped" flag. That flag is the
-    honesty guard: a credential-gated test dropped into tests/Unit would
-    otherwise shrink the CI suite silently, and a run of 165 skipped tests still
-    exits 0. Never run the bare suite in CI for that reason.
+    Feature needs the live SUPABASE project. Some of it needs Supabase
+    specifically — Supavisor's pooling and role caching, `<role>.<project-ref>`
+    usernames, CREATE ROLE, the measured lag windows in PoolerLag. The rest
+    (SchemaParityTest, SchemaInvariantsTest) is stock Postgres and would run
+    against any server, but there is no second server and deliberately so: one
+    more database to install, configure and keep on the right version is a worse
+    trade than a slower run against the real thing. Tests\TestCase skips the
+    whole half when CONSOLE_DB_PASSWORD is absent, so a clean clone stays green.
+
+    THERE IS NO CI. This repo runs no GitHub Actions workflow; `composer verify`
+    and `composer verify:console` on a developer machine are the whole gate.
+    That is a deliberate choice, not an omission — the local chain is a strict
+    superset of what a workflow was running (it adds phpstan, pint, tsc, eslint,
+    prettier and the Playwright e2e suite, none of which CI ever ran), and
+    pointing a hosted runner at the real project would have meant admin
+    credentials in a secret store, unattended writes to production, and leaked
+    biz_test_* schemas on every cancelled run.
+
+    `composer verify:console` runs BOTH halves with the "fail on skipped" flag.
+    That flag is the honesty guard: Tests\TestCase skips silently, so a
+    console/.env missing its password would otherwise produce a green run that
+    executed nothing. That exact shape is why the parity guard sat unrun from M1
+    to M4 — not because no machine ran it, but because no command did. Never run
+    the bare suite as a gate, for that reason.
 
     Deliberately NOT part of `composer verify` at the repo root: that chain has
     to stay runnable offline and without admin credentials, and wiring this in
     would quietly make `(cd console && composer install)` mandatory for everyone
-    working on the POS app. `composer verify:console` runs the Unit half.
+    working on the POS app.
 -->
 <phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
@@ -27,11 +43,11 @@
          colors="true"
 >
     <testsuites>
-        <!-- Credential-free. Runs on a fresh clone and in CI. -->
+        <!-- Credential-free. Runs on a fresh clone. -->
         <testsuite name="Unit">
             <directory>tests/Unit</directory>
         </testsuite>
-        <!-- Needs live admin Postgres credentials in console/.env. -->
+        <!-- Needs the live Supabase project and admin credentials. -->
         <testsuite name="Feature">
             <directory>tests/Feature</directory>
         </testsuite>

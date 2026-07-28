@@ -26,7 +26,7 @@ use Tests\CredentialFreeTestCase;
  * Do NOT "improve" this to an unroutable address like 10.255.255.1: that costs a
  * full TCP SYN timeout, roughly two minutes per attempt on Linux, and there are
  * several attempts in this file. A bogus hostname is no better — it costs
- * whatever the CI runner's resolver decides, which is not a fixed number.
+ * whatever the machine's resolver decides, which is not a fixed number.
  */
 class PingCommandTest extends CredentialFreeTestCase
 {

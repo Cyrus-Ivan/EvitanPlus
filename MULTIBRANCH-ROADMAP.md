@@ -236,8 +236,8 @@ Add branches to an existing business and manage branch credentials.
 >   down to every till; a credential disabled on suspicion of a leak is not a
 >   branch that has closed, and conflating them would make re-enabling a
 >   credential silently reopen a branch. Left for a future closure command.
-> - **`credential_issuance` was built** (proposed for M3 in
->   `docs/evitan-plus-erds.md` §3). `generation` and `superseded_at` could be
+> - **`credential_issuance` was built** (`console/database/migrations-admin/`).
+>   `generation` and `superseded_at` could be
 >   reconstructed from `provisioning_audit` later; the password **fingerprint
 >   could not** — the secret is gone when the command exits. A partial unique
 >   index enforces at most one live credential per branch, and a narrowed
@@ -265,32 +265,124 @@ fails auth cleanly while an enabled one connects.
 
 ---
 
-# Phase M4 — Schema-drift parity test
+# Phase M4 — Schema-drift parity test ✅
 
 ## Goal
 Guarantee the SQLite mirror and Postgres schema agree on the mirrored tables.
+
+> **Done.** The guard now runs as part of `composer verify:console`, the SQLite
+> side has an allowlist for the first time, and the comparison itself is tested.
+> Scoping calls and findings:
+>
+> - **The guard existed since M1 and had never run once.** Three phases of "the
+>   parity test covers that" were true only of a developer remembering to run it
+>   by hand, and nobody did. The cause is narrower than it first looks and worth
+>   stating exactly: **no command invoked it.** `composer verify:console` was
+>   `--testsuite=Unit`, and `composer verify` does not touch the console at all.
+>   The test was reachable — the credentials were on the machine the whole time —
+>   but nothing reached for it. *A guard nothing calls is indistinguishable from
+>   one that was never written.*
+> - **The fix is one line in `composer.json`, and the first attempt was much
+>   bigger.** `verify:console` now runs the whole suite, Unit and Feature, with
+>   `--fail-on-skipped`. What was built first: a GitHub Actions workflow with a
+>   `postgres:17` service container, a third `tests/Postgres/` suite split out so
+>   a hosted runner could run the half that needs no Supabase, and a generated
+>   `console/.env` pointing at the container. All of it reverted. The reversal is
+>   the more instructive half, and it turned on noticing that CI was never the
+>   missing piece — the failure was a command that did not exist, and no amount of
+>   remote machinery addresses that.
+> - **This repo now runs no CI at all** (`.github/` is gone, both workflows
+>   deleted). The local chain was already a strict superset: `composer verify`
+>   runs `composer audit`, `pint --test`, phpstan, the app suite, `tsc`, eslint,
+>   prettier and the Playwright e2e specs; the workflow ran the app suite and the
+>   console `Unit` half and **none** of the other six. `lint.yml` was worse than
+>   redundant — it ran `pint` and `npm run format` in *write* mode with the
+>   commit-back step commented out, so it reformatted files on a rented machine
+>   and discarded them, structurally incapable of failing. What CI uniquely
+>   offered was the from-empty-directory build; `native:build` already covers
+>   that, and covers it on the artifact that actually ships.
+> - **The earlier attempt to point CI at the real project is the cautionary
+>   tale.** It meant admin credentials to production in a secret store, unattended
+>   writes, **serialising** through a `concurrency` group against whoever was
+>   working locally, and a leaked schema every time a run was cancelled before
+>   `tearDownAfterClass`. That last one grew a 149-line `schema:prune-test`
+>   command, a timestamp in every test schema name so the sweep could tell stale
+>   from in-flight, and a 166-line test that itself created a fake `biz_<hex>`
+>   business schema in production on every run — ~330 lines of custodial machinery
+>   guarding nothing but the litter the test run generated. All deleted. The
+>   surviving cleanup is `tearDownAfterClass` plus a one-line manual sweep
+>   documented in `Tests\TestCase`.
+> - **There is one database, and it is Supabase.** `SchemaParityTest` and
+>   `SchemaInvariantsTest` would run against any Postgres — stock DDL, no
+>   extension, no `auth.` schema, no Supabase-only function — and that fact was
+>   what justified the container. It is still true and no longer load-bearing: a
+>   second server is an install to maintain, a version to keep matched (the
+>   project reports 17.6) and a class of failure that reproduces only where the
+>   tests do not run. The suite is slower against a remote database and that is
+>   the whole cost.
+> - **`SQLITE_LOCAL_ONLY` was the missing half of a check that did not exist.** The
+>   test read only the 14 mirrored tables out of SQLite, so "is this table classified?"
+>   was asked of Postgres and never of the local mirror — a new local table was not
+>   un-allowlisted, it was invisible. M6's `sync_outbox` would have drifted in
+>   unnoticed. This settles `MULTIBRANCH-BRAINSTORM.md` §11.6 in favour of its own
+>   recommendation: a local-only table is deliberately a *different, narrower* table,
+>   so M8's local queue goes on this list rather than into `MIRRORED`.
+> - **`sqlite_sequence` is on the list and nothing in the migration set mentions it.**
+>   Laravel's migration repository uses `increments('id')`, SQLite implements that as
+>   `AUTOINCREMENT`, and SQLite materialises the table itself. It only surfaced because
+>   the check enumerates *real* tables via `sqlite_master` rather than expected ones —
+>   which is the difference between a guard and a restatement of the author's beliefs.
+> - **The comparison is now tested against invented schemas** (`Tests\Support\SchemaDiff`
+>   + `Tests\Unit\SchemaDiffTest`). A green parity run proves the schemas match; it is
+>   equally consistent with the comparison having stopped checking. The unit half is
+>   credential-free, so the guard-for-the-guard runs on a fresh clone with no
+>   database at all. Note in particular that an **unmapped SQLite type must fail**:
+>   `TYPE_MAP[$t] ?? null` followed by a skip reads as caution and behaves as a
+>   hole.
+> - **Both allowlists are checked in both directions.** A surplus table means nobody
+>   decided about it; a *missing* one means a migration was dropped, which no
+>   permission-shaped check would ever notice.
+> - **Verified by breaking it three ways** — a column on the SQLite side only, the same
+>   column on the Postgres side only, and a stray local table — each producing the
+>   intended failure, then reverted. Plus a fourth check that only matters now that
+>   the gate is a local command: blanking `CONSOLE_DB_PASSWORD` must make
+>   `verify:console` exit **non-zero**, not green-with-skips. One sharp edge
+>   survives from the discarded workflow and is worth keeping in mind whenever
+>   `console/.env` is written by anything but a human: quote values **single**,
+>   because phpdotenv interpolates `${...}` inside double-quoted values and would
+>   silently rewrite a password containing those characters into a different
+>   string — surfacing as a wrong password, not as a quoting bug.
 
 ## Tasks
 - Build an automated **parity test** that introspects both schemas and asserts the mirrored
   tables match on column names and types via a known type map
   (`uuid↔text`, `timestamptz↔text`, `numeric↔real`, `boolean↔integer`, …).
 - Maintain the explicit list of **mirrored** tables (Postgres-only tables are exempt).
-- Wire it into CI so forgetting one side turns the build red.
+  *As built: **two** exemption lists, one per side — `POSTGRES_ONLY` and the new
+  `SQLITE_LOCAL_ONLY`.*
+- Wire it into a gate so forgetting one side turns the run red. *As built: into
+  `composer verify:console`, not CI — see the findings above.*
 
 > **"Mirrored" here means structural parity — not "readable" and not "pulled".** This is the
 > phase that makes the word machine-enforced, so it is the one that must not blur it:
 > `SchemaParityTest::MIRRORED` is **14** tables, `BranchGrants::SELECT` is **18**, and the
 > online-authoritative set is a third list again. `branch_status` and `inventory_update_queue`
-> are readable but deliberately *not* mirrored. `docs/glossary.md` §3.
+> are readable but deliberately *not* mirrored. `docs/glossary.md` §3. *As built: **four** sets,
+> not three — `SQLITE_LOCAL_ONLY` is the fourth, and it now has a glossary entry too.*
 >
-> Note the guard was **pulled forward into M1** — writing the second schema is when drift
-> starts — so this phase is largely already done; what remains is the CI wiring and keeping
-> `POSTGRES_ONLY` honest. Note also the open item in `docs/evitan-plus-erds.md` §2: a local
-> `inventory_update_queue` mirror would be a *narrower, different* table, which argues for a
-> third `SQLITE_LOCAL_ONLY` allowlist rather than forcing it into `MIRRORED`.
+> ~~Note the guard was **pulled forward into M1** … so this phase is largely already done.~~
+> **That reading was wrong, and it is the finding of the phase.** The guard was written in M1
+> but no command ran it, so it had never once fired — "largely already done" described code
+> that existed, not a check that ran. Putting it behind `verify:console` was not a finishing
+> touch on a working guard; it was the entire difference between having one and believing
+> you did.
+>
+> The `MULTIBRANCH-BRAINSTORM.md` §11.6 open item is **settled** in favour of its own
+> recommendation: `SQLITE_LOCAL_ONLY` exists, so M8's local `inventory_update_queue` — a
+> *narrower, different* table — goes there rather than into `MIRRORED`.
 
 ## Milestone
-CI fails on an intentional divergence and passes on the real schemas.
+`composer verify:console` fails on an intentional divergence and passes on the real schemas.
 
 ---
 
@@ -362,6 +454,13 @@ Local-first writes with reliable, idempotent upward sync.
 > **This phase therefore owes one behavioural change:** gate the shipped v1.0.0 CSV import
 > screen behind connectivity, so it refuses cleanly offline rather than silently producing
 > unsyncable rows. See `MULTIBRANCH-BRAINSTORM.md` §17.
+>
+> **The serial generator needs a real change here, not a cosmetic one.**
+> `TransactionNumberGenerator` today does `(int) max(transaction_number) + 1`. Once the number
+> is `MNL-0000000001` (§12), `(int) "MNL-…"` is **0**, and every sale tries to claim serial 1.
+> The generator must strip the branch prefix off the max — or better, store the numeric serial
+> separately from the rendered number. Worth flagging early because it fails *silently* into a
+> unique-constraint retry loop rather than into an obvious error.
 
 ## Milestone
 Sales made offline appear in Postgres after reconnect; re-running a push is a no-op.
@@ -374,9 +473,10 @@ Sales made offline appear in Postgres after reconnect; re-running a push is a no
 Near-instant reconnect and correct bidirectional data flow.
 
 ## Tasks
-- **Connectivity:** webview `online`/`offline` trigger + confirming **probe** + **adaptive
-  polling** (fast offline / slow online) + configurable **backstop timer** (default 15 min) +
-  manual "sync now".
+- **Connectivity:** webview `online`/`offline` trigger + confirming **probe** + **one
+  fixed-interval backstop poll** (same rate online and offline, no knob) + manual "sync now".
+  §11.3 is normative on why it is one interval and not adaptive polling plus a configurable
+  timer.
 - **Pull** deltas of catalog/users/settings/identity via `updated_at`/change markers.
 - **Stock reconciliation:** pull the recomputed **stock baseline** and apply
   `reconciled stock = baseline − local unsynced out-movements` (never blind-overwrite).
@@ -483,7 +583,7 @@ Central visibility into every branch of every business.
 
 > **Settled: `connection_state` carries four values on both sides** —
 > `online | offline | unauthorized | version_blocked` — so the local `sync_status`
-> (`docs/evitan-plus-erds.md` §2) and `branch_status` agree and the heartbeat is a straight
+> (`MULTIBRANCH-BRAINSTORM.md` §11.6) and `branch_status` agree and the heartbeat is a straight
 > copy. Collapsing to `online | offline` would make a branch you disabled and a branch whose
 > internet is down the same row in the monitor, and those need opposite responses. The same
 > distinction matters at the till, where all three failure kinds look identical and only one is

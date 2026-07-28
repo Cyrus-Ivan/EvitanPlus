@@ -14,7 +14,7 @@ use Tests\Concerns\OverridesEnvironment;
  * is `Application::configure()->withExceptions()->create()`, nothing more — and
  * a good deal of the logic worth testing (SupabaseEndpoint, the shape of
  * console:ping's output) only reads config and env. Those tests belong here,
- * where they run on a fresh clone and in CI.
+ * where they run on a fresh clone with no credentials and no database.
  *
  * This is the second half of the story Tests\Unit\IdentifierSafetyTest started:
  * that file stays credential-free by extending PHPUnit's TestCase directly, which
@@ -30,8 +30,9 @@ use Tests\Concerns\OverridesEnvironment;
  *    test is exactly what makes config() mutations self-isolating instead of
  *    leaking into whatever runs next.
  * 2. **setUp() does NOT gate on credentials.** That gate is the whole reason the
- *    Feature suite cannot run in CI. Adding one here "for symmetry" would make
- *    this suite silently skip everything, which is why CI runs it with
+ *    Feature suite needs the Supabase project. Adding one here "for symmetry"
+ *    would make this suite silently skip everything on a machine without
+ *    credentials, which is why `composer verify:console` runs with
  *    --fail-on-skipped.
  *
  * Container note: this class leaves Container::getInstance() pointing at its last

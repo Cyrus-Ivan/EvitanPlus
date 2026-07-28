@@ -20,6 +20,14 @@ use Tests\TestCase;
  * These run as the ADMIN role, which bypasses grants. That is deliberate: it
  * proves the constraints hold against the most privileged connection in the
  * system, not merely against a least-privileged branch role.
+ *
+ * Nothing here is Supabase-specific — no pooler, no branch role, no pg_roles,
+ * just DDL and the constraints it carries — so it would run against any
+ * Postgres. It runs against the Supabase project anyway, because that is the
+ * only Postgres this project keeps, and because a second one would be a second
+ * thing to install, configure and debug for a guard that reads
+ * information_schema. M4's contribution was not a new place to run it: it was
+ * putting it behind `composer verify:console`, so it runs at all.
  */
 class SchemaInvariantsTest extends TestCase
 {

@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\SchemaDiff;
 use Tests\TestCase;
 
 /**
@@ -23,12 +24,37 @@ use Tests\TestCase;
  * both sides with a compatible type. Forget either side and this fails.
  *
  * The databases are NOT required to be identical — that is the point of the
- * two allowlists below.
+ * three allowlists below.
+ *
+ * ## Why this had never run, and what M4 changed
+ *
+ * It was written in M1 and, until M4, had never run once. Not because it was
+ * hard to run — everything here is stock Postgres, and the console's 19
+ * migrations use no extension, no `auth.` schema and no Supabase-only
+ * function — but because no command invoked it. `composer verify:console` was
+ * `--testsuite=Unit`, and `composer verify` does not touch the console at all.
+ * A guard nothing calls is indistinguishable from one that was never written.
+ *
+ * M4's fix was to point `verify:console` at the whole suite. That is the entire
+ * mechanism; there is no CI, and adding one would not have helped, because the
+ * gap was never about which machine ran the tests.
+ *
+ * The comparison itself lives in Tests\Support\SchemaDiff and is tested
+ * separately against invented, disagreeing schemas. A green run here proves the
+ * schemas match; it cannot prove the comparison would have noticed if they did
+ * not.
  */
 class SchemaParityTest extends TestCase
 {
     /**
      * Tables the till mirrors, and which must therefore agree.
+     *
+     * "Mirrored" is one of FOUR memberships a table can hold and is the
+     * narrowest of them (`docs/glossary.md` §3). It is not *readable*
+     * (`BranchGrants::SELECT`, 18 tables), not *pulled* (online-authoritative),
+     * and not *local-only* (SQLITE_LOCAL_ONLY, below). The sets differ in size
+     * and in membership; `branch_status` and `inventory_update_queue` are
+     * readable and deliberately not mirrored.
      *
      * @var list<string>
      */
@@ -49,6 +75,35 @@ class SchemaParityTest extends TestCase
         'inventory_update_queue' => 'coordination between the issuing user and a branch, not branch data',
         'branch_status' => 'per-branch heartbeat consumed by the console monitor',
         'migrations' => "Laravel's own ledger",
+    ];
+
+    /**
+     * SQLite-only tables, with the reason each has no Postgres counterpart.
+     *
+     * The fourth membership, and the one that did not exist before M4. Until
+     * then this test read only the MIRRORED tables out of SQLite, so the local
+     * side had no equivalent of the Postgres check below: a new local table was
+     * invisible to the guard entirely. That gap was about to matter — M6 adds
+     * `sync_outbox`, `sync_cursor` and `sync_status`, and M8 wants a local
+     * `inventory_update_queue` (§11.6). Each of those belongs HERE rather than
+     * in MIRRORED, because a local-only table is intentionally a different,
+     * narrower table and not a mirror; forcing one into MIRRORED would make this
+     * test demand a similarity nobody wants. That settles §11.6's open item.
+     *
+     * Everything currently on the list is Laravel's own infrastructure (§11.6:
+     * "never synced, and rebuilt by a re-install").
+     *
+     * @var array<string, string>
+     */
+    private const SQLITE_LOCAL_ONLY = [
+        'cache' => "Laravel's own, rebuilt by a re-install",
+        'cache_locks' => "Laravel's own, rebuilt by a re-install",
+        'jobs' => "Laravel's own, rebuilt by a re-install",
+        'job_batches' => "Laravel's own, rebuilt by a re-install",
+        'failed_jobs' => "Laravel's own, rebuilt by a re-install",
+        'sessions' => "Laravel's own, rebuilt by a re-install",
+        'migrations' => "Laravel's own ledger — and the app's migration set is not the console's",
+        'sqlite_sequence' => 'created by SQLite itself, because the migrations table is AUTOINCREMENT',
     ];
 
     /**
@@ -82,12 +137,20 @@ class SchemaParityTest extends TestCase
     /** @var array<string, array<string, string>>|null */
     private static ?array $postgresColumns = null;
 
+    private function diff(): SchemaDiff
+    {
+        return new SchemaDiff(self::TYPE_MAP, self::POSTGRES_ONLY_COLUMNS);
+    }
+
     /**
      * Column name => type, per table, for the APP's SQLite schema.
      *
      * Built by running the app's own migrations into a throwaway file, so the
      * comparison is against what the app actually creates rather than a
      * hand-maintained description of it that could itself drift.
+     *
+     * EVERY table is read, not just the mirrored ones — an unclassified table
+     * is the thing the SQLite-side check below exists to catch.
      *
      * @return array<string, array<string, string>>
      */
@@ -122,11 +185,14 @@ class SchemaParityTest extends TestCase
 
             $columns = [];
 
-            foreach (self::MIRRORED as $table) {
-                $columns[$table] = [];
+            $tables = DB::connection('sqlite_parity')
+                ->select("select name from sqlite_master where type = 'table'");
 
-                foreach (DB::connection('sqlite_parity')->select("pragma table_info(\"{$table}\")") as $column) {
-                    $columns[$table][$column->name] = strtolower($column->type);
+            foreach ($tables as $table) {
+                $columns[$table->name] = [];
+
+                foreach (DB::connection('sqlite_parity')->select("pragma table_info(\"{$table->name}\")") as $column) {
+                    $columns[$table->name][$column->name] = strtolower($column->type);
                 }
             }
 
@@ -184,32 +250,10 @@ class SchemaParityTest extends TestCase
         $this->assertNotEmpty($sqlite, "[{$table}] is missing from the app's SQLite schema.");
         $this->assertNotEmpty($postgres, "[{$table}] is missing from the Postgres schema.");
 
-        foreach ($sqlite as $column => $sqliteType) {
-            $this->assertArrayHasKey(
-                $column,
-                $postgres,
-                "[{$table}.{$column}] exists in the app but not in Postgres — a sync would drop it."
-            );
-
-            $allowed = self::TYPE_MAP[$sqliteType] ?? null;
-
-            $this->assertNotNull($allowed, "No type mapping for SQLite type [{$sqliteType}] ({$table}.{$column}).");
-
-            $this->assertContains(
-                $postgres[$column],
-                $allowed,
-                "[{$table}.{$column}] is {$sqliteType} in SQLite but {$postgres[$column]} in Postgres."
-            );
-        }
-
-        // ...and nothing extra on the Postgres side that the app does not know
-        // how to fill, beyond the documented additions.
-        $extra = array_diff(array_keys($postgres), array_keys($sqlite), self::POSTGRES_ONLY_COLUMNS);
-
         $this->assertSame(
             [],
-            array_values($extra),
-            "[{$table}] has Postgres-only columns the app cannot populate: ".implode(', ', $extra)
+            $this->diff()->compareTable($table, $sqlite, $postgres),
+            "[{$table}] has drifted between the app's SQLite schema and Postgres.",
         );
     }
 
@@ -217,20 +261,44 @@ class SchemaParityTest extends TestCase
     {
         $postgres = array_keys($this->postgresColumns());
 
-        $unexpected = array_diff($postgres, self::MIRRORED, array_keys(self::POSTGRES_ONLY));
-
         $this->assertSame(
             [],
-            array_values($unexpected),
-            'Undocumented Postgres-only tables: '.implode(', ', $unexpected)
-            .' — add them to POSTGRES_ONLY with a reason, or mirror them.'
+            $this->diff()->undocumentedTables($postgres, self::MIRRORED, array_keys(self::POSTGRES_ONLY)),
+            'Undocumented Postgres-only tables — add them to POSTGRES_ONLY with a reason, or mirror them.'
         );
 
         // The reverse: a table that was supposed to be Postgres-only but is
         // missing entirely means a migration was dropped.
-        foreach (array_keys(self::POSTGRES_ONLY) as $table) {
-            $this->assertContains($table, $postgres, "Postgres-only table [{$table}] is missing.");
-        }
+        $this->assertSame(
+            [],
+            $this->diff()->missingTables($postgres, array_keys(self::POSTGRES_ONLY)),
+            'Postgres-only tables that have gone missing.'
+        );
+    }
+
+    /**
+     * The same check in the other direction, added in M4.
+     *
+     * Without it a table could be added to the app and reach every till while
+     * belonging to no category at all — neither mirrored nor consciously local.
+     * The decision is what is being forced here: mirror it, or write down why
+     * it stays local.
+     */
+    public function test_the_sqlite_only_tables_are_the_documented_ones(): void
+    {
+        $sqlite = array_keys($this->sqliteColumns());
+
+        $this->assertSame(
+            [],
+            $this->diff()->undocumentedTables($sqlite, self::MIRRORED, array_keys(self::SQLITE_LOCAL_ONLY)),
+            'Undocumented SQLite-only tables — add them to SQLITE_LOCAL_ONLY with a reason, or mirror them.'
+        );
+
+        $this->assertSame(
+            [],
+            $this->diff()->missingTables($sqlite, array_keys(self::SQLITE_LOCAL_ONLY)),
+            'SQLite-only tables that have gone missing.'
+        );
     }
 
     public function test_branch_scoped_tables_carry_branch_id(): void

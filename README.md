@@ -35,9 +35,10 @@ The schema stays sync-compatible (UUID primary keys everywhere) so multi-branch 
 
 `console/` is **never bundled into any build**, and the POS app contains no
 runtime reference to it. That boundary is enforced by
-`nativephp.cleanup_exclude_files` / `cleanup_env_keys`, gated in CI by
-[`tests/Feature/Build/BuildExclusionTest.php`](tests/Feature/Build/BuildExclusionTest.php),
-and re-checked by hand at release time (see "Building a release", step 4).
+`nativephp.cleanup_exclude_files` / `cleanup_env_keys`, gated by
+[`tests/Feature/Build/BuildExclusionTest.php`](tests/Feature/Build/BuildExclusionTest.php)
+in `composer verify`, and re-checked by hand at release time (see "Building a
+release", step 4).
 Spec: [`MULTIBRANCH-BRAINSTORM.md`](MULTIBRANCH-BRAINSTORM.md) §18.
 
 ## Requirements
@@ -125,11 +126,13 @@ php console/artisan branch:enable  --business=<business-uuid> --branch-code=MNL
 php console/artisan branch:revoke  --business=<business-uuid> --branch-code=MNL
 
 # Console test suite, in two halves. The Feature half needs the credentials
-# above and exercises a real Postgres; it skips itself cleanly without them, and
-# is deliberately NOT part of `composer verify`, which must stay runnable
-# offline. The Unit half needs nothing and is the half CI runs.
-(cd console && composer test)          # both halves
-composer verify:console                # the credential-free half only
+# above and exercises the real Supabase project; it skips itself cleanly without
+# them, and the whole thing is deliberately NOT part of `composer verify`, which
+# must stay runnable offline and without admin credentials. The Unit half needs
+# nothing and runs on a fresh clone.
+composer verify:console                # both halves, --fail-on-skipped (the gate)
+(cd console && composer test)          # same, without the honesty flag
+(cd console && ./vendor/bin/phpunit --testsuite=Unit)   # credential-free half
 ```
 
 **Two endpoints, one Supabase project.** They are not interchangeable:
@@ -249,8 +252,8 @@ php console/artisan business:provision  # Provision a business + its first branc
 
    [`tests/Feature/Build/BuildExclusionTest.php`](tests/Feature/Build/BuildExclusionTest.php)
    and [`tests/Feature/Build/PhpBinaryTest.php`](tests/Feature/Build/PhpBinaryTest.php)
-   gate the same invariants in CI; this step is the belt-and-braces check
-   against the real artifact.
+   gate the same invariants in `composer verify`; this step is the
+   belt-and-braces check against the real artifact.
 5. Smoke-test the installed app with a scratch `HOME`: the initial setup
    wizard (create the Owner, business details, timezone/currency, optional
    printer), a sale, a backup, a restore + restart.

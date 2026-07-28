@@ -11,9 +11,9 @@ use Tests\TestCase;
  * console:ping against a real Supabase project.
  *
  * Deliberately thin. Everything about what the command SAYS is settled offline in
- * Tests\Unit\PingCommandTest, which runs in CI; what is left here is only what a
- * live server can answer — that a healthy project passes both probes, and that
- * the exit code combines them rather than reporting whichever ran last.
+ * Tests\Unit\PingCommandTest, which needs no credentials; what is left here is
+ * only what a live server can answer — that a healthy project passes both probes,
+ * and that the exit code combines them rather than reporting whichever ran last.
  *
  * Session budget: this opens two admin-credentialed connections, `pgsql_admin`
  * and the command's own `pgsql_branch_probe`. The base class already purges the

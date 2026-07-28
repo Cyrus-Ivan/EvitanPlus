@@ -2,13 +2,31 @@
 
 # Evitan Plus — Multi-Branch, Provisioning Console & Sync Roadmap
 
-Phased build plan for the **Evitan Plus** initiative (see `MULTIBRANCH-BRAINSTORM.md` for the
-spec of record). It follows the same principle as the original `ROADMAP.md`: build each slice
-**end-to-end** (migration → backend → frontend/TUI → validation → permissions/grants →
-audit → tests) and keep the system runnable at every phase. Don't open several of these at once.
+Phased build plan for the **multi-branch initiative** — the work that turns **Evitan POS**
+(the shipped single-install product) into **Evitan Plus** (multi-branch, cloud-connected). See
+`MULTIBRANCH-BRAINSTORM.md` for the spec of record. It follows the same principle as the
+original `ROADMAP.md`: build each slice **end-to-end** (migration → backend → frontend/TUI →
+validation → permissions/grants → audit → tests) and keep the system runnable at every phase.
+Don't open several of these at once.
 
 These phases follow the shipped `v1.0.0` (`ROADMAP.md` phases 0–19). They are numbered
 **M0–M12** to keep them distinct from the original phases.
+
+**Read `docs/glossary.md` before starting a phase.** It is **normative** for the vocabulary
+these phases are written in, and it outranks both this file and `MULTIBRANCH-BRAINSTORM.md`
+where they disagree about what a word means. A large share of M1–M3's "As built" corrections
+were not design changes but a word meaning one thing in the spec and another in Postgres. The
+terms most likely to be assumed wrong in M4–M12 specifically:
+
+- **mirrored** (14 tables, parity-guarded) ≠ **readable** (18, `BranchGrants::SELECT`) ≠
+  **pulled** (online-authoritative) — M4, M5, M7.
+- **outbox** (this branch's work going up) ≠ **queue** (`inventory_update_queue`, adjustments
+  coming down) — M6, M8.
+- **app version** (semver, the build) ≠ **schema version** (integer) ≠ **min app version**. The
+  gate compares *app version ≥ min app version*, and nothing else — M9.
+- `inventory_ledger` has **three** type columns, not one six-valued one, and **`restock` is not
+  a value** — M6, M7, M8.
+- **revoke** (drops a role) ≠ **delete** ≠ **disable** (`LOGIN` only) ≠ **archive** (app-side).
 
 **Global constraints that apply to every phase**
 - The Provisioning Console **never** ships in any build (structural separation + verified
@@ -259,6 +277,18 @@ Guarantee the SQLite mirror and Postgres schema agree on the mirrored tables.
 - Maintain the explicit list of **mirrored** tables (Postgres-only tables are exempt).
 - Wire it into CI so forgetting one side turns the build red.
 
+> **"Mirrored" here means structural parity — not "readable" and not "pulled".** This is the
+> phase that makes the word machine-enforced, so it is the one that must not blur it:
+> `SchemaParityTest::MIRRORED` is **14** tables, `BranchGrants::SELECT` is **18**, and the
+> online-authoritative set is a third list again. `branch_status` and `inventory_update_queue`
+> are readable but deliberately *not* mirrored. `docs/glossary.md` §3.
+>
+> Note the guard was **pulled forward into M1** — writing the second schema is when drift
+> starts — so this phase is largely already done; what remains is the CI wiring and keeping
+> `POSTGRES_ONLY` honest. Note also the open item in `docs/evitan-plus-erds.md` §2: a local
+> `inventory_update_queue` mirror would be a *narrower, different* table, which argues for a
+> third `SQLITE_LOCAL_ONLY` allowlist rather than forcing it into `MIRRORED`.
+
 ## Milestone
 CI fails on an intentional divergence and passes on the real schemas.
 
@@ -281,8 +311,10 @@ Replace the local Owner-creation wizard with a connect-and-hydrate flow.
   `connection` block **over** `config('database.connections.pgsql')` rather than replacing it,
   and assign `search_path` as-is (`null` — the schema is pinned server-side; see §9).
 - Run local SQLite migrations.
-- **Hydrate** baseline: full catalog, **all** users (business-wide), settings/identity, this
-  branch's stock snapshot.
+- **Hydrate** the baseline: full catalog, **all** users (business-wide), settings/identity, this
+  branch's stock snapshot. *Hydrate* is the one-time first fill of a new branch device — not a
+  pull, which is the recurring delta. It is re-runnable from scratch, because the local mirror
+  is the only store in the system that can be thrown away.
 - Gate the app behind setup until hydration succeeds (extends the existing
   `RequireInitialSetup` behavior); no seeded local Owner.
 - Audit the setup event.
@@ -299,14 +331,37 @@ pre-created Owner and can browse the hydrated catalog offline.
 Local-first writes with reliable, idempotent upward sync.
 
 ## Tasks
-- Introduce the **outbox** for local-write tables (sales, transaction_items, returns, defects,
-  sale/return/defect ledger rows, login_history, local audit).
+- Introduce the **outbox** for local-write tables (transactions, transaction_items,
+  sale_returns, sale_return_items, `type = 'sale'` ledger rows, login_history, local audit).
 - Keep all offline-capable writes **SQLite-first**; generate the **per-branch serial** locally.
 - **Push** = insert-only, UUID-keyed, idempotent upserts to Postgres. It runs inside a §11.5
   cycle: connect, push, disconnect. The connectivity probe that decides whether to sync must not
   itself open Postgres.
 - **Opportunistic post-checkout sync** when online.
 - Surface **unsynced count** and last-sync status in-app.
+
+> **Three vocabulary points this phase turns into code** (`docs/glossary.md` §4–§5):
+>
+> - **The outbox is not the queue.** `sync_outbox` holds this branch's work going **up**;
+>   `inventory_update_queue` holds adjustments issued elsewhere coming **down** (M8). They share
+>   no code and move in opposite directions.
+> - **What belongs in the outbox is `type = 'sale'` ledger rows** — any `sale_type`
+>   (`sale`/`return`/`defect`). There are no "returns" or "defects" tables to push (both are
+>   `sale_returns` + `sale_return_items` with a `type`), and no "restock" rows to exclude
+>   (`type = 'stock_adjustment'` is online-authoritative and pulled, never pushed).
+> - **`unsynced_count` is derived, not maintained**: `count(*) where synced_at is null` in the
+>   outbox. Do not add a counter — one definition, nothing to drift.
+>
+> **Settled: `import_history` does not sync upward, because CSV import becomes online-only.**
+> An in-app import writes `type = 'stock_adjustment'` ledger rows, which are online-authoritative
+> and pulled down — so the outbox would not carry them, and a branch importing while offline
+> would create stock movements that could never reach Postgres and would diverge silently and
+> permanently. Pushing them instead would give `stock_adjustment` rows two writers, breaking
+> single-writer-per-table. So the existing grants (SELECT, no INSERT) are correct and stay.
+>
+> **This phase therefore owes one behavioural change:** gate the shipped v1.0.0 CSV import
+> screen behind connectivity, so it refuses cleanly offline rather than silently producing
+> unsyncable rows. See `MULTIBRANCH-BRAINSTORM.md` §17.
 
 ## Milestone
 Sales made offline appear in Postgres after reconnect; re-running a push is a no-op.
@@ -323,9 +378,19 @@ Near-instant reconnect and correct bidirectional data flow.
   polling** (fast offline / slow online) + configurable **backstop timer** (default 15 min) +
   manual "sync now".
 - **Pull** deltas of catalog/users/settings/identity via `updated_at`/change markers.
-- **Stock reconciliation:** pull the recomputed baseline and apply
-  `effective = baseline − local unsynced out-movements` (never blind-overwrite).
-- Enforce cycle order: **push → (queue, M8) → pull → heartbeat**.
+- **Stock reconciliation:** pull the recomputed **stock baseline** and apply
+  `reconciled stock = baseline − local unsynced out-movements` (never blind-overwrite).
+- Enforce cycle order: **version gate → push → (queue, M8) → pull → heartbeat**.
+
+> **Baseline, snapshot and reconciled stock are three numbers, and this phase uses all three**
+> (`docs/glossary.md` §4): the **stock baseline** is what Postgres hands back, a **stock
+> snapshot** is a `stock_snapshots` row updated on every ledger insert, and **reconciled stock**
+> is the subtraction — the figure the till sells against. The reconciliation is **additive, not
+> conflict resolution**: there is no last-write-wins anywhere in this system.
+>
+> **Pull applies to *pulled* tables**, i.e. online-authoritative ones — not to everything
+> "mirrored". `inventory_ledger` is mirrored yet is the one table both sides insert into, and
+> only its `type = 'stock_adjustment'` rows come down.
 
 ## Milestone
 Online catalog/user edits reach the branch within seconds of reconnect; local stock stays
@@ -337,6 +402,24 @@ correct across a sell-offline-then-sync cycle.
 
 ## Goal
 Let online branch-targeted adjustments happen without ever driving stock negative.
+
+> **Settled: an Owner or Admin, on any branch device, while online, may target any branch of
+> their business.** They pick the target branch in the in-app admin screens; the queue row
+> records it (`branch_id`) and the issuing user (`issued_by`). The undefined actors "online
+> admins" (`MULTIBRANCH-BRAINSTORM.md` §10) and "HQ" (`BranchGrants.php`,
+> `SchemaParityTest::POSTGRES_ONLY`) both meant exactly this.
+>
+> Two consequences this phase must carry:
+>
+> - **Add `inventory_update_queue` to `BranchGrants::INSERT` and re-run
+>   `BranchRole::reapplyGrants()` across existing schemas.** No branch role holds INSERT on it
+>   today — only the console's admin connection can create a row — so without this the feature
+>   is unreachable from the screens meant to offer it. Update the comment in `BranchGrants` that
+>   currently says "HQ issues the rows" at the same time.
+> - **This widens the deferred RLS gap, knowingly.** A branch credential able to insert a queue
+>   row for its own branch can insert one for any branch of the same business, since grants stop
+>   at the schema boundary. Same exposure class as forged `branch_id` on history rows (§4's
+>   annotation); one more table reaches it. Record it, don't quietly absorb it.
 
 ## Tasks
 - Online adjustments to a branch land in `inventory_update_queue` as **pending** (not yet a
@@ -362,9 +445,18 @@ reconnect, stock stays `≥ 0`, and the in-app admin shows the flag.
 Safe rollout of schema changes across independently-updated branches.
 
 ## Tasks
-- Sync carries the app's schema version; compare against the schema's **min-compatible app
-  version**; on incompatibility **refuse both push and pull** while the till **keeps selling**;
-  surface "update required" in-app and version-behind in the console.
+- Compare the device's **app version** (`config('nativephp.version')`, semver) against the
+  schema's **min app version** (`schema_meta.min_app_version`, semver). On
+  `app version < min app version`, **refuse both push and pull** while the till **keeps
+  selling**; surface "update required" in-app and version-behind in the console.
+
+> **This task previously read "sync carries the app's schema version"**, which named neither
+> value in the comparison. There are **three** quantities and the gate tests exactly one pair
+> (`docs/glossary.md` §6): **app version** (semver, the build), **schema version** (integer,
+> `schema_meta.schema_version`) and **min app version** (semver). The schema version is
+> *recorded* by both sides — `branch_status.schema_version`, `instance.schema_version` — and is
+> never what the gate compares. Building this from the old sentence would produce a gate that
+> compares the wrong pair and refuses (or admits) the wrong branches.
 - Console command to apply pending Postgres migrations to **one or all** schemas, bumping
   schema/min-app versions appropriately (additive migrations don't raise min-app).
 - **Call `BranchRole::reapplyGrants()` for every schema advanced.** M2 grants per table on
@@ -380,14 +472,29 @@ updating the app realigns versions and flushes the backlog.
 # Phase M10 — Monitoring: branch_status & console monitor
 
 ## Goal
-Central visibility into every branch and instance.
+Central visibility into every branch of every business.
 
 ## Tasks
-- Each instance **upserts** its `branch_status` (app/schema version, last_sync_at,
+- Each branch device **upserts** its `branch_status` (app/schema version, last_sync_at,
   unsynced_count, last_seen_at, connection_state, last_error) every cycle — inside that cycle's
   connection (§11.5), never on a heartbeat connection of its own. `connection_state` is derived
   from the last cycle's outcome, not from a socket held open to observe it.
 - Console **monitor** view aggregates `branch_status` across all schemas.
+
+> **Settled: `connection_state` carries four values on both sides** —
+> `online | offline | unauthorized | version_blocked` — so the local `sync_status`
+> (`docs/evitan-plus-erds.md` §2) and `branch_status` agree and the heartbeat is a straight
+> copy. Collapsing to `online | offline` would make a branch you disabled and a branch whose
+> internet is down the same row in the monitor, and those need opposite responses. The same
+> distinction matters at the till, where all three failure kinds look identical and only one is
+> fixed by waiting.
+>
+> **No migration is needed** — the column is a plain `varchar` with no check constraint. Adding
+> that constraint is worth doing here, since it is the only thing that makes the set enforceable
+> rather than conventional, and this phase is the first code to write the column.
+>
+> Note this is the **monitor**, not `branch:list` (M3): that command reports what the console
+> did, this reports what a branch is doing.
 
 ## Milestone
 The console lists every branch of every business with live version and sync health.
@@ -424,7 +531,9 @@ Prove the whole loop and lock the security boundary before shipping the custom b
   consolidated report), rotation (fresh AppImage + JSON), disable/enable.
 - **Release verification:** confirm the packaged app contains **no** console code and **no**
   admin credentials; branch creds are runtime-only and encrypted at rest.
-- Update `README.md` / release notes for the Evitan Plus build.
+- Update `README.md` / release notes for the Evitan Plus build — including the product split
+  itself: `README.md` still describes the single-install **Evitan POS** feature set ("no server,
+  no cloud, no network dependency"), which stays true of `v1.0.0` and is false of Evitan Plus.
 
 ## Milestone
 A green test suite and a verified build in which a single provisioned branch runs offline,

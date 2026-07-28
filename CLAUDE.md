@@ -8,7 +8,15 @@ The Laravel + React (Inertia) + NativePHP + SQLite app is **released — all 19 
 
 `BRAINSTORM.md` is the full functional spec and `ROADMAP.md` is the phased build plan. `docs/returns-refunds-voids-design.md` (after-sales) and `docs/receipt-printing-design.md` (printing) are the designs of record for their areas — where `BRAINSTORM.md`/`ROADMAP.md` disagree with them, the design docs win.
 
-Note: the product is named **Evitan Plus**. Use "Evitan Plus" for user-facing names unless told otherwise.
+## Vocabulary
+
+`docs/glossary.md` is **normative** for this project's terminology and **outranks every other document** — including this one and the design docs — on what a word means. Read it before writing anything against a spec. It exists because a large share of the multi-branch initiative's "As built" corrections were not design changes but a word meaning one thing in the spec and another in Postgres: a grant named on a column that a check constraint made unusable, a `branch:delete` that deletes no branch, a "credential" that is really two values. Each cost implementation time to rediscover.
+
+Two rules:
+- **A word that carries weight in a spec or a phase note gets an entry**, with the code artifact that anchors it. A term with no anchor is one two people can read differently.
+- **Don't coin a synonym for a defined term.** If a needed distinction has no word yet, add the entry rather than inventing a word in passing — that is precisely how `till`/`device`/`instance`, `outbox`/`queue`, and `mirrored`/`readable`/`pulled` each became three words for what readers assumed was one thing.
+
+Naming: **Evitan POS** is the shipped single-install, offline-only product (`v1.0.0`); **Evitan Plus** is the multi-branch, cloud-connected product the `M0–M12` initiative builds. They are different products with different application ids and data directories, not old and new spellings of one name (`RELEASE-NOTES.md`). Use "Evitan Plus" for user-facing names unless told otherwise.
 
 ## What this is
 

@@ -63,11 +63,17 @@ final class BranchGrants
      *
      *  - users, categories, items, variants, settings — maintained online.
      *  - branches, schema_meta — provisioning/console territory.
-     *  - inventory_update_queue — HQ issues the rows; the branch only resolves
-     *    them (see UPDATE_COLUMNS).
-     *  - import_history — §5.1 treats the import ledger as online-authoritative
-     *    and M6's outbox omits it. If in-app CSV import ever needs to sync, add
-     *    it here and re-run reapplyGrants().
+     *  - inventory_update_queue — the branch only RESOLVES rows here (see
+     *    UPDATE_COLUMNS). NOTE: M8 must ADD this table to INSERT and re-run
+     *    reapplyGrants(). Adjustments are issued by an Owner or Admin on any
+     *    branch device targeting any branch, so without the grant the feature
+     *    is unreachable from the screens meant to offer it — today only the
+     *    console's admin connection can create a row.
+     *  - import_history — CSV import is an ONLINE-ONLY operation, so the import
+     *    ledger genuinely is online-authoritative and this omission is correct
+     *    rather than incidental. Pushing imports would mean pushing their
+     *    `type = 'stock_adjustment'` ledger rows too, giving that class of row
+     *    two writers and breaking single-writer-per-table.
      *
      * @var list<string>
      */

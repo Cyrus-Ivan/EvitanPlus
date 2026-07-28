@@ -4,6 +4,8 @@
 
 The schema stays sync-compatible (UUID primary keys everywhere) so multi-branch and cloud sync remain possible later, but they are explicitly **out of scope** for the MVP.
 
+> **Naming.** This README describes the shipped single-install product — released as **Evitan POS** (`v1.0.0`) and renamed **Evitan Plus** thereafter (see `RELEASE-NOTES.md`). Work is now under way on the **multi-branch initiative** (`M0–M12`), which makes Evitan Plus a multi-branch, cloud-connected product backed by Supabase — at which point "no cloud, multi-branch out of scope" above stops being true of it. The two names then denote two products; `docs/glossary.md` §1 is normative on the split, and `MULTIBRANCH-BRAINSTORM.md` is that initiative's spec.
+
 ## Highlights
 
 - **Point of sale** — product grid and search (name / SKU / barcode), barcode scanner support, cart with quantity editing, amount/percentage discounts, cash / cashless / others payment types, cash-received and automatic change, and an optional checkout comment. Out-of-stock products stay visible but disabled.

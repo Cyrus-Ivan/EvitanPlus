@@ -1,6 +1,6 @@
 # Evitan Plus — data model ERDs
 
-> Vision document. It draws the **four data stores** the Evitan Plus initiative spans, explains
+> Vision document. It draws the **four data stores** the multi-branch initiative spans, explains
 > why each looks the way it does, and marks clearly what is **built** versus what is **proposed**
 > for the phases still ahead.
 >
@@ -8,6 +8,12 @@
 > new (the local sync tables, the console registry additions) it is a **proposal for M5–M10**,
 > not settled design. Everything marked *built* is read off the migrations in
 > `console/database/migrations/` (M1) and `database/migrations/` (v1.0.0).
+>
+> Vocabulary: `docs/glossary.md` is **normative** and outranks this document on what a word
+> means. Terms that carry weight here and are easy to read wrong — *mirrored* vs *readable* vs
+> *pulled*, *outbox* vs *queue*, *stock baseline* vs *stock snapshot* vs *reconciled stock*,
+> *app version* vs *schema version* — are defined there once, each against the code that
+> anchors it.
 
 ---
 
@@ -188,12 +194,12 @@ erDiagram
         uuid id PK
         uuid branch_id FK
         uuid variant_id FK
-        int quantity "signed: +restock, -sale"
+        int quantity "signed: + adds stock, - removes"
         int resulting_snapshot "check >= 0 — no negative stock"
-        varchar type "sale|return|defect|restock|adjustment|import"
-        varchar sale_type
+        varchar type "sale | stock_adjustment — decides sync direction"
+        varchar sale_type "sale | return | defect — null for adjustments"
         uuid reference_id "polymorphic"
-        varchar reference_type
+        varchar reference_type "transaction | manual_adjustment | csv_import | return"
         text notes
         uuid performed_by FK
         tstz created_at "IMMUTABLE — append-only"
@@ -315,12 +321,31 @@ conflicts are even possible:
 | Online-authoritative | `categories`, `items`, `variants`, `users`, `settings`, `branches` | online only (in-app admin while connected) | `SELECT` only |
 | Local-write, append-only | `transactions`, `transaction_items`, `sale_returns`, `sale_return_items`, `inventory_ledger`, `login_history`, `audit_logs`, `import_history` | the till, then pushed | `SELECT` + `INSERT` |
 | Coordination | `stock_snapshots`, `branch_status` | both, additively | `SELECT` + `INSERT` + `UPDATE` |
-| Coordination (mediated) | `inventory_update_queue` | HQ inserts, branch resolves | `SELECT` + column-level `UPDATE` on `status, resolved_at, rejection_reason, ledger_entry_id` |
+| Coordination (mediated) | `inventory_update_queue` | an Owner/Admin inserts, the target branch resolves | `SELECT` + column-level `UPDATE` on `status, resolved_at, rejection_reason, ledger_entry_id` (INSERT still to be granted — M8) |
 | Never | `schema_meta` (SELECT only), `migrations` | console | no grant |
 
 Because **every table has exactly one writer**, there is no last-write-wins anywhere and no
 merge logic to get wrong. The single shared quantity — stock — reconciles *additively* (§10 of
 the spec), never as a conflicting edit.
+
+> **Two qualifications on that table, both about words rather than shapes**
+> (`docs/glossary.md` is normative for these):
+>
+> - **`inventory_ledger` is the one table with two writers**, so listing it as "local-write" is
+>   shorthand. Its **`type`** column is what decides: `type = 'sale'` rows (any `sale_type`) are
+>   written on the till and pushed; `type = 'stock_adjustment'` rows are written online and
+>   pulled. The two never conflict because both are inserts. Note the spec's older vocabulary
+>   — *restock*, *adjustment*, *import* as if they were values of one six-valued column — does
+>   not describe this table: there are **three** independent columns, and **`restock` is not a
+>   value anywhere in the codebase** (it is a positive `stock_adjustment` with
+>   `reference_type = 'manual_adjustment'`).
+> - **"HQ" is retired.** The word appears here, in `BranchGrants.php` and in
+>   `SchemaParityTest::POSTGRES_ONLY` without ever having been defined; it means **an Owner or
+>   Admin, on any branch device, while online, targeting any branch of their business**. There
+>   is no head-office application and no separate console-side actor. Note that M8 must add
+>   `inventory_update_queue` to `BranchGrants::INSERT` for this to be reachable at all — the
+>   "HQ inserts" in the table above is not something any branch role can do today.
+>   `docs/glossary.md` §8.
 
 **No `DELETE` grant at all, plus triggers on top.** Grants stop a branch deleting history;
 the `evitan_reject_mutation()` trigger on the seven immutable tables (`transactions`,
@@ -342,9 +367,9 @@ the branch-code prefix.
 "negative inventory is never allowed" invariant becomes physically impossible rather than merely
 guarded — which matters precisely because a till may be pushing hours-old offline movements.
 
-**`inventory_update_queue` is the answer to the one genuinely hard problem.** HQ wants to
-subtract stock from a branch; the branch may have unsynced sales HQ cannot see. Applying the
-adjustment directly could drive reconciled stock negative. So an online adjustment is *not* a
+**`inventory_update_queue` is the answer to the one genuinely hard problem.** An Owner or Admin
+wants to subtract stock from a branch; that branch may have unsynced offline sales the issuer
+cannot see. Applying the adjustment directly could drive reconciled stock negative. So an online adjustment is *not* a
 ledger entry — it is a **pending proposal**, and only the branch, which alone knows its true
 reconciled stock, converts it into a ledger entry (`accepted`, with `ledger_entry_id` set) or
 refuses it (`rejected`, with a reason surfaced in the in-app admin). The
@@ -500,9 +525,10 @@ erDiagram
         uuid variant_id FK
         int quantity
         int resulting_snapshot
-        varchar type
+        varchar type "sale | stock_adjustment"
+        varchar sale_type "sale | return | defect — null for adjustments"
         uuid reference_id
-        varchar reference_type
+        varchar reference_type "transaction | manual_adjustment | csv_import | return"
         uuid performed_by FK
         datetime created_at
     }
@@ -593,6 +619,14 @@ mirrored table starts from zero without re-pulling everything else.
 `unauthorized` (role disabled by the console), `version_blocked` (the gate refused; app must
 update) and `network` matters enormously to the person standing at the till — all three look
 identical without it, and only one of them is fixed by waiting. None of them stop selling.
+
+> **Settled (M10): `connection_state` carries these same four values in Postgres too.** The
+> heartbeat is a straight copy rather than a lossy one. Collapsing `branch_status` to
+> `online | offline` would make a branch whose credential you disabled and a branch whose
+> internet is down the same row in the console monitor — two states needing opposite responses.
+> No migration is required, since the column has no check constraint; M10 should add one, which
+> is the only thing that would make the set enforceable rather than conventional. See
+> `docs/glossary.md` §8 and `MULTIBRANCH-BRAINSTORM.md` §14.
 
 **The local `inventory_update_queue` mirror is a proposal with a cost.** The spec lists this
 table as Postgres-only "coordination, not branch data", and `SchemaParityTest::POSTGRES_ONLY`

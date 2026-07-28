@@ -2,17 +2,17 @@
 
 # Evitan Plus — Multi-Branch, Provisioning Console & Sync
 
-> This document is the functional spec for the **Evitan Plus** initiative: evolving the
-> single-install **Evitan Plus** (`v1.0.0`) into a **multi-branch, cloud-connected** product
-> backed by Supabase (Postgres), plus a **developer-only Provisioning Console** that
-> oversees every business instance.
+> This document is the functional spec for the **multi-branch initiative**: evolving the
+> single-install **Evitan POS** (`v1.0.0`) into **Evitan Plus**, a **multi-branch,
+> cloud-connected** product backed by Supabase (Postgres), plus a **developer-only
+> Provisioning Console** that oversees every business.
 >
 > It is the sibling of the original `BRAINSTORM.md` (the offline single-install MVP spec).
 > Where the two disagree on multi-branch/sync matters, **this document wins**; where this
 > document is silent, the original invariants in `BRAINSTORM.md` / `CLAUDE.md` still hold.
 >
 > **Scope of this first deliverable:** the Provisioning Console, the online business schema,
-> the NativePHP instance's cloud connection, the developer-run setup wizard, and the
+> the branch device's cloud connection, the developer-run setup wizard, and the
 > **connection/sync engine** (bidirectional sync, status/heartbeat monitoring, and
 > Owner-facing consolidated cross-branch reporting). The full column-by-column sync mapping
 > of *every* auxiliary table is refined during the build; the core loop is in scope now.
@@ -22,16 +22,29 @@
 > **it wins** — the original prose is kept unchanged so the intent stays legible, but it is
 > no longer a description of the system. Each names the phase that made the call; the full
 > reasoning and its test coverage live in that phase's note in `MULTIBRANCH-ROADMAP.md`.
+>
+> **Vocabulary.** `docs/glossary.md` is **normative** for the terms used here, and outranks
+> this document where the two disagree about what a word means. Read it before writing a phase
+> against this spec: several of the "As built" notes below exist only because a word meant one
+> thing in this prose and another in Postgres. Words with a defined meaning that is easy to
+> assume wrong — *till*, *branch device*, *mirrored*, *readable*, *pulled*, *outbox* vs
+> *queue*, *app version* vs *schema version*, *revoke* vs *delete*, *credential* — are defined
+> there once, with the code that anchors each.
 
 ---
 
 ## 1. Overview & goals
 
-Evitan Plus today is a self-contained offline app for **one business installation**. Evitan
-Plus keeps that offline resilience but makes it the client of a **per-business Postgres
-schema** on Supabase, so a single business can run **multiple branches** that share one
-authoritative dataset, while the developer operates a console that provisions and monitors
-every instance.
+**Evitan POS** (`v1.0.0`) is a self-contained offline app for **one business installation**.
+**Evitan Plus** keeps that offline resilience but makes the app the client of a **per-business
+Postgres schema** on Supabase, so a single business can run **multiple branches** that share
+one authoritative dataset, while the developer operates a console that provisions and monitors
+every branch.
+
+> The two names are **different products**, not old and new spellings of one — see
+> `docs/glossary.md` §1. Evitan POS remains a released artifact with its own application id and
+> its own on-disk data directory; an Evitan Plus build does not adopt an Evitan POS install's
+> data (`RELEASE-NOTES.md`).
 
 **Primary goals**
 
@@ -61,11 +74,26 @@ every instance.
 
 | Actor | Touches | Never touches |
 |---|---|---|
-| **Developer (you)** | Provisioning Console; hardware/OS prep; AppImage install; setup wizard; schema migrations; credential rotation; monitoring | — |
-| **Business Owner** | In-app screens: login (pre-created Owner), POS, in-app admin (inventory, users, settings, reports incl. consolidated cross-branch) | Provisioning Console, setup wizard, DB credentials |
+| **Developer (you)** | Provisioning Console; hardware/OS prep; build install; setup wizard; schema migrations; credential rotation; monitoring | — |
+| **Business Owner** | In-app screens: login (pre-created Owner), POS, in-app admin screens (inventory, users, settings, reports incl. consolidated cross-branch) | Provisioning Console, setup wizard, DB credentials |
 | **Admin / Cashier** | In-app POS + permitted in-app screens | Provisioning Console, setup, credentials |
 
-**The onboarding chain is entirely developer-run:**
+> **Three unrelated things are called "admin" in this document**, and the difference decides who
+> can do what (`docs/glossary.md` §1):
+>
+> - **Admin** — a *permission role*, one rung below Owner (`app/Enums/UserRole.php`).
+> - **The in-app admin screens** — the business's own management UI. A *surface*, not a person;
+>   an Owner uses them too. Where a rejected inventory adjustment is flagged (§10).
+> - **The console admin connection** — the console's privileged Postgres login that owns all
+>   DDL and role management. Never present in a shipped build (§18).
+>
+> "Role" is likewise two systems: a **permission role** (Owner/Admin/Cashier, app-enforced,
+> per-user) and a **branch role** (a Postgres login, per-branch, not user-aware). §6 depends on
+> them staying apart. Only the **Developer** appears as an actor here — "operator" elsewhere in
+> this document means the same person, and survives only as the console's audit identity string.
+
+**The onboarding chain is entirely developer-run** — *onboarding* is the whole chain,
+*provisioning* only its first step:
 
 ```
 Provision business (console)  →  configure hardware/OS  →  place AppImage on device
@@ -99,7 +127,7 @@ during provisioning.
                                                         │   pull catalog/users/stock,
                                                         │   process inventory queue)
                                          ┌──────────────┴───────────────┐
-                                         │  Evitan Plus app instance     │  (one per branch)
+                                         │  Evitan Plus branch device    │  (one per branch)
                                          │  custom NativePHP binary      │
                                          │  ┌──────────────┐             │
                                          │  │ SQLite (local│  offline    │
@@ -212,12 +240,28 @@ Written **only** on the till, append-only/immutable, pushed as brand-new UUID-ke
 - `stock_snapshots` — per-branch current stock, ledger-derived; reconciled additively (§10).
 - `inventory_update_queue` — pending online adjustments awaiting branch confirmation (§10).
 - `branch_status` — per-branch heartbeat: app version, schema version, last sync, unsynced
-  count, last seen (§15).
+  count, last seen (§14).
 
 > **Mirror scope:** the local SQLite mirror is **branch-scoped** for everything (this
 > branch's stock, this branch's transactions/history) **except `users`**, which is mirrored
 > business-wide to satisfy any-user/any-branch offline login. The full multi-branch dataset
 > lives only in Postgres.
+
+> **"Mirrored" is three different sets, and this document used the one word for all of them.**
+> They differ in both size and membership, so a sentence that says "mirrored" without meaning
+> one of these specifically is not actionable. `docs/glossary.md` §3 is normative:
+>
+> | Term | Means | Set |
+> |---|---|---|
+> | **mirrored** | structure must match on both sides, enforced by the parity guard (§13) | 14 tables — `SchemaParityTest::MIRRORED` |
+> | **readable** | the branch role may `SELECT` it | 18 tables — `BranchGrants::SELECT` (everything but `migrations`) |
+> | **pulled** | online-authoritative; flows down, never written locally | §5.1 — catalog, `users`, `settings`, `branches`, `schema_meta` |
+>
+> The differences are load-bearing, not pedantic. `branch_status` and `inventory_update_queue`
+> are **readable but not mirrored** (Postgres-only coordination). `inventory_ledger` is
+> **mirrored** yet neither purely pulled nor purely local-write — it is the one table both sides
+> insert into. The phrase **"mirrored/append tables"** used in §7 is retired for exactly this
+> reason: it named no set.
 
 > **As built (M1/M2).** The table *names* in §5.1–§5.3 are design vocabulary; the schema is
 > shaped like the app, which is what the parity guard (§13) requires. Corrections:
@@ -231,8 +275,28 @@ Written **only** on the till, append-only/immutable, pushed as brand-new UUID-ke
 >   online-authoritative and read-only to the till, which reads it every sync to decide
 >   whether it may sync at all. `import_history` is currently treated as
 >   online-authoritative too — the branch role has SELECT but **no INSERT** on it, which
->   means in-app CSV imports do **not** sync upward today. That was a grant-matrix
->   consequence, not a considered product decision; **M6 must settle it** (§19).
+>   means in-app CSV imports do **not** sync upward. That was a grant-matrix consequence rather
+>   than a considered decision when written, but it has since been **examined and kept**: CSV
+>   import is an online-only operation, so `import_history` genuinely is online-authoritative
+>   and these grants are right as they stand. See §17, which explains why pushing imports would
+>   have given `stock_adjustment` rows two writers.
+> - **The six ledger "types" named above do not exist as values.** §5.1 says *restock /
+>   manual adjustment / import* and §5.2 says *sale / return / defect*, as though
+>   `inventory_ledger` carried one six-valued column. It carries **three independent**
+>   columns, and this is the app's own shape, unchanged:
+>
+>   | Column | Allowed values |
+>   |---|---|
+>   | `type` | `sale` \| `stock_adjustment` |
+>   | `sale_type` | `sale` \| `return` \| `defect` (null for adjustments) |
+>   | `reference_type` | `transaction` \| `manual_adjustment` \| `csv_import` \| `return` |
+>
+>   **`restock` is not a value anywhere in the codebase** — it is a UI framing of a *positive*
+>   `stock_adjustment` with `reference_type = manual_adjustment`. Likewise "import" is
+>   `reference_type = csv_import`, not a type. So read §5.1's last bullet as **`type =
+>   stock_adjustment`** and §5.2's as **`type = sale`** (any `sale_type`): that single column is
+>   what decides which way a ledger row moves. M6, M7 and M8 are all specified in these words —
+>   see `docs/glossary.md` §4, which is normative for them.
 
 ---
 
@@ -450,11 +514,11 @@ pulled by the new branch at hydrate.)
 ### 8.4 Migrate schemas on updates
 - The console holds the Postgres migration set and can apply pending migrations to **one or
   all** business schemas. Migrations carry a **schema version** and a **minimum-compatible
-  app version** used by the sync version gate (§14).
+  app version** used by the sync version gate (§13).
 
 ### 8.5 Monitor
 - Reads `branch_status` across all schemas to show, per branch: app version, schema version,
-  last sync time, unsynced count, last seen, connection state. See §15.
+  last sync time, unsynced count, last seen, connection state. See §14.
 
 ### 8.6 Console self-audit
 - Every provision/migrate/rotate/disable/delete writes a developer-side provisioning audit
@@ -537,30 +601,64 @@ Stock is **ledger-derived** and is the only quantity both sides influence — bu
 never as a conflicting edit.
 
 ```
-current stock = Σ(online ledger: restocks, adjustments, imports)
-              + Σ(local ledger: sales, returns, defects)
+current stock = Σ(ledger rows where type = 'stock_adjustment')   -- written online
+              + Σ(ledger rows where type = 'sale')               -- written on the till
 ```
+Both sums are signed, and both are inserts — which is the whole reason they never conflict.
+`type` is the only column that decides which side wrote a row; `sale_type` and `reference_type`
+say *what kind* of movement it was, not who owns it. See §5's As-built note and
+`docs/glossary.md` §4 — the words *restock*, *adjustment* and *import* used earlier in this
+document are not values in this column.
 
 **Local reconciliation rule (never blind-overwrite):**
 ```
-effective local stock = pulled Postgres baseline − local unsynced out-movements
+reconciled stock = pulled stock baseline − local unsynced out-movements
 ```
-When the till pulls the stock baseline, that baseline reflects online entries only and does
-**not** yet include the till's unsynced sales; those are subtracted locally. Once the local
-sales push and Postgres recomputes, the next pulled baseline already includes them and the
-unsynced set is empty again. It self-heals.
+When the till pulls the **stock baseline**, that baseline reflects online entries and
+already-pushed local ones, and does **not** yet include the till's unsynced sales; those are
+subtracted locally. Once the local sales push and Postgres recomputes, the next pulled baseline
+already includes them and the unsynced set is empty again. It self-heals.
+
+> **Baseline, snapshot and reconciled stock are three different numbers** and this section
+> needs all three: the **stock baseline** is the figure pulled from Postgres, a **stock
+> snapshot** is a `stock_snapshots` row (`check (quantity >= 0)`, updated on every ledger
+> insert), and **reconciled stock** is the subtraction above — the number the till actually
+> sells against. `docs/glossary.md` §4.
 
 **Why staleness is safe:**
 - A price change / archive done online while offline: the sale **snapshots** its price and
-  commits (immutable history). HQ just sees a now-old price; next pull refreshes the catalog.
-- A restock done online while offline only raises stock; a stale-low baseline can at worst
-  wrongly *block* a sale — it can never oversell. One-device-per-branch removes intra-branch
-  oversell entirely.
+  commits (immutable history). The online dataset just holds a now-old price; next pull
+  refreshes the catalog.
+- A positive `stock_adjustment` made online while offline only raises stock; a stale-low
+  baseline can at worst wrongly *block* a sale — it can never oversell. One-device-per-branch
+  removes intra-branch oversell entirely.
 
 **The inventory update queue (subtractive online adjustments):**
-Online admins can also *subtract* stock from a branch. A naive apply could drive reconciled
-stock negative once unsynced offline sales arrive. So branch-targeted adjustments are
-**mediated**:
+An Owner or Admin using the in-app admin screens while online can also *subtract* stock from a
+branch. A naive apply could drive reconciled stock negative once unsynced offline sales arrive.
+So branch-targeted adjustments are **mediated**:
+
+> **Settled: who issues an adjustment, and from where.** An **Owner or Admin, on any branch
+> device, while online, may target any branch of their business** — they choose the target
+> branch in the in-app admin screens, and `inventory_update_queue` records both it (`branch_id`)
+> and the issuing user (`issued_by`). This is the reading the built table already assumed, and
+> the only one consistent with §2 (the Owner never touches the Provisioning Console) and §15
+> (an Owner already sees consolidated cross-branch data from a single device). The words
+> "online admins" and "HQ" used elsewhere in this document and in `BranchGrants.php` mean
+> exactly this actor and are retired in favour of it.
+>
+> **Two consequences M8 must carry, neither of them optional:**
+>
+> 1. **`inventory_update_queue` must be added to `BranchGrants::INSERT`.** As built, no branch
+>    role can insert into it — only the console's admin connection can, which would make this
+>    feature unreachable from the screens that are supposed to offer it. The grant is not there
+>    today, so M8 adds it and re-runs `BranchRole::reapplyGrants()` across existing schemas.
+> 2. **This widens the deferred RLS gap (§19), and knowingly.** Grants stop at the schema
+>    boundary, so a branch credential that can insert a queue row for *its own* branch can
+>    insert one for *any* branch of the same business. That is the same exposure §4's
+>    annotation already records for forged `branch_id` values on history rows — one business
+>    still cannot reach another's data — but it is now reachable through one more table.
+>    Row-level security remains the fix and remains unbuilt.
 
 1. An online adjustment for a branch is written to `inventory_update_queue` as **pending**
    (it is **not** yet an authoritative ledger entry).
@@ -581,23 +679,36 @@ processes the queue seconds later on the next opportunistic/polled cycle).
 ## 11. The sync engine
 
 ### 11.1 Write path
-**Local-first, always.** Every offline-capable write commits to SQLite and is queued in an
+**Local-first, always.** Every offline-capable write commits to SQLite and is enqueued in the
 **outbox**. Immediately after each checkout, if online, an **opportunistic sync** fires for
 that transaction so Postgres trails by *seconds*, not a full cycle — without putting the
 network in the commit path.
 
+> **"Outbox" and "queue" are two unrelated structures moving in opposite directions**, and this
+> document has used "queue" for both. The **outbox** (`sync_outbox`) holds *this branch's* work
+> going **up**; the **inventory update queue** (`inventory_update_queue`) holds *adjustments
+> issued elsewhere* coming **down**. From here on the bare word "queue" means only the latter;
+> say "outbox" or "backlog" for the former. `docs/glossary.md` §5.
+
 ### 11.2 Sync cycle (bidirectional, in scope now)
-On a successful connectivity **probe**, one cycle does, in order:
+A **sync cycle** is the single ordered unit of sync, and the only thing that opens a Postgres
+connection (§11.5). On a successful connectivity **probe**, one cycle does, in order:
+
+0. **Version gate** (§13): read `schema_meta` and refuse the whole cycle, in both directions,
+   if this build is below `min_app_version`.
 1. **Push** the outbox (insert-only, UUID-keyed, idempotent): sales, transaction_items,
-   returns, defects, sale/return/defect ledger rows, login_history, local audit.
+   sale_returns, sale/return/defect ledger rows, login_history, local audit.
 2. **Process** the `inventory_update_queue` (§10).
 3. **Pull** deltas of online-authoritative tables (catalog, users, settings, branch identity)
    and the recomputed **stock baseline**; apply the local reconciliation rule.
-4. **Heartbeat**: upsert this branch's `branch_status` row (§15).
+4. **Heartbeat**: upsert this branch's `branch_status` row (§14).
 
-Push precedes pull so that stock reconciliation sees the branch's own movements reflected.
-Deltas are detected via `updated_at`/change markers on the authoritative tables. The cycle opens
-the Postgres connection and closes it again on the way out — see §11.5.
+The order is load-bearing. Push precedes pull so that stock reconciliation sees the branch's own
+movements reflected; the queue runs after push for the same reason, since an adjustment can only
+be validated against true reconciled stock once the already-happened movements have landed; and
+the heartbeat runs last so `unsynced_count` and `last_error` describe the cycle that just
+finished. Deltas are detected via `updated_at`/change markers on the authoritative tables. The
+cycle opens the Postgres connection and closes it again on the way out — see §11.5.
 
 ### 11.3 Connectivity detection (near-instant, no OS-specific code)
 - **Instant trigger:** the React/Inertia UI runs in the NativePHP webview, so it listens to
@@ -673,14 +784,28 @@ and a failed sync never stops a till selling.
 **Two independently-versioned things:** the **app build** on each device and the **Postgres
 schema version** the console migrates to.
 
-- Each sync request carries the app's schema version. The schema declares a
-  **minimum-compatible app version**. If the app is below it (a breaking migration ran ahead
-  of the branch's build), sync is **refused in both directions** (a stale push would corrupt
-  Postgres; a new-format pull would corrupt the old SQLite) — but the till **keeps selling
-  offline**; the console shows the branch as version-behind. Updating the app realigns
-  versions and flushes the queued work.
+**Three quantities, and the gate compares exactly one pair.** Getting these confused is the
+easiest way to build the gate wrong, so they are named precisely (`docs/glossary.md` §6):
+
+| Quantity | Type | Where it lives |
+|---|---|---|
+| **app version** | semver string | the device's build — `config('nativephp.version')` |
+| **schema version** | integer | `schema_meta.schema_version` |
+| **min app version** | semver string | `schema_meta.min_app_version` |
+
+- Each sync cycle compares **app version ≥ min app version**. If the app is below it (a
+  breaking migration ran ahead of the branch's build), sync is **refused in both directions** (a
+  stale push would corrupt Postgres; a new-format pull would corrupt the old SQLite) — but the
+  till **keeps selling offline**; the console shows the branch as version-behind. Updating the
+  app realigns versions and flushes the backlog.
 - Additive/backward-compatible migrations do **not** raise the min-compatible version, so
   routine updates don't needlessly freeze every branch.
+
+> **This bullet previously read "each sync request carries the app's schema version"**, which
+> named neither of the two values being compared — an app carries an *app* version, and the
+> schema version is a separate integer that both sides merely *record* (`branch_status` stores
+> both, and `instance` will too). Nothing about the mechanism changed; the sentence simply did
+> not describe it, and M9 is built from this section.
 
 **Migrations are separated:**
 - **Postgres schema migrations** — owned by the Provisioning Console, applied to business
@@ -698,13 +823,33 @@ identical: Postgres has extra tables the till never mirrors.)
 
 ## 14. Monitoring & status
 
-- Each instance upserts its `branch_status` row **inside its own business schema** on every
-  sync (fits least privilege — the branch role writes only its own schema).
+- Each branch device upserts its `branch_status` row **inside its own business schema** on
+  every sync (fits least privilege — the branch role writes only its own schema). One row per
+  branch: `branch_id` is the primary key, because a heartbeat is current state, not history.
 - Fields: `branch_id`, `app_version`, `schema_version`, `last_sync_at`, `unsynced_count`,
-  `last_seen_at`, `connection_state`.
+  `last_seen_at`, `connection_state`, `last_error`.
 - The console aggregates `branch_status` across all schemas for its monitor view.
-- **Unsynced count** = outbox depth; **last sync status** = last successful cycle + any last
-  error (auth/version/network) surfaced both in-app and to the console.
+- **Unsynced count** is defined as `count(*) where synced_at is null` in the outbox — a derived
+  figure with one definition and no counter to drift (`check (unsynced_count >= 0)`).
+  **Last sync status** = last successful cycle + any last error (auth/version/network) surfaced
+  both in-app and to the console.
+
+> **Settled: `connection_state` carries four values on both sides** —
+> `online | offline | unauthorized | version_blocked` — so the local `sync_status` table
+> (`docs/evitan-plus-erds.md` §2) and `branch_status` agree, and the heartbeat is a
+> straight copy rather than a lossy one.
+>
+> The distinction earns its place twice over. **At the till**, `unauthorized` (role disabled by
+> the console), `version_blocked` (the §13 gate refused) and `network` look identical without
+> it, and only one of them is fixed by waiting. **In the console monitor**, collapsing to
+> `online | offline` would make a branch whose credential you disabled and a branch whose
+> internet is down the same row — two states needing opposite responses from the developer.
+> None of the four stop the till selling.
+>
+> No migration is required: `branch_status.connection_state` is a plain `varchar` with no check
+> constraint, so this is a widening of the documented vocabulary, not of the schema. M10 should
+> still consider adding the check constraint, which is the only thing that would make the set
+> enforceable rather than conventional.
 
 ---
 
@@ -742,10 +887,31 @@ provisioning. It requires internet on first run and:
 | Login / logout, local audit | ✅ | All users cached; login_history queued |
 | Branch-local reports | ✅ | Recomputed from local sales−returns−defects |
 | Read catalog / prices | ✅ | From last-pulled mirror (may be slightly stale) |
-| Restock / inventory adjust | ❌ | Online-only; adjustments mediated via the queue |
+| Stock adjustment (in / out) | ❌ | Online-only; subtractive ones mediated via the queue (§10) |
 | User CRUD, item/catalog CRUD | ❌ | Online-only (authoritative in Postgres) |
+| **CSV import** | ❌ | **Online-only** — see below |
 | Consolidated cross-branch reports | ❌ | Online-only (queries Postgres across branches) |
 | Sync / monitoring | ❌ | Requires connectivity; till keeps selling regardless |
+
+> **Settled: CSV import is an online-only operation, and this row is not a formality.** An
+> in-app import writes `type = 'stock_adjustment'` ledger rows (`reference_type = 'csv_import'`).
+> §5.1 classifies those as online-authoritative and **pulled down**, so M6's outbox does not
+> carry them — meaning a branch that imported while offline would create local stock movements
+> that could **never** reach Postgres, and its stock would diverge permanently and silently.
+> That is the one failure mode this whole design exists to prevent.
+>
+> Keeping import online-only resolves it without weakening anything: it sits naturally beside
+> the catalog CRUD row directly above it, and it means `import_history` genuinely *is*
+> online-authoritative — so the branch role holding `SELECT` but no `INSERT` on it (§5's
+> annotation flagged this as an unexamined grant-matrix side effect) turns out to be correct,
+> and stays as it is.
+>
+> The alternative — pushing imports and reclassifying their ledger rows as local-write — was
+> rejected because it would give `stock_adjustment` rows **two writers**, and single-writer-per
+> table (§4) is the reason there is no last-write-wins anywhere in this system.
+>
+> **M6 owes one behavioural change for this:** the shipped v1.0.0 CSV import screen must be
+> gated behind connectivity rather than silently producing unsyncable rows.
 
 ---
 
@@ -782,7 +948,19 @@ Added by the build (see the annotations that reference them):
   the schema boundary, so a compromised branch credential can insert rows tagged with another
   branch's `branch_id` (§4, §7). Not a theoretical gap: it is the difference between what §4
   currently claims and what the system enforces.
-- **Whether `import_history` syncs upward** — the branch role has SELECT but no INSERT on it,
-  so in-app CSV imports stay branch-local today (§5). A grant-matrix side effect, not a
-  decision. Settle it in M6, and if imports must sync, add the table to `BranchGrants::INSERT`
-  and re-run `reapplyGrants()` across existing schemas.
+**Closed by the vocabulary pass.** Three items that had been open — one of them a genuine hole
+in the design rather than a naming problem — were settled and are no longer deferred. Recorded
+here because each carries work into a later phase:
+
+- **Who issues inventory adjustments, and from where** → **an Owner or Admin, on any branch
+  device, while online, may target any branch of their business** (§10). The undefined actors
+  "online admins" and "HQ" both meant this. **M8 must add `inventory_update_queue` to
+  `BranchGrants::INSERT`** — no branch role holds it today, which would leave the feature
+  unreachable from the screens meant to offer it — and re-run `reapplyGrants()`. This knowingly
+  widens the RLS gap still listed above.
+- **`connection_state`'s value set** → **four values on both sides**,
+  `online | offline | unauthorized | version_blocked` (§14). No migration needed; M10 may add
+  the check constraint that would make the set enforceable.
+- **Whether `import_history` syncs upward** → **no, and CSV import becomes online-only** (§17).
+  The branch role's `SELECT`-without-`INSERT` on that table turns out to be correct. **M6 owes
+  the connectivity gate** on the import screen.

@@ -10,9 +10,9 @@ use Illuminate\Support\Facades\Schema;
  * the pending rows it must act on, but this table is not part of the app's
  * SQLite schema, so the parity guard excludes it by name.
  *
- * Why it exists: an online admin subtracting stock from a branch cannot be
- * applied as an authoritative ledger entry immediately, because the branch may
- * be holding unsynced offline sales that have already consumed that stock.
+ * Why it exists: subtracting stock from a branch while online cannot be applied
+ * as an authoritative ledger entry immediately, because the branch may be
+ * holding unsynced offline sales that have already consumed that stock.
  * Applying both blindly would drive reconciled stock negative.
  *
  * So the adjustment lands here as `pending`. On the branch's next sync the
@@ -22,7 +22,23 @@ use Illuminate\Support\Facades\Schema;
  * and flag it for the Owner to re-issue. The row only becomes authoritative on
  * acceptance, so neither side can ever go negative.
  *
- * `status` is the one column a branch role may UPDATE (§7).
+ * A branch role may UPDATE FOUR columns here, not `status` alone as §7's prose
+ * says: `inventory_update_queue_resolved_at` below ties `status` to
+ * `resolved_at`, so a grant on `status` by itself permits nothing. See
+ * BranchGrants::UPDATE_COLUMNS, which is the operative matrix.
+ *
+ * WHO inserts these rows: an Owner or Admin, on any branch device, while
+ * online, targeting any branch of their business — hence `branch_id` (target)
+ * and `issued_by` (user). The words "online admin" and "HQ" used elsewhere both
+ * mean this actor.
+ *
+ * M8 MUST add this table to BranchGrants::INSERT and re-run
+ * BranchRole::reapplyGrants(). No branch role holds INSERT on it today, so as
+ * built only the console's admin connection can create a row — which would
+ * leave the feature unreachable from the screens meant to offer it. Doing so
+ * knowingly widens the deferred RLS gap: grants stop at the schema boundary, so
+ * a credential able to queue an adjustment for its own branch can queue one for
+ * any branch of the same business. See docs/glossary.md §8.
  */
 return new class extends Migration
 {

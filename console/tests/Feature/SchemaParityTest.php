@@ -46,7 +46,7 @@ class SchemaParityTest extends TestCase
     private const POSTGRES_ONLY = [
         'branches' => 'the till knows only which branch it is, never the roster',
         'schema_meta' => 'the version gate lives server-side',
-        'inventory_update_queue' => 'coordination between HQ and a branch, not branch data',
+        'inventory_update_queue' => 'coordination between the issuing user and a branch, not branch data',
         'branch_status' => 'per-branch heartbeat consumed by the console monitor',
         'migrations' => "Laravel's own ledger",
     ];

@@ -28,7 +28,12 @@ return new class extends Migration
             // Outbox depth: how far behind this branch currently is.
             $table->integer('unsynced_count')->default(0);
             $table->timestampTz('last_seen_at')->nullable();
-            // Allowed: online | offline
+            // Allowed: online | offline | unauthorized | version_blocked.
+            // Same four values as the till's local sync_status, so the
+            // heartbeat is a straight copy: "disabled credential" and "no
+            // internet" must not collapse to one row in the console monitor,
+            // since they need opposite responses. Not yet a check constraint —
+            // M10 writes this column first and should add one then.
             $table->string('connection_state')->nullable();
             // Last failure surfaced to both the till and the monitor
             // (auth / version / network).

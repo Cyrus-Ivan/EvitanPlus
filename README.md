@@ -93,6 +93,12 @@ Laravel app with its own dependency tree.
 > recipes, a symptom→cause→fix troubleshooting table, and how to read the
 > provisioning audit trail.
 
+Once it is set up, `php console/artisan` with no arguments opens `console:run`,
+an interactive menu: pick a business, pick a branch, pick an action. That is the
+intended way to drive it. The commands below are the scripting surface and what
+the menu dispatches — each one still confirms and reports exactly as it does
+here, because the menu never passes `--force`.
+
 ```bash
 (cd console && composer install)
 cp console/.env.example console/.env
@@ -129,6 +135,11 @@ php console/artisan branch:rotate  --business=<business-uuid> --branch-code=MNL
 php console/artisan branch:disable --business=<business-uuid> --branch-code=MNL
 php console/artisan branch:enable  --business=<business-uuid> --branch-code=MNL
 php console/artisan branch:revoke  --business=<business-uuid> --branch-code=MNL
+
+# The menu over all of the above. Also the default command, so a bare
+# `php console/artisan` opens it. Needs a terminal; it refuses under
+# --no-interaction rather than hanging on a prompt.
+php console/artisan console:run
 
 # Console test suite, in two halves. The Feature half needs the credentials
 # above and exercises the real Supabase project; it skips itself cleanly without

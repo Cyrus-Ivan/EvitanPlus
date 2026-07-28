@@ -3,7 +3,6 @@
 namespace Provisioning\Support;
 
 use Illuminate\Database\Connection;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use RuntimeException;
 use stdClass;
@@ -44,17 +43,18 @@ final class CredentialIssuance
     /**
      * Is the issuance table migrated?
      *
-     * Checked in every M3 preflight alongside ProvisioningAudit::isReady(). A
+     * Checked in every preflight alongside ProvisioningAudit::isReady(). A
      * console that predates this table would otherwise issue credentials that
      * silently go unrecorded — and unlike the audit trail, this record cannot
      * be reconstructed afterwards, because the secret is gone.
+     *
+     * Read-only, for the reason spelled out on ProvisioningAudit::isReady():
+     * pinConsole() creates the schema, so asking used to be a write.
      */
     public function isReady(): bool
     {
         try {
-            SchemaConnection::pinConsole();
-
-            return Schema::connection(SchemaConnection::CONSOLE_NAME)->hasTable(self::TABLE);
+            return SchemaConnection::hasTable(SchemaName::CONSOLE, self::TABLE);
         } catch (Throwable) {
             return false;
         }

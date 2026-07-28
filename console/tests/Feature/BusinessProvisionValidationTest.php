@@ -8,6 +8,7 @@ use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Provisioning\Support\BranchRole;
 use Provisioning\Support\BusinessProvisioner;
+use Provisioning\Support\CredentialIssuance;
 use Provisioning\Support\ProvisioningAudit;
 use Provisioning\Support\SchemaConnection;
 use Provisioning\Support\SchemaName;
@@ -172,7 +173,7 @@ class BusinessProvisionValidationTest extends TestCase
 
         $this->assertTrue(BranchRole::exists($role));
 
-        $problems = (new BusinessProvisioner(new ProvisioningAudit))
+        $problems = (new BusinessProvisioner(new ProvisioningAudit, new CredentialIssuance))
             ->preflight(SchemaName::forBusiness((string) Str::orderedUuid()), $role);
 
         $this->assertNotEmpty($problems);

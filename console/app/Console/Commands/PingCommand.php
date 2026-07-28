@@ -147,7 +147,25 @@ class PingCommand extends Command
      */
     private function reportBranchEndpoint(): int
     {
-        $endpoint = SupabaseEndpoint::forBranch();
+        // Guarded, because forBranch() throws by design on exactly the two
+        // misconfigurations this command exists to name: no pgsql_admin at all,
+        // and a CONSOLE_BRANCH_DB_PORT it refuses to guess at. Unguarded, a
+        // stray space in that env value turned "run this first whenever
+        // anything looks wrong" into a PHP stack trace — and did it on the
+        // failed-connection path too, the one whose whole purpose is to produce
+        // one complete diagnosis per run.
+        try {
+            $endpoint = SupabaseEndpoint::forBranch();
+        } catch (Throwable $e) {
+            $this->newLine();
+            $this->components->error('The branch endpoint cannot be derived: '.$e->getMessage());
+            $this->components->bulletList([
+                'CONSOLE_BRANCH_DB_HOST / CONSOLE_BRANCH_DB_PORT override it; both default sensibly, so the common case sets neither.',
+                'Every credentials JSON carries this endpoint, so nothing can be provisioned until it resolves.',
+            ]);
+
+            return self::FAILURE;
+        }
 
         $this->newLine();
         $this->components->info('Endpoint branch devices are issued');

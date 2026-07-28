@@ -103,6 +103,40 @@ class PingCommandTest extends CredentialFreeTestCase
         $this->assertStringContainsString('6543', $output);
     }
 
+    /**
+     * The command exists to diagnose a broken configuration, so it must not be
+     * one of the things a broken configuration takes down.
+     *
+     * SupabaseEndpoint::forBranch() throws by design on a port it will not
+     * guess at, and this call site used to be unguarded — including inside the
+     * failed-admin catch, the path whose whole purpose is to produce one
+     * complete diagnosis per run. A stray space in the env value turned "run
+     * this first whenever anything looks wrong" into a PHP stack trace.
+     */
+    public function test_an_unparseable_branch_port_is_reported_not_thrown(): void
+    {
+        $this->fakeAdminConnection(self::DEAD);
+        $this->fakeEnv('CONSOLE_BRANCH_DB_PORT', '654 3');
+
+        $exit = Artisan::call('console:ping');
+        $output = Artisan::output();
+
+        $this->assertNotSame(0, $exit, $output);
+        $this->assertStringContainsString('The branch endpoint cannot be derived', $output);
+        $this->assertStringContainsString('CONSOLE_BRANCH_DB_PORT', $output);
+        $this->assertStringNotContainsString('Stack trace', $output);
+    }
+
+    /** Same guard on the healthy-admin path, which reaches it from elsewhere. */
+    public function test_an_unparseable_branch_port_does_not_escape_the_command(): void
+    {
+        $this->fakeAdminConnection(self::DEAD);
+        $this->fakeEnv('CONSOLE_BRANCH_DB_PORT', 'abc');
+
+        // The assertion is that this returns at all rather than throwing.
+        $this->assertNotSame(0, Artisan::call('console:ping'));
+    }
+
     public function test_it_reports_the_login_shape_a_branch_will_carry(): void
     {
         $this->fakeAdminConnection(self::DEAD);

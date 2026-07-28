@@ -108,4 +108,26 @@ final class SchemaConnection
             [SchemaName::validate($schema)],
         ) !== null;
     }
+
+    /**
+     * Does a table exist in a schema — asked WITHOUT creating either.
+     *
+     * The obvious spelling, `Schema::connection(pin($schema))->hasTable()`,
+     * cannot answer this question honestly: pinning goes through
+     * pinConsole()/ensureExists() or needs a schema that already exists, so
+     * merely asking creates one. That turned every isReady() preflight into
+     * DDL — enough that `branch:list`, documented as read-only and "therefore
+     * not audited", created `evitan_console` on a project where console:migrate
+     * had never run.
+     *
+     * information_schema is the same source exists() reads, and the table name
+     * is a bound value here rather than an interpolated identifier.
+     */
+    public static function hasTable(string $schema, string $table): bool
+    {
+        return DB::connection('pgsql_admin')->selectOne(
+            'select 1 as found from information_schema.tables where table_schema = ? and table_name = ?',
+            [SchemaName::validate($schema), $table],
+        ) !== null;
+    }
 }

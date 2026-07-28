@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Console\Application as Artisan;
 use Illuminate\Foundation\Application;
 
 /*
@@ -25,8 +26,18 @@ use Illuminate\Foundation\Application;
 | Illuminate\Contracts\Debug\ExceptionHandler, which the HandleExceptions
 | bootstrapper resolves on every single boot.
 |
+| The default command is console:run, so `php console/artisan` with no
+| arguments opens the interactive menu instead of printing Symfony's command
+| list. This tool's whole usability problem is that it is eleven flag-driven
+| commands and a runbook; the zero-argument invocation landing on the
+| navigable thing is the point. `php console/artisan list` still prints the
+| command list explicitly, and every named command is unaffected.
+|
 */
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withExceptions()
+    ->booting(fn () => Artisan::starting(
+        fn (Artisan $artisan) => $artisan->setDefaultCommand('console:run')
+    ))
     ->create();

@@ -55,6 +55,9 @@ final class BranchCredentials
 
     private ?string $path = null;
 
+    /** True once write() has completely written and closed the file. */
+    private bool $written = false;
+
     /**
      * Claim the path exclusively, so provisioning fails here rather than after
      * it has created a role nobody can use.
@@ -84,6 +87,7 @@ final class BranchCredentials
 
         $this->handle = $handle;
         $this->path = $path;
+        $this->written = false;
 
         return $path;
     }
@@ -102,15 +106,53 @@ final class BranchCredentials
             JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR,
         );
 
-        if (fwrite($this->handle, $json.PHP_EOL) === false) {
-            throw new RuntimeException("Could not write to [{$this->path}].");
+        $payload = $json.PHP_EOL;
+        $expected = strlen($payload);
+
+        // fwrite returns a BYTE COUNT and returns false only when nothing at
+        // all could be written; PHP's stream layer returns a short count when
+        // the underlying write stops making progress mid-buffer. Checking only
+        // for false meant a full disk — or a full USB stick, which is a real
+        // delivery medium for these files — produced truncated JSON reported as
+        // a verified success. On a rotate that is unrecoverable: the role
+        // already holds the new password and this file is its only copy.
+        $written = fwrite($this->handle, $payload);
+
+        if ($written !== $expected) {
+            throw new RuntimeException(
+                "Wrote only {$written} of {$expected} bytes to [{$this->path}] — the credential is incomplete."
+            );
         }
 
-        fflush($this->handle);
-        fclose($this->handle);
+        // Buffered data is most likely to fail at exactly these two calls, and
+        // both return values used to be discarded.
+        if (! fflush($this->handle)) {
+            throw new RuntimeException("Could not flush [{$this->path}].");
+        }
+
+        if (! fclose($this->handle)) {
+            throw new RuntimeException("Could not close [{$this->path}] — the credential may be incomplete.");
+        }
+
         $this->handle = null;
+        $this->written = true;
 
         return $this->path;
+    }
+
+    /**
+     * Has a complete credential actually been written to the reserved path?
+     *
+     * BranchIssuer skips discarding the file once a rotation is irreversible,
+     * on the grounds that it holds the only copy of the new secret. That is
+     * true only after write() succeeds — and `irreversible` is set several
+     * steps earlier, so a failure in between preserved a ZERO-BYTE file whose
+     * premise did not hold, and then advised re-running a rotation that
+     * reserve() would refuse because the path already existed.
+     */
+    public function wasWritten(): bool
+    {
+        return $this->written;
     }
 
     /**
@@ -124,11 +166,18 @@ final class BranchCredentials
             $this->handle = null;
         }
 
-        if ($this->path !== null && is_file($this->path)) {
-            @unlink($this->path);
-        }
+        $path = $this->path;
 
         $this->path = null;
+        $this->written = false;
+
+        // Throws rather than swallowing. Both rollback loops catch per-step and
+        // collect the message into $failures, and that list is the only thing
+        // standing between a surviving 0600 credentials file and a report that
+        // says "Nothing was left behind."
+        if ($path !== null && is_file($path) && ! @unlink($path)) {
+            throw new RuntimeException("Could not remove the credentials file [{$path}].");
+        }
     }
 
     /**

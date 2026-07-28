@@ -4,9 +4,7 @@ namespace Provisioning\Console\Commands;
 
 use InvalidArgumentException;
 use Provisioning\Support\BranchDirectory;
-use Provisioning\Support\BranchRole;
-use Provisioning\Support\CredentialIssuance;
-use Provisioning\Support\RoleName;
+use Provisioning\Support\BranchState;
 use Provisioning\Support\SchemaConnection;
 use Throwable;
 
@@ -59,7 +57,7 @@ class BranchListCommand extends BranchCommand
         }
 
         try {
-            $branches = BranchDirectory::all($schema);
+            $states = BranchState::forSchema($schema, $this->issuance());
             $business = BranchDirectory::businessName($schema);
         } catch (Throwable $e) {
             $this->components->error("Could not read [{$schema}]: ".$e->getMessage());
@@ -67,29 +65,19 @@ class BranchListCommand extends BranchCommand
             return self::FAILURE;
         }
 
-        if ($branches === []) {
+        if ($states === []) {
             $this->components->warn("[{$schema}] has no branches.");
 
             return self::SUCCESS;
         }
 
-        $issuance = $this->issuance();
-        $recordsReady = $issuance->isReady();
-
-        $rows = [];
-
-        foreach ($branches as $branch) {
-            $role = RoleName::forBranch((string) $branch->id);
-            $canLogin = BranchRole::canLogin($role);
-
-            $rows[] = [
-                (string) $branch->code,
-                (string) $branch->name,
-                (string) $branch->id,
-                $this->credentialState($canLogin),
-                $recordsReady ? $this->generationState($issuance, (string) $branch->id) : '—',
-            ];
-        }
+        $rows = array_map(fn (BranchState $state): array => [
+            $state->code(),
+            $state->name(),
+            $state->id(),
+            $this->coloured($state->credential),
+            $state->generation,
+        ], $states);
 
         $this->components->info("Branches of [{$business}] in {$schema}");
 
@@ -101,31 +89,18 @@ class BranchListCommand extends BranchCommand
         return self::SUCCESS;
     }
 
-    /** Three states, not two: "no role" is not the same fact as "disabled". */
-    private function credentialState(?bool $canLogin): string
-    {
-        return match ($canLogin) {
-            null => '<fg=red>no role</>',
-            false => '<fg=yellow>disabled</>',
-            true => '<fg=green>active</>',
-        };
-    }
-
     /**
-     * The live generation, or the highest ever issued when nothing is live —
-     * "3 (revoked)" says more than a blank, because it distinguishes a branch
-     * whose credential was withdrawn from one that never had one.
+     * The state word, in the colour a table can carry. BranchState owns the
+     * words themselves — three states, not two, because "no role" is not the
+     * same fact as "disabled" — and this adds only the decoration, which the
+     * menu deliberately does without.
      */
-    private function generationState(CredentialIssuance $issuance, string $branchId): string
+    private function coloured(string $credential): string
     {
-        $current = $issuance->current($branchId);
-
-        if ($current !== null) {
-            return (string) $current->generation;
-        }
-
-        $issued = $issuance->generations($branchId);
-
-        return $issued === 0 ? 'never issued' : $issued.' (revoked)';
+        return match ($credential) {
+            'no role' => "<fg=red>{$credential}</>",
+            'disabled' => "<fg=yellow>{$credential}</>",
+            default => "<fg=green>{$credential}</>",
+        };
     }
 }

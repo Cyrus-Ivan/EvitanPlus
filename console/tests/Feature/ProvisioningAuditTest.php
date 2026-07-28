@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Provisioning\Support\BranchRole;
 use Provisioning\Support\BusinessProvisioner;
+use Provisioning\Support\CredentialIssuance;
 use Provisioning\Support\ProvisioningAudit;
 use Provisioning\Support\RoleName;
 use Provisioning\Support\SchemaConnection;
@@ -98,7 +99,7 @@ class ProvisioningAuditTest extends TestCase
         $role = RoleName::forBranch($branchId);
         $path = sys_get_temp_dir().'/evitan-rollback-'.Str::lower(Str::random(8)).'.json';
 
-        $provisioner = new BusinessProvisioner(new ProvisioningAudit('rollback-test'));
+        $provisioner = new BusinessProvisioner(new ProvisioningAudit('rollback-test'), new CredentialIssuance('rollback-test'));
 
         try {
             $provisioner->provision(
@@ -153,5 +154,68 @@ class ProvisioningAuditTest extends TestCase
         $this->assertSame(ProvisioningAudit::ROLLED_BACK, $entry->outcome);
         $this->assertSame('RBK', $entry->branch_code);
         $this->assertStringContainsString('induced failure', (string) $entry->detail);
+    }
+
+    /**
+     * A failure DURING the migration must not orphan the schema.
+     *
+     * The undo for the schema used to be pushed after migrateSchema() returned,
+     * which left the whole create-plus-19-migrations window uncompensated —
+     * schema:migrate creates the schema first, and Laravel's migrator commits
+     * one migration at a time. A failure in there therefore left a half-built
+     * `biz_<uuid>` behind while the rollback reported "Nothing was left behind"
+     * and the create-only preflight refused the retry.
+     *
+     * The failure is induced by pre-creating a `users` table the migration set
+     * cannot create over. That is also why this test calls provision() directly:
+     * the command's preflight would refuse an existing schema, which is the
+     * whole reason the state was so hard to get out of.
+     */
+    public function test_a_failure_during_the_migration_does_not_orphan_the_schema(): void
+    {
+        $businessId = (string) Str::orderedUuid();
+        $branchId = (string) Str::orderedUuid();
+
+        $schema = SchemaName::forBusiness($businessId);
+        $path = sys_get_temp_dir().'/evitan-orphan-'.Str::lower(Str::random(8)).'.json';
+
+        $admin = DB::connection('pgsql_admin');
+        $admin->statement("create schema \"{$schema}\"");
+        $admin->statement("create table \"{$schema}\".users (wrong_shape int)");
+
+        try {
+            (new BusinessProvisioner(new ProvisioningAudit('orphan-test'), new CredentialIssuance('orphan-test')))
+                ->provision([
+                    'business_id' => $businessId,
+                    'branch_id' => $branchId,
+                    'owner_name' => 'Orphan Owner',
+                    'username' => 'orphan_owner',
+                    'password' => 'orphan-Passw0rd!',
+                    'business_name' => 'Orphan Business',
+                    'business_address' => '',
+                    'tin' => '',
+                    'receipt_footer' => '',
+                    'timezone' => 'Asia/Manila',
+                    'currency_symbol' => '₱',
+                    'branch_name' => 'Orphan Branch',
+                    'branch_code' => 'ORP',
+                    'branch_address' => '',
+                    'out' => $path,
+                ], function (string $step): void {});
+
+            $failure = null;
+        } catch (Throwable $e) {
+            $failure = $e->getMessage();
+        }
+
+        // Assert before cleaning up, or the cleanup hides the answer.
+        $survived = SchemaConnection::exists($schema);
+
+        $admin->statement("drop schema if exists \"{$schema}\" cascade");
+        @unlink($path);
+
+        $this->assertNotNull($failure, 'Migrating over a conflicting table did not fail.');
+        $this->assertFalse($survived, 'A failure during the migration left the schema behind.');
+        $this->assertFileDoesNotExist($path, 'The rollback left a credentials file behind.');
     }
 }

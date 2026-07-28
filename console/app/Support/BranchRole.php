@@ -219,20 +219,38 @@ final class BranchRole
      * tables and a bare DROP ROLE succeeds. Passing it is still correct in that
      * case (the exists() check skips the revokes), and it is required for M3's
      * delete-a-branch-role flow, where the business schema stays.
+     *
+     * ## All three statements are one transaction
+     *
+     * Run separately, a DROP ROLE that failed after the revokes had committed
+     * left the role ALIVE and stripped of every privilege — the one state
+     * nothing in the system can describe. The branch would still authenticate,
+     * then fail every sync with `permission denied for table ...`, which is not
+     * one of the four connection states a till can report, so it would show as
+     * offline while being perfectly online. Meanwhile branch:revoke recorded
+     * `rolled_back`, meaning "attempted, left nothing behind".
+     *
+     * REVOKE and DROP ROLE are both transactional in Postgres, so wrapping them
+     * makes that outcome unreachable and makes `rolled_back` true when it is
+     * reported.
      */
     public static function drop(string $role, ?string $schema = null): void
     {
         $role = RoleName::validate($role);
         $admin = self::admin();
 
-        if ($schema !== null && SchemaConnection::exists($schema)) {
-            $schema = SchemaName::validate($schema);
+        $revokeIn = $schema !== null && SchemaConnection::exists($schema)
+            ? SchemaName::validate($schema)
+            : null;
 
-            $admin->statement("revoke all privileges on all tables in schema \"{$schema}\" from \"{$role}\"");
-            $admin->statement("revoke all privileges on schema \"{$schema}\" from \"{$role}\"");
-        }
+        $admin->transaction(function () use ($admin, $role, $revokeIn): void {
+            if ($revokeIn !== null) {
+                $admin->statement("revoke all privileges on all tables in schema \"{$revokeIn}\" from \"{$role}\"");
+                $admin->statement("revoke all privileges on schema \"{$revokeIn}\" from \"{$role}\"");
+            }
 
-        $admin->statement("drop role if exists \"{$role}\"");
+            $admin->statement("drop role if exists \"{$role}\"");
+        });
     }
 
     /**

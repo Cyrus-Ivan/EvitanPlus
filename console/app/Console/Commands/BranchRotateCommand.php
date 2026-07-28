@@ -58,6 +58,10 @@ class BranchRotateCommand extends BranchCommand
 
         try {
             $schema = $this->targetSchema();
+            // Resolved up here, with the other input validation: a bad
+            // --verify-wait is a typing mistake, and the place to report one is
+            // before anything is confirmed, not from inside the run.
+            $verifyWait = $this->verifyWait();
         } catch (InvalidArgumentException $e) {
             $this->components->error($e->getMessage());
 
@@ -109,7 +113,7 @@ class BranchRotateCommand extends BranchCommand
                 $branch,
                 [
                     'out' => $this->stringOption('out'),
-                    'verify_wait' => $this->verifyWait(),
+                    'verify_wait' => $verifyWait,
                 ],
                 $recreate,
                 $this->stepReporter(),
@@ -134,9 +138,23 @@ class BranchRotateCommand extends BranchCommand
     {
         $supplied = $this->stringOption('verify-wait');
 
-        return $supplied === null
-            ? BranchIssuer::RECREATE_VERIFY_SECONDS
-            : max(0, (int) $supplied);
+        if ($supplied === null) {
+            return BranchIssuer::RECREATE_VERIFY_SECONDS;
+        }
+
+        // Refuses rather than casting. `(int) 'abc'` is 0, which silently turns
+        // a typo into a single verification attempt against a pooler cache
+        // measured at ~126 seconds — so a routine re-creation reports
+        // verified=false and sends the operator into §4's investigation for no
+        // reason. SupabaseEndpoint::port() refuses an unparseable value for
+        // exactly this reason; so does this.
+        if (filter_var($supplied, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]) === false) {
+            throw new InvalidArgumentException(
+                "--verify-wait must be a whole number of seconds, got [{$supplied}]."
+            );
+        }
+
+        return (int) $supplied;
     }
 
     /**
@@ -187,6 +205,17 @@ class BranchRotateCommand extends BranchCommand
             .'offline, but it cannot sync until it receives the new AppImage and JSON.'
         );
 
+        // Said before the confirmation rather than discovered in the report: the
+        // rotation is legitimate on a disabled role, but it cannot be proven
+        // while LOGIN is revoked, and the operator should choose knowing that.
+        if (BranchRole::canLogin($role) === false) {
+            $this->components->warn(
+                'This role has LOGIN revoked, so the new credential cannot be verified. It will be '
+                .'issued and written, and reported as unverified. Run branch:enable, then re-run '
+                .'this command, to prove it end to end.'
+            );
+        }
+
         return $this->confirmed($recreate ? 'Re-create this role?' : 'Rotate this credential?');
     }
 
@@ -227,7 +256,12 @@ class BranchRotateCommand extends BranchCommand
 
             $this->components->bulletList([
                 'Last error: '.$summary['verify_error'],
-                'Usually the connection pooler still serving the previous role; it clears in ~2 minutes.',
+                // Named conditionally, because pointing at the pooler when the
+                // role simply has LOGIN revoked sends the operator to wait for
+                // a cache that was never involved.
+                ...($summary['login_revoked']
+                    ? ['This is not pooler lag — the role cannot log in at all until branch:enable runs.']
+                    : ['Usually the connection pooler still serving the previous role; it clears in ~2 minutes.']),
                 'Confirm before delivering: re-run this command, or connect with the JSON by hand.',
             ]);
 

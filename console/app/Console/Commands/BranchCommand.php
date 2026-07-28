@@ -8,6 +8,7 @@ use Provisioning\Support\BranchDirectory;
 use Provisioning\Support\CredentialIssuance;
 use Provisioning\Support\ProvisioningAudit;
 use Provisioning\Support\RoleName;
+use Provisioning\Support\SchemaConnection;
 use Provisioning\Support\SchemaName;
 use RuntimeException;
 use stdClass;
@@ -66,6 +67,34 @@ abstract class BranchCommand extends Command
     protected function roleFor(stdClass $branch): string
     {
         return RoleName::forBranch((string) $branch->id);
+    }
+
+    /**
+     * Why this schema cannot be operated on, or null when it can.
+     *
+     * branch:disable, branch:enable and branch:revoke used to go straight from
+     * targetSchema() to targetBranch(), which pins a search_path that may point
+     * at nothing and then queries `branches`. A one-digit typo in a business
+     * UUID therefore produced a raw
+     * `SQLSTATE[42P01] ... relation "branches" does not exist` dump — during an
+     * incident, from the commands an operator reaches for during one — where
+     * README §5 promises a sentence naming the fix. branch:list and the two
+     * BranchIssuer commands already checked; these three did not, and the
+     * message is the same in all cases, so it lives here.
+     */
+    protected function schemaProblem(string $schema): ?string
+    {
+        if (! SchemaConnection::exists($schema)) {
+            return "Schema [{$schema}] does not exist. Check the business UUID, or create it with: "
+                .'php console/artisan business:provision';
+        }
+
+        if (! BranchDirectory::isProvisionedBusiness($schema)) {
+            return "Schema [{$schema}] exists but is not a provisioned business — it has no schema_meta "
+                .'or no branches table. Finish it with: php console/artisan schema:migrate';
+        }
+
+        return null;
     }
 
     /**

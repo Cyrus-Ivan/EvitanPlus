@@ -105,6 +105,13 @@ final class BranchIssuer
     /** The verification error, when one was survived rather than fatal. */
     private ?string $verifyError = null;
 
+    /**
+     * Whether verification was skipped because the role has LOGIN revoked,
+     * rather than attempted and failed. The two produce the same `verified`
+     * value and completely different advice.
+     */
+    private bool $loginRevoked = false;
+
     public function __construct(
         private readonly ProvisioningAudit $audit,
         private readonly CredentialIssuance $issuance,
@@ -296,6 +303,7 @@ final class BranchIssuer
                 $schema,
                 $target['branch_code'],
                 $step,
+                $role,
             );
 
             $step('Writing the credentials JSON');
@@ -312,10 +320,23 @@ final class BranchIssuer
                 versions: $versions,
             ));
 
-            // Last, and inside the guarded block on purpose: if the record of
-            // what was issued cannot be written, the issuance is rolled back
-            // rather than left unrecorded. Unlike the audit trail, this one
-            // cannot be reconstructed later — the secret is already gone.
+            // Last, and inside the guarded block on purpose. What that buys
+            // differs by path, and the distinction is worth stating plainly
+            // because it used to be claimed uniformly and was only half true:
+            //
+            //   provision / recreate — nothing existed before this run, so a
+            //     failure here rolls the role and the file back and the branch
+            //     returns to a clean no-credential state. Genuinely unrecorded
+            //     becomes genuinely nonexistent.
+            //
+            //   rotate — the password has already been replaced and cannot be
+            //     put back, so rollBack keeps both it and the file. A failure
+            //     here therefore leaves a live credential with NO ledger row,
+            //     which is the one outcome this table cannot reconstruct: the
+            //     fingerprint needs the secret, and the secret is only in the
+            //     file. rollBack reports cleanup_failed and says so; re-running
+            //     the rotation issues and records a fresh generation, leaving
+            //     the intervening one permanently invisible.
             $step('Recording the credential issuance');
             $generation = $this->issuance->record($target, $result['password'], $result['reason']);
         } catch (Throwable $original) {
@@ -334,6 +355,8 @@ final class BranchIssuer
         return [
             'verified' => $verified,
             'verify_error' => $this->verifyError,
+            // So the report can name the actual cause instead of the usual one.
+            'login_revoked' => $this->loginRevoked,
             'business_id' => $businessId,
             'business_name' => $businessName,
             'schema' => $schema,
@@ -426,6 +449,21 @@ final class BranchIssuer
      *
      * False is not silence — it travels into the audit detail and the report.
      *
+     * ## A disabled role is answered without waiting
+     *
+     * branch:disable revokes LOGIN, and nothing on the rotate path restores it —
+     * setPassword and reapplyGrants both leave it alone by design. So on a
+     * NOLOGIN role no amount of retrying can connect. Worse, Postgres answers a
+     * NOLOGIN connect with "password authentication failed", which PoolerLag
+     * matches, so this loop used to announce that the pooler was catching up,
+     * sleep out the entire 180-second budget, and then report a failure whose
+     * printed explanation ("it clears in ~2 minutes") was never going to happen.
+     *
+     * That is a reachable workflow, not a corner: disable a branch on suspicion
+     * of a leak, then rotate its password. Answering it immediately, with the
+     * actual cause and the actual fix, is the whole difference between a
+     * credential the operator knows to verify later and one they ship blind.
+     *
      * @param  Closure(string): void  $step
      */
     private function verifyWithBudget(
@@ -434,7 +472,19 @@ final class BranchIssuer
         string $schema,
         string $code,
         Closure $step,
+        string $role,
     ): bool {
+        if ($this->keepOnVerifyFailure && BranchRole::canLogin($role) === false) {
+            $step('Skipping verification — the role has LOGIN revoked');
+
+            $this->loginRevoked = true;
+            $this->verifyError = "Role [{$role}] has LOGIN revoked (branch:disable), so nothing can "
+                .'connect as it. The credential itself is fine and the JSON is written. Run '
+                .'branch:enable, then re-run this command to prove it end to end.';
+
+            return false;
+        }
+
         $deadline = microtime(true) + $this->verifyBudget;
         $announced = false;
 
@@ -544,7 +594,15 @@ final class BranchIssuer
             // behind for a run that failed. The role itself is still undone
             // where it can be (a re-creation), which returns the branch to a
             // clean no-credential state rather than a stranded one.
-            if ($this->irreversible && $label === self::CREDENTIALS_UNDO) {
+            //
+            // wasWritten() matters: `irreversible` is set right after
+            // setPassword, but the file is not written until several steps
+            // later, and reapplyGrants and readVersions sit in between. A
+            // failure there used to preserve an EMPTY file — holding no secret,
+            // so the premise above did not apply — while the rollback message
+            // told the operator to re-run the rotation, which reserve() then
+            // refused because the path already existed.
+            if ($this->irreversible && $label === self::CREDENTIALS_UNDO && $this->credentials->wasWritten()) {
                 continue;
             }
 

@@ -10,6 +10,7 @@ use InvalidArgumentException;
 use Provisioning\Support\BranchCode;
 use Provisioning\Support\BusinessProvisioner;
 use Provisioning\Support\BusinessSettingKeys;
+use Provisioning\Support\CredentialIssuance;
 use Provisioning\Support\ProvisioningAudit;
 use Provisioning\Support\RoleName;
 use Provisioning\Support\SchemaName;
@@ -63,8 +64,9 @@ class BusinessProvisionCommand extends Command
 
     public function handle(): int
     {
-        $audit = new ProvisioningAudit($this->stringOption('actor'));
-        $provisioner = new BusinessProvisioner($audit, $this->getOutput());
+        $actor = $this->stringOption('actor');
+        $audit = new ProvisioningAudit($actor);
+        $provisioner = new BusinessProvisioner($audit, new CredentialIssuance($actor), $this->getOutput());
 
         // Both identities are minted here, before anything is collected, so the
         // preflight can check the real schema AND the real role name rather

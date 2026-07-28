@@ -50,6 +50,7 @@ final class BusinessProvisioner
 
     public function __construct(
         private readonly ProvisioningAudit $audit,
+        private readonly CredentialIssuance $issuance,
         private readonly ?OutputInterface $output = null,
     ) {
         $this->credentials = new BranchCredentials;
@@ -69,6 +70,14 @@ final class BusinessProvisioner
 
         if (! $this->audit->isReady()) {
             $problems[] = 'The provisioning audit store is missing — run: php console/artisan console:migrate';
+        }
+
+        // The same hard precondition BranchIssuer::preflight applies, and for a
+        // stronger reason here: this is where a branch's FIRST credential is
+        // minted, and an issuance that goes unrecorded can never be
+        // reconstructed — the secret is written to one file and kept nowhere.
+        if (! $this->issuance->isReady()) {
+            $problems[] = 'The credential issuance record is missing — run: php console/artisan console:migrate';
         }
 
         if (SchemaConnection::exists($schema)) {
@@ -123,9 +132,18 @@ final class BusinessProvisioner
         $this->pushUndo('credentials file', fn () => $this->credentials->discard());
 
         try {
+            // Registered BEFORE the schema is created, not after it is migrated.
+            // schema:migrate creates the schema and then applies 19 migrations
+            // that the migrator commits one at a time, so a failure anywhere in
+            // that run leaves a half-built schema behind. Pushing the undo
+            // afterwards left that whole window uncompensated — and the rollback
+            // would then report "Nothing was left behind" over an orphan the
+            // create-only preflight refuses on the retry. The drop is
+            // `if exists`, so a no-op undo costs nothing.
+            $this->pushUndo("schema {$schema}", fn () => $this->dropSchema($schema));
+
             $step("Creating and migrating schema [{$schema}]");
             $this->migrateSchema($schema);
-            $this->pushUndo("schema {$schema}", fn () => $this->dropSchema($schema));
 
             $step('Seeding owner, business settings and first branch');
             $this->seed($schema, $data, $branchId, $code);
@@ -163,6 +181,16 @@ final class BusinessProvisioner
             );
 
             $this->credentials->write($document);
+
+            // Last, and inside the guarded block: this is the branch's first
+            // credential, and a business provisioned without this row would
+            // report "never issued" while running a live one, and would number
+            // its first ROTATION generation 1 — making generation 1 mean two
+            // different secrets for that branch, permanently. Unlike the audit
+            // trail it cannot be reconstructed afterwards, so a failure here
+            // rolls the whole provision back rather than leaving it unrecorded.
+            $step('Recording the credential issuance');
+            $this->issuance->record($target, $password, CredentialIssuance::PROVISION);
         } catch (Throwable $original) {
             throw $this->rollBack($original, $target);
         }

@@ -31,6 +31,13 @@ class ConsoleMigrateCommand extends Command
     {
         $schema = SchemaName::CONSOLE;
 
+        // Same rule as schema:migrate: --pretend prints, it does not create.
+        // Harmless here in practice (an empty evitan_console is idempotently
+        // reused) but the flag must mean one thing in both commands.
+        if ($this->option('pretend')) {
+            return $this->preview($schema);
+        }
+
         $this->components->info("Migrating console schema [{$schema}]");
 
         try {
@@ -50,12 +57,20 @@ class ConsoleMigrateCommand extends Command
 
         // --force: the console is a developer tool but APP_ENV may be anything,
         // and there is no interactive operator to answer a production prompt.
-        $exit = $this->call('migrate', array_filter([
-            '--database' => SchemaConnection::CONSOLE_NAME,
-            '--path' => 'database/migrations-admin',
-            '--force' => true,
-            '--pretend' => (bool) $this->option('pretend'),
-        ]));
+        // Wrapped for the reason schema:migrate documents: MigrateCommand
+        // throws rather than returning a failure code, so this branch was
+        // unreachable and a broken migration escaped as a stack trace.
+        try {
+            $exit = $this->call('migrate', array_filter([
+                '--database' => SchemaConnection::CONSOLE_NAME,
+                '--path' => 'database/migrations-admin',
+                '--force' => true,
+            ]));
+        } catch (Throwable $e) {
+            $this->components->error("Migration failed for [{$schema}]: ".$e->getMessage());
+
+            return self::FAILURE;
+        }
 
         if ($exit !== self::SUCCESS) {
             $this->components->error("Migration failed for [{$schema}].");
@@ -63,11 +78,47 @@ class ConsoleMigrateCommand extends Command
             return self::FAILURE;
         }
 
-        if ($this->option('pretend')) {
+        return $this->hardenSchema($schema);
+    }
+
+    /** Print, change nothing — see SchemaMigrateCommand::preview(). */
+    private function preview(string $schema): int
+    {
+        $this->components->info("Previewing migrations for [{$schema}] — nothing will be changed");
+
+        try {
+            $started = SchemaConnection::exists($schema)
+                && SchemaConnection::hasTable($schema, 'migrations');
+        } catch (Throwable $e) {
+            $this->components->error('Could not inspect the console schema: '.$e->getMessage());
+
+            return self::FAILURE;
+        }
+
+        if (! $started) {
+            $this->components->twoColumnDetail('Schema', 'would be created');
+            $this->components->twoColumnDetail('Migrations', 'all of them would run');
+            $this->components->twoColumnDetail('PUBLIC access', 'would be revoked');
+
             return self::SUCCESS;
         }
 
-        return $this->hardenSchema($schema);
+        SchemaConnection::pin($schema, SchemaConnection::CONSOLE_NAME);
+
+        try {
+            $this->call('migrate', array_filter([
+                '--database' => SchemaConnection::CONSOLE_NAME,
+                '--path' => 'database/migrations-admin',
+                '--force' => true,
+                '--pretend' => true,
+            ]));
+        } catch (Throwable $e) {
+            $this->components->error("Migration failed for [{$schema}]: ".$e->getMessage());
+
+            return self::FAILURE;
+        }
+
+        return self::SUCCESS;
     }
 
     /**

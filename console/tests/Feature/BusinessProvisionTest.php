@@ -4,8 +4,10 @@ namespace Tests\Feature;
 
 use Illuminate\Support\Facades\DB;
 use Provisioning\Support\BranchCredentials;
+use Provisioning\Support\BranchSecret;
 use Provisioning\Support\BusinessProvisioner;
 use Provisioning\Support\BusinessSettingKeys;
+use Provisioning\Support\CredentialIssuance;
 use Provisioning\Support\ProvisioningAudit;
 use Provisioning\Support\SchemaConnection;
 use Provisioning\Support\SupabaseEndpoint;
@@ -280,5 +282,42 @@ class BusinessProvisionTest extends TestCase
             (string) $entry->detail,
         );
         $this->assertStringNotContainsString(self::OWNER_PASSWORD, (string) $entry->detail);
+    }
+
+    /**
+     * The first branch's credential is on the issuance ledger, as generation 1.
+     *
+     * It used not to be: only BranchIssuer recorded, so every business's first
+     * branch held a live, verified, delivered credential the ledger had no row
+     * for. branch:list reported it as `active` and `never issued` at the same
+     * time — and per the runbook the second of those means no credential was
+     * ever issued, so the operator's next move would be to issue one. Its first
+     * ROTATION then recorded generation 1, making generation 1 name two
+     * different secrets for that branch permanently, which is exactly the
+     * question this table exists to answer.
+     */
+    public function test_the_first_branchs_credential_is_on_the_issuance_ledger(): void
+    {
+        $issuance = new CredentialIssuance;
+        $branchId = (string) $this->provisioned()['branch']['id'];
+
+        $current = $issuance->current($branchId);
+
+        $this->assertNotNull($current, 'The provisioned credential was never recorded as issued.');
+        $this->assertSame(1, (int) $current->generation);
+        $this->assertSame($this->roleName(), $current->role_name);
+        $this->assertSame(1, $issuance->generations($branchId));
+    }
+
+    /** The fingerprint identifies the credential without ever carrying it. */
+    public function test_the_recorded_fingerprint_is_not_the_password(): void
+    {
+        $current = (new CredentialIssuance)->current((string) $this->provisioned()['branch']['id']);
+        $password = (string) $this->provisioned()['connection']['password'];
+
+        $this->assertNotNull($current);
+        $this->assertStringStartsWith('sha256:', (string) $current->fingerprint);
+        $this->assertStringNotContainsString($password, (string) $current->fingerprint);
+        $this->assertSame(BranchSecret::fingerprint($password), $current->fingerprint);
     }
 }

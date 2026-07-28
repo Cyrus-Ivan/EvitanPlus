@@ -233,6 +233,35 @@ class BranchCredentialLifecycleTest extends TestCase
         $this->assertNull($issuance->current((string) self::$branchId));
         $this->assertSame(2, $issuance->generations((string) self::$branchId));
 
+        // The most destructive act in the tool is on the record. It used to be
+        // possible for it not to be: supersede() ran outside any try, so a
+        // throw there — a dropped console connection, the append-only trigger,
+        // a pooler EMAXCONNSESSION — escaped handle() AFTER the role was gone
+        // and no branch.delete row was written in either outcome.
+        $entry = SchemaConnection::pinConsole()->selectOne(
+            "select outcome, detail from provisioning_audit
+             where branch_id = ? and action = 'branch.delete' order by created_at desc limit 1",
+            [self::$branchId],
+        );
+
+        $this->assertNotNull($entry, 'Dropping the role was not audited.');
+        $this->assertSame('succeeded', $entry->outcome);
+        $this->assertStringContainsString('superseded_generation', (string) $entry->detail);
+
+        // Re-running is idempotent, and does not add a second delete entry for
+        // a role that was already gone and already superseded.
+        $this->assertSame(0, Artisan::call('branch:revoke', [
+            '--no-interaction' => true,
+            '--force' => true,
+            '--schema' => $this->schema(),
+            '--branch-code' => self::CODE,
+        ]), Artisan::output());
+
+        $this->assertSame(1, (int) SchemaConnection::pinConsole()->selectOne(
+            "select count(*) as n from provisioning_audit where branch_id = ? and action = 'branch.delete'",
+            [self::$branchId],
+        )->n);
+
         // Rotating a role that no longer exists is refused, and names the fix.
         $this->assertNotSame(0, Artisan::call('branch:rotate', [
             '--no-interaction' => true,
@@ -325,6 +354,58 @@ class BranchCredentialLifecycleTest extends TestCase
         }
     }
 
+    /**
+     * Rotating a DISABLED role: allowed, unverifiable, and said so immediately.
+     *
+     * Nothing on the rotate path restores LOGIN — setPassword and reapplyGrants
+     * both leave it alone by design — so verification can never connect. Worse,
+     * Postgres answers a NOLOGIN connect with "password authentication failed",
+     * which PoolerLag matches, so this used to announce that the pooler was
+     * catching up, sleep out the whole 180-second budget, and then print
+     * "it clears in ~2 minutes" about something that never clears. The operator
+     * then delivered, per hard rule 4, a JSON that authenticates nowhere.
+     *
+     * It is a reachable workflow, not a corner: disable on suspicion of a leak,
+     * then rotate. The assertion is on the elapsed time as much as the words —
+     * a run that waits is the bug, whatever it says afterwards.
+     */
+    public function test_8_rotating_a_disabled_role_is_answered_at_once_and_not_blamed_on_the_pooler(): void
+    {
+        $this->lifecycleBranch();
+
+        $this->assertSame(0, Artisan::call('branch:disable', [
+            '--no-interaction' => true,
+            '--force' => true,
+            '--schema' => $this->schema(),
+            '--branch-code' => self::CODE,
+        ]), Artisan::output());
+
+        $startedAt = microtime(true);
+        $exit = $this->rotate();
+        $elapsed = microtime(true) - $startedAt;
+        $output = Artisan::output();
+
+        $this->assertSame(0, $exit, $output);
+
+        // rotate() passes a 60s budget; skipping should cost seconds, not it.
+        $this->assertLessThan(30, $elapsed, "Rotating a disabled role waited {$elapsed}s.");
+
+        $this->assertStringContainsString('LOGIN revoked', $output);
+        $this->assertStringContainsString('branch:enable', $output);
+        $this->assertStringNotContainsString('it clears in ~2 minutes', $output);
+
+        // Unverifiable is not unissued: the role holds the new password, the
+        // JSON is written, and the ledger counts it.
+        $this->assertSame(4, $this->currentGeneration());
+        $this->assertFileExists((string) self::$paths[count(self::$paths) - 1]);
+
+        $this->assertSame(0, Artisan::call('branch:enable', [
+            '--no-interaction' => true,
+            '--schema' => $this->schema(),
+            '--branch-code' => self::CODE,
+        ]), Artisan::output());
+    }
+
     /** Provisions the class's branch on first use and caches its credential. */
     private function lifecycleBranch(): void
     {
@@ -354,20 +435,27 @@ class BranchCredentialLifecycleTest extends TestCase
     {
         $path = $this->tempPath();
 
-        $exit = Artisan::call('branch:rotate', array_filter([
-            '--no-interaction' => true,
-            '--force' => true,
-            '--schema' => $this->schema(),
-            '--branch-code' => self::CODE,
-            '--recreate' => $recreate,
+        $exit = Artisan::call('branch:rotate', [
+            ...array_filter([
+                '--no-interaction' => true,
+                '--force' => true,
+                '--schema' => $this->schema(),
+                '--branch-code' => self::CODE,
+                '--recreate' => $recreate,
+                '--out' => $path,
+            ]),
+            // Outside the array_filter, which strips '0' as falsy — so the
+            // re-create budget below was never actually delivered and those
+            // runs spent the full 180-second default instead of the zero this
+            // comment has always claimed.
+            //
             // Re-create: don't wait inside the command at all — this test does
             // its own waiting, so the two-minute pause is attributable rather
             // than looking like a hang, and the unverified report is exercised.
             // Rotate: a short budget, enough to ride out pooler lag without
             // spending the full default on every run.
             '--verify-wait' => $recreate ? '0' : '60',
-            '--out' => $path,
-        ]));
+        ]);
 
         if ($exit === 0) {
             $this->adopt($path);

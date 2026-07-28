@@ -2,7 +2,6 @@
 
 namespace Provisioning\Support;
 
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use RuntimeException;
 use Throwable;
@@ -31,13 +30,17 @@ final class ProvisioningAudit
      *
      * Provisioning checks this BEFORE it creates anything, so a missing sink is
      * a clean refusal rather than a half-built business nobody has a record of.
+     *
+     * Asked read-only. The previous spelling went through
+     * SchemaConnection::pinConsole(), which calls ensureExists() — so asking
+     * "is the trail there?" CREATED the schema it was asking about, and every
+     * caller of this preflight quietly performed DDL, including the ones whose
+     * documented contract is that they do not.
      */
     public function isReady(): bool
     {
         try {
-            SchemaConnection::pinConsole();
-
-            return Schema::connection(SchemaConnection::CONSOLE_NAME)->hasTable(self::TABLE);
+            return SchemaConnection::hasTable(SchemaName::CONSOLE, self::TABLE);
         } catch (Throwable) {
             return false;
         }

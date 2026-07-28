@@ -17,6 +17,56 @@ this app performs on four different things.
 
 ---
 
+## Start here: the menu
+
+```bash
+php console/artisan          # no arguments, no flags
+```
+
+That opens `console:run`, the interactive menu, and it is the intended way to operate
+this tool. Everything below still works and is what you reach for when scripting, but
+you should not need to remember any of it to get work done.
+
+Navigation is **object-first** — pick a business, then a branch, then an action — which
+is the point rather than a style choice: the `--business` / `--schema` and `--branch` /
+`--branch-code` targeting rules in §2 exist because mistyping an identifier is the
+easiest mistake to make here, and you cannot mistype one you selected from a list. The
+menu always targets by exact schema name and branch UUID.
+
+```
+Provisioning Console          →  the businesses in this project, plus
+                                 Provision a new business / Setup & diagnostics / Exit
+  └─ a business               →  its branches, with each one's credential state, plus
+                                 Add a branch / Upgrade this schema / Back
+       └─ a branch            →  only the actions its role's current state allows
+```
+
+Three things worth knowing about how it behaves:
+
+- **It runs the same commands, with nothing suppressed.** Choosing *Rotate the
+  credential* runs `branch:rotate`, which still prints its summary, still warns that the
+  current credential stops working immediately, and still asks you to confirm. The menu
+  never passes `--force`.
+- **A branch is only offered what its role's state allows.** An active role can be
+  rotated, disabled or revoked; a disabled one can be enabled; one that `branch:revoke`
+  removed is offered only *Re-create the role*. That is the same `--recreate` rule from
+  §3, applied before you choose rather than as a refusal afterwards.
+- **Nothing is ever cleared from the screen.** A credentials JSON path is printed once
+  and nowhere else, so navigating away from a report never takes the report with it.
+- **One action carries a caveat its own command does not.** *Upgrade this schema* runs
+  `schema:migrate`, which does **not** re-apply branch grants — see §3. The menu warns
+  and asks before running it; that is the only place the warning exists.
+
+Two read-only commands have no menu entry because they *became* the menu: `branch:list`
+is the branch picker and `schema:version` is the business screen's header.
+
+`console:run` needs a terminal. Under `--no-interaction`, or with no tty, it refuses and
+points you at §2 rather than hanging on a prompt. It takes `--actor=` and forwards it to
+every command it dispatches that records one, so the trail can name a person rather than
+`<os-user>@<hostname>`.
+
+---
+
 ## 1. First run on a new machine
 
 ```bash
@@ -52,6 +102,10 @@ expected on Supabase.
 
 ## 2. Command reference
 
+This is the scripting surface. Day to day, reach for the menu above; reach for these when
+you are automating something, reproducing a failure exactly, or reading about what an
+action does before you take it.
+
 Every branch command targets a business with **either** `--business=<uuid>` **or**
 `--schema=<name>` (never both), and a branch with **either** `--branch=<uuid>` **or**
 `--branch-code=<code>`. `--actor=` is recorded as the operator in the audit trail;
@@ -70,12 +124,14 @@ leave it off and it defaults to `<os-user>@<hostname>`.
 | `branch:disable` | Revokes `LOGIN` and terminates the role's backends. | Nothing. |
 | `branch:enable` | Restores `LOGIN`. | Nothing. |
 | `branch:revoke` | Drops the Postgres role. The branch row and all its history stay. | The role may survive; the command prints the SQL to finish. |
+| `console:run` | Nothing itself — it dispatches the commands above. Also the default command, so a bare `php console/artisan` opens it. | Nothing. |
 
 `business:provision`, `branch:provision`, `branch:rotate`, `branch:disable` and
 `branch:revoke` confirm before acting; `--force` skips the prompt (and non-interactive
 invocations skip it automatically). `--out=` overrides where a credentials JSON is
 written. `--pretend` on `schema:migrate` / `console:migrate` prints the SQL instead of
-running it.
+running it, and changes nothing at all — against a schema that does not exist yet it
+reports what would be created rather than creating it to find out.
 
 Branch codes are uppercase letters, digits and dashes, starting alphanumeric, max 16
 characters. They are not cosmetic: the code prefixes every receipt serial the branch
@@ -91,6 +147,8 @@ unique business-wide.
 ```bash
 php console/artisan business:provision
 ```
+
+*In the menu:* **Provision a new business**, on the main screen.
 
 Interactive by default; every prompt also has an option so it scripts cleanly. Prefer
 the **password prompt** over `--owner-password`, which is visible in `ps` and in shell
@@ -108,10 +166,14 @@ php console/artisan branch:list    --business=<uuid>
 php console/artisan schema:version --business=<uuid>
 ```
 
+*In the menu:* select the business — this is its screen, not an action on it.
+
 `branch:list` shows three credential states, and the distinction matters:
 `active` / `disabled` (role exists, `LOGIN` revoked) / `no role` (revoked or never
 issued). The Generation column reads `3` for a live credential, `3 (revoked)` when the
-role is gone, `never issued` when it never had one.
+role is gone, `never issued` when it never had one. A freshly provisioned business reads
+`active` / `1`: `business:provision` records the first branch's credential in the same
+ledger the rotate path uses, so generation numbers count every secret a branch has held.
 
 ### Add a branch
 
@@ -119,6 +181,8 @@ role is gone, `never issued` when it never had one.
 php console/artisan branch:provision --business=<uuid> \
     --branch-name="Makati" --branch-code=MKT --branch-address="..."
 ```
+
+*In the menu:* **Add a branch**, on the business screen.
 
 No new schema, no re-migration — a `branches` row, a role and a JSON.
 
@@ -128,9 +192,16 @@ No new schema, no re-migration — a `branches` row, a role and a JSON.
 php console/artisan branch:rotate --business=<uuid> --branch-code=MNL
 ```
 
+*In the menu:* select the branch, then **Rotate the credential**.
+
 This also terminates the role's warm pooled backends, so the old credential stops
 working immediately rather than continuing to be served from Supavisor's pool. Read §4
 before you run it — the failure mode is not the one you would guess.
+
+Rotating a **disabled** branch is allowed and cannot be verified: nothing on this path
+restores `LOGIN`, so the console skips verification instead of waiting out the pooler
+budget for a connection that can never succeed, and reports `verified => false` with that
+as the stated reason. Run `branch:enable`, then re-run the rotation, to prove it.
 
 ### Disable, then re-enable
 
@@ -138,6 +209,9 @@ before you run it — the failure mode is not the one you would guess.
 php console/artisan branch:disable --business=<uuid> --branch-code=MNL
 php console/artisan branch:enable  --business=<uuid> --branch-code=MNL
 ```
+
+*In the menu:* select the branch, then **Disable syncing**. Only one of disable and
+enable is ever offered — whichever the role's current state allows.
 
 Disable is **`LOGIN`-only**. It does not touch `branches.disabled_at` — a credential you
 suspect has leaked is not a branch that has closed, and conflating them would make
@@ -150,6 +224,9 @@ offline; its outbox flushes when you re-enable it.
 php console/artisan branch:revoke --business=<uuid> --branch-code=MNL
 php console/artisan branch:rotate --business=<uuid> --branch-code=MNL --recreate
 ```
+
+*In the menu:* **Revoke the role** on the branch screen; afterwards that same screen
+offers **Re-create the role** and nothing else.
 
 `branch:revoke` drops a **role**. The branch, its sales and its ledger are untouched and
 could not be deleted from here. The `--recreate` flag is required in **both** directions

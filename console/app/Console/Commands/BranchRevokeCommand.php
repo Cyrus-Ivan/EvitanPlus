@@ -50,6 +50,11 @@ class BranchRevokeCommand extends BranchCommand
     {
         try {
             $schema = $this->targetSchema();
+
+            if (($problem = $this->schemaProblem($schema)) !== null) {
+                return $this->refuse([$problem]);
+            }
+
             $branch = $this->targetBranch($schema);
         } catch (InvalidArgumentException $e) {
             $this->components->error($e->getMessage());
@@ -64,6 +69,7 @@ class BranchRevokeCommand extends BranchCommand
         $role = $this->roleFor($branch);
         $audit = $this->audit();
         $issuance = $this->issuance();
+        $target = $this->auditTarget($schema, $branch, $role);
 
         if (! $audit->isReady() || ! $issuance->isReady()) {
             return $this->refuse([
@@ -74,6 +80,25 @@ class BranchRevokeCommand extends BranchCommand
         if (! BranchRole::exists($role)) {
             $this->components->info("Role [{$role}] does not exist; nothing to revoke.");
 
+            // Except possibly this: a previous run that dropped the role and
+            // then failed to supersede leaves a live ledger row pointing at a
+            // role that is gone, and this early return used to be the reason it
+            // stayed that way forever. Re-running is the documented recovery,
+            // so re-running has to actually recover it.
+            if ($issuance->current((string) $branch->id) !== null) {
+                $superseded = $issuance->supersede((string) $branch->id);
+
+                $this->components->warn(
+                    "The issuance ledger still showed generation {$superseded} as live for a role that "
+                    .'no longer exists. It has been superseded.'
+                );
+
+                $this->recordQuietly($audit, 'branch.delete', ProvisioningAudit::SUCCEEDED, $target, [
+                    'superseded_generation' => $superseded,
+                    'role_already_absent' => true,
+                ]);
+            }
+
             return self::SUCCESS;
         }
 
@@ -82,8 +107,6 @@ class BranchRevokeCommand extends BranchCommand
 
             return self::SUCCESS;
         }
-
-        $target = $this->auditTarget($schema, $branch, $role);
 
         try {
             // Postgres refuses to drop a role that is still connected, and a
@@ -107,10 +130,30 @@ class BranchRevokeCommand extends BranchCommand
         // The branch now has no credential it is supposed to be running, and
         // that is what the issuance record should say — a live row pointing at
         // a role that no longer exists would be worse than no row at all.
-        $superseded = $issuance->supersede((string) $branch->id);
+        //
+        // Guarded, because the role is already gone by the time this runs. An
+        // unguarded throw here (a dropped console connection, the append-only
+        // trigger, a pooler EMAXCONNSESSION) escaped handle() and left the most
+        // destructive act in the tool with NO audit row in either outcome —
+        // bypassing the very protection recordQuietly exists to provide.
+        $superseded = null;
+        $supersedeError = null;
+
+        try {
+            $superseded = $issuance->supersede((string) $branch->id);
+        } catch (Throwable $e) {
+            $supersedeError = $e->getMessage();
+
+            $this->components->warn(
+                'The role was dropped but its issuance record could not be superseded: '.$supersedeError
+                .' The ledger still shows a live credential for a role that no longer exists; '
+                .'re-running this command supersedes it.'
+            );
+        }
 
         $this->recordQuietly($audit, 'branch.delete', ProvisioningAudit::SUCCEEDED, $target, [
             'superseded_generation' => $superseded,
+            'supersede_error' => $supersedeError,
         ]);
 
         $this->newLine();

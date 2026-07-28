@@ -98,14 +98,27 @@ final class BranchDirectory
      * An empty-but-existing schema, or one whose migration died partway, is not
      * something a branch can be added to — the new branch's till would hydrate
      * from a catalog and a settings table that are not there.
+     *
+     * ## Why `branches` is tested for existence, not for a row
+     *
+     * It used to require a `branches` ROW, and that made a fully migrated
+     * schema with no branches unreachable by the entire tool: BranchIssuer's
+     * preflight refused to add the first branch to it, business:provision
+     * refused it as create-only, and console:run's half-built screen offered
+     * "upgrade" forever because migrating never inserts a branch. The only exit
+     * was a hand-written DROP SCHEMA.
+     *
+     * A migrated schema with no branches IS a provisioned business schema; it
+     * simply has no branches yet, which is precisely the state branch:provision
+     * exists to leave. `schema_meta` still carries a row check because it is
+     * seeded by the migration itself — its absence means the migration did not
+     * finish, which is the state this predicate is really guarding against.
      */
     public static function isProvisionedBusiness(string $schema): bool
     {
         try {
-            $connection = SchemaConnection::pin($schema);
-
-            return $connection->selectOne('select 1 as found from schema_meta') !== null
-                && $connection->selectOne('select 1 as found from branches') !== null;
+            return SchemaConnection::hasTable($schema, 'branches')
+                && SchemaConnection::pin($schema)->selectOne('select 1 as found from schema_meta') !== null;
         } catch (Throwable) {
             return false;
         }

@@ -54,6 +54,11 @@ class BranchDisableCommand extends BranchCommand
     {
         try {
             $schema = $this->targetSchema();
+
+            if (($problem = $this->schemaProblem($schema)) !== null) {
+                return $this->refuse([$problem]);
+            }
+
             $branch = $this->targetBranch($schema);
         } catch (InvalidArgumentException $e) {
             $this->components->error($e->getMessage());

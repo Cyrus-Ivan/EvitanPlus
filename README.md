@@ -88,6 +88,11 @@ Optional for POS development; required for anything in
 [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md). It is a self-contained
 Laravel app with its own dependency tree.
 
+> **Operating it day to day, and what to do when something goes wrong:**
+> [`console/README.md`](console/README.md) — the runbook. Command reference,
+> recipes, a symptom→cause→fix troubleshooting table, and how to read the
+> provisioning audit trail.
+
 ```bash
 (cd console && composer install)
 cp console/.env.example console/.env

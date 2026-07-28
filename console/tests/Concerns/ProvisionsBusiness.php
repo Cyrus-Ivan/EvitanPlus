@@ -16,9 +16,11 @@ use Throwable;
  * ## Why once per class
  *
  * Same economics that shaped Tests\TestCase: a full provision applies 19
- * migrations against a remote Postgres (~15s) and consumes pooler sessions,
- * and Supabase's session pooler allows 15 clients. So each class pays for one
- * provision and asserts many things about it, rather than provisioning per test.
+ * migrations against a remote Postgres (~15s) and does it over the ADMIN
+ * connection, whose session pooler allows 15 clients. (The branch connection it
+ * then verifies with goes through the transaction pooler and is not part of that
+ * budget.) So each class pays for one provision and asserts many things about
+ * it, rather than provisioning per test.
  *
  * ## Why these tests cannot use the base class's schema
  *

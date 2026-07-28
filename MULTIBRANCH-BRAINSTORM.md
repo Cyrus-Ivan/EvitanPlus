@@ -296,6 +296,26 @@ Written **only** on the till, append-only/immutable, pushed as brand-new UUID-ke
 >   `pg_catalog`/`information_schema`. That leaks other schema *names*, never their rows —
 >   `information_schema` is privilege-filtered. The negative tests assert this real boundary
 >   rather than a flattering one.
+>
+> **As built (M3.1) — a branch does not connect where the console connects.** The console
+> administers over Supabase's **session** pooler (`5432`), which pins one Postgres backend per
+> client for the client's whole life; it needs that, because DDL, `CREATE`/`ALTER ROLE` and its
+> own `search_path` pin all depend on session state surviving between statements. Branch devices
+> connect over the **transaction** pooler (`6543`), where backends are multiplexed and held only
+> for the length of a transaction. The reason is capacity, not preference: session mode's pool is
+> 15 clients on this project, and this initiative is aimed at hundreds of branches.
+>
+> **What makes that safe is the `ALTER ROLE ... SET search_path` pin in this section.** It is a
+> role *default*, so Postgres applies it when a backend starts — every pooled backend a branch
+> role is served by therefore lands in the right business, and no client-side `SET` is needed or
+> wanted. A connect-time `SET search_path` would not survive transaction mode, which is why the
+> credentials JSON emits `connection.search_path: null` (§9) and why nothing in a sync cycle may
+> rely on session state (§11.5). `SupabaseEndpoint::forBranch()` owns the split: identity
+> (database, sslmode, tenant ref) is still derived from the admin connection so it cannot drift,
+> while host and port are separately overridable via `CONSOLE_BRANCH_DB_*` and default to the
+> admin's host on `6543`. `BranchConnection` uses that same endpoint, so provisioning verifies
+> every credential over the endpoint it actually hands out — a check that would otherwise still
+> pass while meaning nothing.
 
 ---
 
@@ -480,9 +500,24 @@ pulled by the new branch at hydrate.)
 >   role name — while `role.name` is the bare Postgres role, which is what M3's
 >   rotate/disable/delete operate on. Collapsing them back into one field reintroduces a bug
 >   that only surfaces in the field, at setup, on a customer's device.
-> - The `connection` block is **key-for-key the shipped app's `config('database.connections.pgsql')`**
->   (`driver, host, port, database, username, password, search_path, sslmode`), so importing
->   it is an assignment, not a translation.
+> - The `connection` block uses **the shipped app's own key names**
+>   (`driver, host, port, database, username, password, search_path, sslmode`), so importing it
+>   is an assignment, not a translation. It is a **subset**, though, not the whole array:
+>   `config('database.connections.pgsql')` also carries `url`, `charset`, `prefix` and
+>   `prefix_indexes`. **So M5 merges the block OVER the config array rather than replacing it.**
+>   A wholesale `config([... => $credentials])` drops those keys — and would silently discard any
+>   driver `options` a later fix adds, leaving the console suite green while every shipped till
+>   lost them.
+> - **`connection.port` is the transaction pooler (`6543`), not the console's session pooler**
+>   (§7 As built M3.1). The console verifies each credential over that exact endpoint before
+>   shipping it, so the port in the file is one that has been proven to work, not one assumed to.
+> - **`connection.search_path` is `null` on purpose, and the importer must assign it as-is.**
+>   Do not substitute `business.schema` — that value is carried separately in the document for
+>   display and reconciliation, not for pinning. The schema is pinned server-side as a role
+>   default (§7), which is what survives transaction pooling; a client-side `SET search_path`
+>   would run on whichever backend Supavisor happened to check out and then hand back. Null is
+>   also what makes the key harmless: `PostgresConnector::configureSearchPath` fires on
+>   `isset()`, so a null emits no statement at all.
 > - `versions` (`schema_version`, `min_app_version`) is **read back from `schema_meta`**,
 >   never assumed — it is what M5's version gate (§13) compares the app against.
 > - **The Owner's password is deliberately absent.** It is not needed to connect, and it has
@@ -561,15 +596,17 @@ On a successful connectivity **probe**, one cycle does, in order:
 4. **Heartbeat**: upsert this branch's `branch_status` row (§15).
 
 Push precedes pull so that stock reconciliation sees the branch's own movements reflected.
-Deltas are detected via `updated_at`/change markers on the authoritative tables.
+Deltas are detected via `updated_at`/change markers on the authoritative tables. The cycle opens
+the Postgres connection and closes it again on the way out — see §11.5.
 
 ### 11.3 Connectivity detection (near-instant, no OS-specific code)
 - **Instant trigger:** the React/Inertia UI runs in the NativePHP webview, so it listens to
   the browser `online`/`offline` events (`navigator.onLine`) and pings the backend the moment
   the link returns.
 - **Confirming probe:** because `navigator.onLine`/OS "up" is optimistic (captive portals,
-  Supabase down), a lightweight probe (`SELECT 1` / health ping) **always confirms** before a
-  real sync runs.
+  Supabase down), a lightweight probe **always confirms** before a real sync runs. It must not
+  be a Postgres connection — an offline till probing every 10–20s would hold a pooler client
+  slot forever, which is the one thing §11.5 forbids.
 - **Adaptive polling (backend safety net):** probe **fast while offline** (~10–20s) and
   **slow while stably online**, so worst-case reconnect is seconds without any native plumbing.
 - **Backstop timer:** a configurable interval (default 15 min) as a long backstop.
@@ -581,6 +618,43 @@ Deltas are detected via `updated_at`/change markers on the authoritative tables.
 ### 11.4 Idempotency & atomicity
 - All pushes are inserts keyed by UUID → re-push is a harmless upsert-by-UUID.
 - A cycle is transactional per store; a mid-cycle failure leaves the outbox intact for retry.
+
+### 11.5 Connection lifetime (why a till never holds a connection open)
+
+Branch devices connect through Supabase's **transaction** pooler (`6543`), not the session
+pooler (`5432`) the console administers through (§7 As built M3.1). That choice is what makes
+hundreds of branches possible at all — but it is only half the story, and the half that is easy
+to get wrong is this one.
+
+Transaction mode multiplexes *server* backends across clients. It does **not** make a connected
+client free: **every connected client still occupies a Supavisor client slot**, and those are
+capped per tenant by compute tier, in the low hundreds. A till that opens a connection at boot
+and holds it all day therefore re-imposes exactly the ceiling the port change was meant to
+remove, one pooler layer further out. The port fixes backend pressure; only the connection
+*lifetime* fixes client-slot pressure.
+
+Normatively, from M5 onward:
+
+- **A sync cycle owns its connection.** Connect → run the cycle (§11.2) → `DB::disconnect('pgsql')`
+  in a `finally`, so a failed or partial cycle releases the slot too. Occupancy then tracks the
+  branches syncing *at this instant* rather than the branches that exist — a number in the low
+  tens even at several hundred stores.
+- **The offline probe (§11.3) must not open Postgres.** A `SELECT 1` every 10–20s from every
+  offline till is a permanently held slot each, which is precisely the failure this rule exists
+  to prevent. Confirm reachability without a database connection, and open Postgres only once a
+  cycle is actually going to run.
+- **No session state may survive a cycle** — and none needs to. No `SET`, no `LISTEN`/`NOTIFY`,
+  no temp tables, no advisory locks, no transaction spanning steps. The `search_path` a branch
+  role needs is pinned server-side by `ALTER ROLE ... SET search_path` (§7), which is why the
+  credentials JSON carries `connection.search_path: null` (§9).
+- **The setup wizard's hydration is a cycle too** (§16): connect, version-gate, hydrate,
+  disconnect.
+- **Hydration merges, it does not replace.** Assign the JSON's `connection` block *over*
+  `config('database.connections.pgsql')`; the config array carries keys the JSON deliberately
+  does not (§9).
+
+None of this weakens §4's offline guarantee. A dropped or refused connection is a failed sync,
+and a failed sync never stops a till selling.
 
 ---
 

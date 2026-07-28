@@ -52,9 +52,10 @@ class BranchCredentialLifecycleTest extends TestCase
     /**
      * Seconds between connection attempts while polling.
      *
-     * Sized by the pooler's 15-client limit rather than by how fast an answer
-     * is wanted: each attempt consumes a session that Supavisor frees lazily,
-     * so a loop here spends a budget the whole suite shares.
+     * Sized by what is being waited for, not by how fast an answer is wanted:
+     * Supavisor's role cache expires on its own schedule (~126s for a re-created
+     * role), so asking more often cannot make it expire sooner. It only spends
+     * pooler clients, which Supavisor frees lazily.
      */
     private const POLL_INTERVAL_SECONDS = 10;
 
@@ -282,7 +283,7 @@ class BranchCredentialLifecycleTest extends TestCase
         // That would be re-measuring Supabase's ~126s cache TTL, which is a
         // property of the pooler rather than of this code — it is measured once
         // in a probe and recorded in PoolerLag. Doing it in the suite costs two
-        // minutes and, worse, a dozen pooler sessions, which is what starved
+        // minutes and, worse, a dozen pooler clients, which is what starved
         // every later test class of connections on the first full run.
     }
 
@@ -418,12 +419,12 @@ class BranchCredentialLifecycleTest extends TestCase
                 $this->fail($message." Gave up after {$seconds}s. Last error: ".$last);
             }
 
-            // Deliberately unhurried. Supabase's session pooler allows 15
-            // clients and releases them lazily, so a tight poll burns through
-            // the pool and starves the test classes that run after this one —
-            // which is exactly how it failed the first time: every later class
-            // died with EMAXCONNSESSION. Waiting longer between attempts costs
-            // this test a few seconds and costs the suite nothing.
+            // Deliberately unhurried. What this is waiting on is Supavisor's
+            // role cache, which expires on its own schedule — polling harder
+            // cannot hurry it, and only spends pooler clients that Supabase
+            // releases lazily. A tight loop here is exactly how this first
+            // failed: it starved every test class that ran after it. Waiting
+            // longer costs this test a few seconds and the suite nothing.
             sleep(self::POLL_INTERVAL_SECONDS);
         }
     }

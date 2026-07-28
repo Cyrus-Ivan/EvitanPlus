@@ -97,10 +97,18 @@ return [
          * a build: the setup wizard (§16) imports them from the provisioning
          * JSON and stores them encrypted at rest under the per-install APP_KEY
          * (§9). Phase M5 hydrates this array at runtime, before the first
-         * query:
+         * query — MERGING over it, never replacing it:
          *
-         *     config(['database.connections.pgsql' => $credentials]);
+         *     config(['database.connections.pgsql' => array_merge(
+         *         config('database.connections.pgsql'),
+         *         $credentials,          // the JSON's `connection` block
+         *     )]);
          *     DB::purge('pgsql');
+         *
+         * The merge is not a style preference. The JSON carries eight keys and
+         * this array has twelve, so a wholesale assignment silently drops
+         * `charset`, `prefix_indexes` and any driver `options` — and the console
+         * suite would stay green while every shipped till lost them.
          *
          * The defaults below are therefore deliberately EMPTY: a build with no
          * imported credentials must fail closed rather than reach some
@@ -111,19 +119,33 @@ return [
          * nativephp.cleanup_env_keys.
          *
          * `sqlite` remains the default connection; see 'default' above.
+         *
+         * Connection lifetime is normative from M5 on: a till connects, runs one
+         * sync cycle, and disconnects (§11.5). It never holds this open.
          */
         'pgsql' => [
             'driver' => 'pgsql',
             'url' => env('BRANCH_DB_URL'),
             'host' => env('BRANCH_DB_HOST'),
-            'port' => env('BRANCH_DB_PORT', '5432'),
+            // Supabase's TRANSACTION pooler, not the session pooler on 5432 the
+            // provisioning console administers through. Session mode pins one
+            // Postgres backend per client for the client's whole life, and the
+            // pool is 15 wide — which does not survive hundreds of branches.
+            // Transaction mode multiplexes backends, holding one only for the
+            // length of a transaction. Safe here because nothing in a sync cycle
+            // needs session state (§11.5) and the branch role's schema is pinned
+            // server-side by `ALTER ROLE ... SET search_path` (§7).
+            'port' => env('BRANCH_DB_PORT', '6543'),
             'database' => env('BRANCH_DB_DATABASE'),
             'username' => env('BRANCH_DB_USERNAME'),
             'password' => env('BRANCH_DB_PASSWORD'),
             'charset' => 'utf8',
             'prefix' => '',
             'prefix_indexes' => true,
-            // Pinned to the branch's business schema (biz_<id>) at runtime.
+            // Stays NULL: the schema is pinned server-side as a role default, so
+            // Postgres applies it at backend startup and pooling cannot lose it.
+            // A connect-time `SET` would not survive transaction mode, which is
+            // why the credentials JSON emits `search_path: null` too (§9).
             // NULL, not '': PostgresConnector::configureSearchPath only fires
             // when the key isset(), and an empty string would emit
             // `set search_path to ""` — a schema literally named "".

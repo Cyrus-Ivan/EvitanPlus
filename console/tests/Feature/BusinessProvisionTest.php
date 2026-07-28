@@ -8,6 +8,7 @@ use Provisioning\Support\BusinessProvisioner;
 use Provisioning\Support\BusinessSettingKeys;
 use Provisioning\Support\ProvisioningAudit;
 use Provisioning\Support\SchemaConnection;
+use Provisioning\Support\SupabaseEndpoint;
 use Tests\Concerns\ProvisionsBusiness;
 use Tests\TestCase;
 
@@ -151,7 +152,26 @@ class BusinessProvisionTest extends TestCase
         $this->assertSame('FIX', $document['branch']['code']);
         $this->assertSame('Fixture Business', $document['business']['name']);
         $this->assertSame($this->schema(), $document['business']['schema']);
-        $this->assertSame($this->schema(), $document['connection']['search_path']);
+
+        // NULL, not the schema name: the pin is a role default applied by
+        // Postgres at backend startup, which is what survives transaction
+        // pooling. Substituting business.schema here would reintroduce a
+        // client-side `SET search_path` that lands on a backend Supavisor is
+        // about to hand back. M5's importer must assign this as-is.
+        $this->assertNull($document['connection']['search_path']);
+
+        // Branches get the TRANSACTION pooler; the console keeps the session
+        // pooler. Asserting both halves, because the failure that matters is not
+        // "the port is wrong" but "a branch was handed the console's endpoint".
+        $this->assertSame(
+            SupabaseEndpoint::TRANSACTION_POOLER_PORT,
+            (int) $document['connection']['port'],
+        );
+        $this->assertNotSame(
+            (int) config('database.connections.pgsql_admin.port'),
+            (int) $document['connection']['port'],
+            'A branch must never be issued the console admin session endpoint.',
+        );
         $this->assertSame(1, $document['versions']['schema_version']);
         $this->assertSame('1.0.0', $document['versions']['min_app_version']);
 

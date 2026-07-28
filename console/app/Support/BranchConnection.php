@@ -31,7 +31,15 @@ final class BranchConnection
     public const NAME = 'pgsql_branch';
 
     /**
-     * Clone the admin endpoint, swap in the branch's credentials.
+     * Take the admin connection's driver settings, the BRANCH endpoint, and the
+     * branch's own credentials.
+     *
+     * The endpoint comes from SupabaseEndpoint::forBranch() rather than from the
+     * admin config, because the two differ by design: the admin administers over
+     * the session pooler and branches connect over the transaction pooler. Using
+     * the admin's would mean verifying every issued credential against an
+     * endpoint no branch ever uses — the check would still pass and would no
+     * longer mean anything. Only driver, charset and prefix survive the clone.
      *
      * $searchPath is null by default on purpose: leaving it unset proves the
      * server-side `ALTER ROLE ... SET search_path` pin is doing the work. If
@@ -43,6 +51,20 @@ final class BranchConnection
     {
         /** @var array<string, mixed> $config */
         $config = config('database.connections.pgsql_admin');
+
+        $endpoint = SupabaseEndpoint::forBranch();
+
+        // A CONSOLE_DB_URL is merged OVER everything set below, username
+        // included (ConfigurationUrlParser::parseConfiguration), so a "branch"
+        // connection would silently be the admin — every negative grant test
+        // would pass vacuously and verify() would prove nothing. Unset before
+        // it can win.
+        unset($config['url']);
+
+        $config['host'] = $endpoint->host;
+        $config['port'] = $endpoint->port;
+        $config['database'] = $endpoint->database;
+        $config['sslmode'] = $endpoint->sslmode;
 
         $config['username'] = $username;
         $config['password'] = $password;

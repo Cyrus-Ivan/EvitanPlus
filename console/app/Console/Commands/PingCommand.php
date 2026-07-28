@@ -70,7 +70,7 @@ class PingCommand extends Command
             $this->components->error('Connection failed: '.$e->getMessage());
             $this->components->bulletList([
                 'Check the CONSOLE_DB_* values in console/.env.',
-                'Use the SESSION endpoint on port 5432 — port 6543 (transaction pooler) will not work.',
+                'This connection needs the SESSION endpoint on port 5432. Port 6543 is the transaction pooler — it is what branch devices use, and it will not serve DDL or role management.',
                 'The direct host db.<project-ref>.supabase.co is IPv6-only without the IPv4 add-on; use the session pooler host instead.',
                 'Supabase pooler usernames are "postgres.<project-ref>", not plain "postgres".',
             ]);

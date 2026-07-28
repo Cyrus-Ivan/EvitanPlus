@@ -29,9 +29,19 @@ return [
          * without the IPv4 add-on) or the session pooler
          * (aws-<n>-<region>.pooler.supabase.com:5432).
          *
-         * Do NOT use port 6543 (transaction pooler): it does not preserve
-         * session state, which breaks `SET search_path`, role management and
-         * server-side prepared statements.
+         * Do NOT point THIS connection at port 6543 (transaction pooler): it
+         * does not preserve session state, which breaks `SET search_path` and
+         * role management. The cost — one Postgres backend pinned for the whole
+         * life of the connection — is irrelevant here, because the console is
+         * one operator running one command.
+         *
+         * That prohibition is specific to `pgsql_admin` and does NOT generalise.
+         * Branch devices are the opposite case: they connect over 6543 and are
+         * configured by CONSOLE_BRANCH_DB_* (see SupabaseEndpoint::forBranch),
+         * which defaults to this host on the transaction pooler's port. Session
+         * mode's 15-client pool does not survive hundreds of branches, and a
+         * branch needs none of the session state this connection depends on —
+         * its schema is pinned server-side as a role default.
          */
         'pgsql_admin' => [
             'driver' => 'pgsql',

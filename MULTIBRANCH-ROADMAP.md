@@ -272,6 +272,14 @@ Replace the local Owner-creation wizard with a connect-and-hydrate flow.
 ## Tasks
 - Import JSON → **encrypt at rest** with per-install `APP_KEY` → prompt to remove JSON.
 - Connect as the branch role; **verify version compatibility** (§ version gate) before proceeding.
+- **Connect per cycle, never continuously (§11.5).** Branches connect on `6543`, Supabase's
+  **transaction** pooler — not the `5432` session pooler the console administers through.
+  Transaction mode pools server backends, but each *connected client* still holds a Supavisor
+  client slot (capped per tenant in the low hundreds), so a held-open connection re-imposes the
+  very ceiling the port choice removes. Every cycle — including this phase's version gate and
+  hydration — connects, runs, and `DB::disconnect('pgsql')`s in a `finally`. Assign the JSON's
+  `connection` block **over** `config('database.connections.pgsql')` rather than replacing it,
+  and assign `search_path` as-is (`null` — the schema is pinned server-side; see §9).
 - Run local SQLite migrations.
 - **Hydrate** baseline: full catalog, **all** users (business-wide), settings/identity, this
   branch's stock snapshot.
@@ -294,7 +302,9 @@ Local-first writes with reliable, idempotent upward sync.
 - Introduce the **outbox** for local-write tables (sales, transaction_items, returns, defects,
   sale/return/defect ledger rows, login_history, local audit).
 - Keep all offline-capable writes **SQLite-first**; generate the **per-branch serial** locally.
-- **Push** = insert-only, UUID-keyed, idempotent upserts to Postgres.
+- **Push** = insert-only, UUID-keyed, idempotent upserts to Postgres. It runs inside a §11.5
+  cycle: connect, push, disconnect. The connectivity probe that decides whether to sync must not
+  itself open Postgres.
 - **Opportunistic post-checkout sync** when online.
 - Surface **unsynced count** and last-sync status in-app.
 
@@ -374,7 +384,9 @@ Central visibility into every branch and instance.
 
 ## Tasks
 - Each instance **upserts** its `branch_status` (app/schema version, last_sync_at,
-  unsynced_count, last_seen_at, connection_state, last_error) every cycle.
+  unsynced_count, last_seen_at, connection_state, last_error) every cycle — inside that cycle's
+  connection (§11.5), never on a heartbeat connection of its own. `connection_state` is derived
+  from the last cycle's outcome, not from a socket held open to observe it.
 - Console **monitor** view aggregates `branch_status` across all schemas.
 
 ## Milestone

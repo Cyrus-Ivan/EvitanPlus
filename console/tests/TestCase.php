@@ -29,11 +29,17 @@ use Throwable;
  *
  * ## Why one schema per class, not per test
  *
- * Supabase's session pooler allows 15 clients, and applying the migration set
- * takes ~13s against a remote database. Building a schema per test method
- * exhausts the pool AND makes the suite unusably slow, so each class migrates
- * ONE throwaway schema and every test runs inside a transaction that is rolled
- * back — the standard Laravel arrangement, just with the setup cost hoisted.
+ * Admin work runs over Supabase's session pooler, which allows 15 clients, and
+ * applying the migration set takes ~13s against a remote database. Building a
+ * schema per test method exhausts the pool AND makes the suite unusably slow, so
+ * each class migrates ONE throwaway schema and every test runs inside a
+ * transaction that is rolled back — the standard Laravel arrangement, just with
+ * the setup cost hoisted.
+ *
+ * The session budget is an ADMIN concern only. Branch-role connections moved to
+ * the transaction pooler (§7), where a client holds a backend only for the
+ * length of a transaction, so they no longer compete for those 15 slots. The
+ * three admin-credentialed connections a class can pin still do.
  */
 abstract class TestCase extends BaseTestCase
 {
@@ -47,9 +53,9 @@ abstract class TestCase extends BaseTestCase
      * One PDO handle shared by every test in the class.
      *
      * Laravel refreshes the application per test, which would otherwise mean a
-     * fresh DatabaseManager and a fresh TCP session each time. Against
-     * Supabase's session pooler — 15 clients, and sessions are released
-     * lazily — that exhausts the pool part-way through a class. Connections
+     * fresh DatabaseManager and a fresh TCP session each time. Against the admin
+     * session pooler — 15 clients, and sessions are released lazily — that
+     * exhausts the pool part-way through a class. Connections
      * resolve their PDO lazily, so handing each new Connection the handle we
      * already hold means the whole class costs exactly one session.
      */
@@ -132,12 +138,16 @@ abstract class TestCase extends BaseTestCase
         //
         // Purging by name is not belt-and-braces: Application::flush() drops
         // the container bindings but does not close the PDOs behind the
-        // connections a class pinned, and Supavisor frees session-mode clients
-        // lazily. A class that pinned a business schema, the console schema and
-        // a branch role therefore leaked three of the pooler's fifteen slots
-        // into the next class — which is exactly how the M3 suite first failed:
-        // every later class died with EMAXCONNSESSION while the classes that
-        // caused it all passed.
+        // connections a class pinned, and Supavisor frees clients lazily. A
+        // class that pinned a business schema, the console schema and a branch
+        // role therefore leaked three clients into the next class — which is
+        // exactly how the M3 suite first failed: every later class died with
+        // EMAXCONNSESSION while the classes that caused it all passed.
+        //
+        // Two of those three are still session-mode admin connections against a
+        // 15-slot pool, so this stays mandatory. The branch role is now a
+        // transaction-pooler client, cheaper but not free — it holds a client
+        // slot until released, and its PDO leaks just the same.
         foreach ([
             'pgsql_admin',
             SchemaConnection::NAME,

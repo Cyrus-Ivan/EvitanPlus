@@ -270,7 +270,7 @@ final class BranchIssuer
         $schema = $target['schema_name'];
         $role = $target['role_name'];
 
-        $endpoint = SupabaseEndpoint::fromConsoleConfig();
+        $endpoint = SupabaseEndpoint::forBranch();
         $businessId = SchemaName::toBusinessUuid($schema);
         $businessName = BranchDirectory::businessName($schema);
 
@@ -461,10 +461,10 @@ final class BranchIssuer
                     $announced = true;
                 }
 
-                // Unhurried on purpose. Each attempt consumes a pooler session
-                // that Supabase frees lazily, and the thing being waited for
-                // takes ~2 minutes anyway, so a tight retry buys nothing and
-                // spends a connection budget that is only 15 wide.
+                // Unhurried on purpose. What is being waited for is Supavisor's
+                // role cache expiring, which takes ~2 minutes regardless of how
+                // often it is asked, so a tight retry buys nothing and only
+                // spends pooler clients Supabase frees lazily.
                 sleep(self::VERIFY_RETRY_SECONDS);
             }
         }

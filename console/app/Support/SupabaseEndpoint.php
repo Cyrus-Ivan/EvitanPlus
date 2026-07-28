@@ -2,15 +2,44 @@
 
 namespace Provisioning\Support;
 
+use InvalidArgumentException;
+
 /**
- * The connection facts a branch device needs, derived from the console's own
- * admin connection.
+ * The connection facts a branch device needs.
  *
- * Branches reach the same Supabase project the console administers, so the
- * endpoint is taken from CONSOLE_DB_* rather than configured twice — one fewer
- * pair of values to keep in step, and no way to hand a branch an endpoint the
- * console never verified. The admin USERNAME and PASSWORD are of course never
- * copied: only host, port, database and sslmode.
+ * Branches reach the same Supabase project the console administers, so identity
+ * — database, sslmode, tenant ref — is DERIVED from CONSOLE_DB_* rather than
+ * configured twice: one fewer set of values to keep in step, and no way to hand
+ * a branch a database the console never administered. The admin USERNAME and
+ * PASSWORD are of course never copied.
+ *
+ * ## Why the transport is separate
+ *
+ * The one thing branches must NOT inherit is the admin's port. Supabase serves
+ * two pooling modes on the same Supavisor host:
+ *
+ *   5432  session mode      — one Postgres backend pinned per client, for the
+ *                             client's whole life. The console needs it: DDL,
+ *                             CREATE/ALTER ROLE and its own search_path pin all
+ *                             depend on session state surviving between
+ *                             statements. One operator, so the cost is nothing.
+ *   6543  transaction mode  — backends are multiplexed across clients, held only
+ *                             for the length of a transaction. Branches need it:
+ *                             session mode's pool is 15 clients on this project,
+ *                             and Evitan Plus is heading for hundreds of
+ *                             branches, each holding a connection.
+ *
+ * Transaction mode is only safe here because a branch role's schema is pinned
+ * SERVER-side by `ALTER ROLE ... SET search_path` (BranchRole::applyGrants), a
+ * role default Postgres applies at backend startup — so every pooled backend
+ * carries it. A connect-time `SET` would not survive, which is why the
+ * credentials JSON emits `connection.search_path: null` (§9).
+ *
+ * CONSOLE_BRANCH_DB_HOST / CONSOLE_BRANCH_DB_PORT override the transport. Both
+ * default sensibly, so the common case configures nothing: same host as the
+ * admin, port 6543. And because BranchConnection uses this same endpoint,
+ * provisioning verifies each credential over the exact endpoint it hands out
+ * rather than over one it merely resembles.
  *
  * ## The pooler username suffix
  *
@@ -33,6 +62,12 @@ namespace Provisioning\Support;
 final class SupabaseEndpoint
 {
     /**
+     * Supabase's transaction pooler. See the class docblock for why branches
+     * get this and the console admin keeps 5432.
+     */
+    public const TRANSACTION_POOLER_PORT = 6543;
+
+    /**
      * @param  string|null  $projectRef  Null when the endpoint is not a pooler.
      */
     private function __construct(
@@ -43,18 +78,35 @@ final class SupabaseEndpoint
         public readonly ?string $projectRef,
     ) {}
 
-    public static function fromConsoleConfig(): self
+    /**
+     * The endpoint branch devices connect through — and the one the console
+     * verifies each issued credential over.
+     */
+    public static function forBranch(): self
+    {
+        $admin = self::adminConfig();
+        $projectRef = self::projectRef((string) ($admin['username'] ?? ''));
+
+        return new self(
+            host: self::envValue('CONSOLE_BRANCH_DB_HOST') ?? (string) ($admin['host'] ?? ''),
+            port: self::port('CONSOLE_BRANCH_DB_PORT')
+                // No project ref means no Supavisor in the path — a direct
+                // db.<ref>.supabase.co connection or a local Postgres, neither
+                // of which serves 6543. Inherit rather than invent.
+                ?? ($projectRef === null ? (int) ($admin['port'] ?? 5432) : self::TRANSACTION_POOLER_PORT),
+            database: (string) ($admin['database'] ?? 'postgres'),
+            sslmode: (string) ($admin['sslmode'] ?? 'require'),
+            projectRef: $projectRef,
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function adminConfig(): array
     {
         /** @var array<string, mixed> $config */
         $config = config('database.connections.pgsql_admin');
 
-        return new self(
-            host: (string) ($config['host'] ?? ''),
-            port: (int) ($config['port'] ?? 5432),
-            database: (string) ($config['database'] ?? 'postgres'),
-            sslmode: (string) ($config['sslmode'] ?? 'require'),
-            projectRef: self::projectRef((string) ($config['username'] ?? '')),
-        );
+        return $config;
     }
 
     /**
@@ -66,6 +118,45 @@ final class SupabaseEndpoint
         $role = RoleName::validate($role);
 
         return $this->projectRef === null ? $role : $role.'.'.$this->projectRef;
+    }
+
+    /**
+     * A non-blank env string, or null.
+     *
+     * Blank must read as absent, not as a value: an empty CONSOLE_BRANCH_DB_HOST
+     * would otherwise ship a credentials JSON pointing at "", and the operator
+     * would meet it as an opaque connect failure inside verify().
+     */
+    private static function envValue(string $key): ?string
+    {
+        $value = env($key);
+
+        return is_string($value) && trim($value) !== '' ? trim($value) : null;
+    }
+
+    /**
+     * A TCP port from the environment, or null when the key is unset.
+     *
+     * Throws rather than falling back on a value it cannot parse. A typo'd port
+     * that silently defaulted would produce a credential pointing somewhere the
+     * operator never chose — the same class of mistake RoleName and SchemaName
+     * refuse outright.
+     */
+    private static function port(string $key): ?int
+    {
+        $value = self::envValue($key);
+
+        if ($value === null) {
+            return null;
+        }
+
+        if (filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 65535]]) === false) {
+            throw new InvalidArgumentException(
+                "{$key} must be a TCP port between 1 and 65535, got [{$value}]."
+            );
+        }
+
+        return (int) $value;
     }
 
     /**

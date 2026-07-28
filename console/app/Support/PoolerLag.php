@@ -13,7 +13,10 @@ use Throwable;
  * and creating one with the SAME name leaves it holding sessions bound to the
  * old role's OID, and it hands those to new clients — which fail with
  * `invalid role OID: <n>` even though the credential is perfectly valid.
- * Measured against a live Supabase project (2026-07-27):
+ *
+ * Measured against a live Supabase project (2026-07-27), with branch roles
+ * connecting through the SESSION pooler (5432), which is what they used at the
+ * time:
  *
  *   provision (a name the pooler has never seen)  usable immediately
  *   rotate (ALTER ROLE ... PASSWORD)              usually immediate, but see below
@@ -22,9 +25,21 @@ use Throwable;
  *   enable (LOGIN)                                restored immediately
  *   re-create (DROP then CREATE)                  ~126s of `invalid role OID`
  *
+ * Re-measured (2026-07-27) after branch roles moved to the TRANSACTION pooler
+ * (6543; see SupabaseEndpoint): every row above still holds, and the refusal
+ * wordings are unchanged — the regex below needed no widening. That is expected
+ * rather than lucky: the role cache this class is about is keyed by username and
+ * is a property of Supavisor's tenant layer, not of the pooling mode underneath
+ * it. Treat the table as endpoint-dependent anyway, and re-measure if the branch
+ * endpoint changes again.
+ *
  * The disable rows are why BranchRole::setLogin terminates the role's sessions:
  * NOLOGIN on its own left a "disabled" branch connecting indefinitely, because
  * the pooler satisfied new clients from its warm pool without re-authenticating.
+ * Under transaction mode the same call drains the warm pool and Supavisor's next
+ * server checkout has to open a fresh backend, which Postgres refuses under
+ * NOLOGIN — so the enforcement path differs but the outcome is the same, and the
+ * lifecycle test confirms it.
  *
  * Rotation is listed as "usually immediate" rather than "immediate" on purpose.
  * An isolated probe measured it settling instantly; the test suite then caught

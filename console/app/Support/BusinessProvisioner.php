@@ -105,7 +105,7 @@ final class BusinessProvisioner
         $role = RoleName::forBranch($branchId);
         $code = BranchCode::validate((string) $data['branch_code']);
 
-        $endpoint = SupabaseEndpoint::fromConsoleConfig();
+        $endpoint = SupabaseEndpoint::forBranch();
         $password = BranchSecret::generate();
 
         $target = [

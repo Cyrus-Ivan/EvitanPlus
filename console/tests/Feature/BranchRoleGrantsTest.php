@@ -5,9 +5,11 @@ namespace Tests\Feature;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Provisioning\Support\BranchConnection;
 use Provisioning\Support\BranchGrants;
 use Provisioning\Support\SchemaConnection;
 use Provisioning\Support\SchemaName;
+use Provisioning\Support\SupabaseEndpoint;
 use Tests\Concerns\AssertsBranchGrants;
 use Tests\Concerns\ProvisionsBusiness;
 use Tests\TestCase;
@@ -27,6 +29,13 @@ use Throwable;
  * SchemaInvariantsTest established: in Postgres a failed statement poisons the
  * enclosing transaction, so without the savepoint every later assertion would
  * fail for the wrong reason.
+ *
+ * This class doubles as the **transaction-pooler probe**, which is why it is the
+ * one to run first after any change to the branch endpoint. Every assertion here
+ * runs over `6543`, on one long-lived connection, firing many parameterised
+ * queries — the exact shape that breaks if Supavisor stops tracking named
+ * prepared statements, and the exact shape that would expose a `search_path` pin
+ * that only worked because the client was setting it.
  */
 class BranchRoleGrantsTest extends TestCase
 {
@@ -52,6 +61,55 @@ class BranchRoleGrantsTest extends TestCase
         self::tearDownProvisionedBusiness();
 
         parent::tearDownAfterClass();
+    }
+
+    /**
+     * The branch connection is the one a till will use, not the admin's.
+     *
+     * Otherwise invisible: every other test here would pass just as happily over
+     * the console's session endpoint, and provisioning's verify() would keep
+     * reporting success while proving nothing about the endpoint it ships.
+     */
+    public function test_the_branch_connection_uses_the_branch_endpoint(): void
+    {
+        $this->branch();
+
+        /** @var array<string, mixed> $config */
+        $config = config('database.connections.'.BranchConnection::NAME);
+
+        $this->assertSame(SupabaseEndpoint::TRANSACTION_POOLER_PORT, (int) $config['port']);
+
+        // No client-side pin: the server-side ALTER ROLE must do the work, which
+        // is what the next test then proves against a live connection.
+        $this->assertArrayNotHasKey('search_path', $config);
+
+        // A CONSOLE_DB_URL would be merged over host, port AND username by
+        // ConfigurationUrlParser, making this connection silently the admin —
+        // and every refusal test in this class would then pass vacuously.
+        $this->assertArrayNotHasKey('url', $config);
+    }
+
+    /**
+     * Named prepared statements survive the transaction pooler.
+     *
+     * PDO_pgsql prepares server-side under a per-connection name. Under
+     * transaction pooling that classically breaks — `42P05 already exists` when a
+     * name collides on a reused backend, `26000 does not exist` when prepare and
+     * execute land on different ones. Supavisor tracks them, so this passes; the
+     * test exists so that if it ever stops tracking them, the failure arrives
+     * here with a name rather than in the field as an intermittent query error.
+     */
+    public function test_repeating_a_parameterised_query_does_not_collide_in_the_pooler(): void
+    {
+        $branch = $this->branch();
+
+        for ($i = 0; $i < 3; $i++) {
+            $this->assertSame(
+                $this->schema(),
+                $branch->selectOne('select current_schema() as v where ? = ?', ['x', 'x'])->v,
+                "Repeat {$i} of an identical parameterised query failed.",
+            );
+        }
     }
 
     public function test_the_role_lands_in_its_own_business_without_being_told(): void

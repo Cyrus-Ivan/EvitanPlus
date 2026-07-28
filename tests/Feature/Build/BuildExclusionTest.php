@@ -187,6 +187,12 @@ class BuildExclusionTest extends TestCase
             'CONSOLE_DB_HOST',
             'CONSOLE_DB_USERNAME',
             'CONSOLE_DB_PASSWORD',
+            // The branch endpoint the console emits into credentials JSONs. Named
+            // CONSOLE_BRANCH_DB_* precisely so the existing 'CONSOLE_*' pattern
+            // already covers it — these two assertions are what hold that claim
+            // to account if the pattern is ever narrowed.
+            'CONSOLE_BRANCH_DB_HOST',
+            'CONSOLE_BRANCH_DB_PORT',
             'BRANCH_DB_HOST',
             'BRANCH_DB_USERNAME',
             'BRANCH_DB_PASSWORD',

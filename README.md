@@ -125,9 +125,22 @@ php console/artisan branch:revoke  --business=<business-uuid> --branch-code=MNL
 (cd console && composer test)
 ```
 
-Use Supabase's **session** endpoint on port `5432` — the transaction pooler on
-`6543` does not preserve session state and breaks DDL and `search_path`
-pinning. Pooler usernames are `postgres.<project-ref>`, not plain `postgres`.
+**Two endpoints, one Supabase project.** They are not interchangeable:
+
+| | endpoint | why |
+| --- | --- | --- |
+| Console admin (`CONSOLE_DB_*`) | **session** pooler, `5432` | DDL, `CREATE`/`ALTER ROLE` and its own `search_path` pin all need session state to survive between statements. Transaction mode hands out a different backend per transaction and none of that holds. One operator, so pinning a backend costs nothing. |
+| Branch devices (`CONSOLE_BRANCH_DB_*`) | **transaction** pooler, `6543` | Session mode pins one Postgres backend per client for the client's whole life, and the pool is 15 wide on this project. Hundreds of branches is not a tuning problem at that point, it is arithmetic. Transaction mode multiplexes backends, holding one only for the length of a transaction. |
+
+Branches can use transaction mode only because their schema is pinned
+server-side by `ALTER ROLE ... SET search_path` — a role default Postgres applies
+at backend startup, so pooling cannot lose it. That is why every credentials JSON
+carries `connection.search_path: null`, and why a till must connect, run one sync
+cycle and disconnect rather than hold a connection open (`MULTIBRANCH-BRAINSTORM.md`
+§11.5). `CONSOLE_BRANCH_DB_HOST`/`_PORT` default to the admin's host and `6543`,
+so the common setup configures neither.
+
+Pooler usernames are `postgres.<project-ref>`, not plain `postgres`.
 **Never copy `CONSOLE_DB_*` values into the root `.env`.**
 
 `business:provision` writes each branch's credentials JSON to

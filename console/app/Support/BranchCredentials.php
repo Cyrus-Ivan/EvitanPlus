@@ -26,10 +26,16 @@ use RuntimeException;
  *
  * ## Shape
  *
- * The `connection` block is deliberately the exact key set of the shipped app's
- * `config('database.connections.pgsql')`, so M5's import is an assignment
- * rather than a translation. `format`/`format_version` let that importer reject
- * a document shape it does not know instead of half-reading it.
+ * The `connection` block deliberately uses the shipped app's own key names from
+ * `config('database.connections.pgsql')`, so M5's import is an assignment rather
+ * than a translation. It is a **subset** of that array, not the whole of it —
+ * `url`, `charset`, `prefix` and `prefix_indexes` are absent — so the import
+ * MERGES this block over the config array. A wholesale assignment would drop
+ * those keys, and would silently discard any driver `options` a later fix adds:
+ * the console suite would stay green while every shipped till lost them.
+ *
+ * `format`/`format_version` let that importer reject a document shape it does
+ * not know instead of half-reading it.
  *
  * The OWNER's password is not in here. §9 does not list it, it is not needed to
  * connect, and the business owner's login has no business sitting in a file on
@@ -160,16 +166,29 @@ final class BranchCredentials
                 'address' => $branch['address'],
             ],
 
-            // Key-for-key the shipped app's pgsql connection (see the class
-            // docblock) so M5 assigns it rather than translating it.
+            // The shipped app's own pgsql key names (see the class docblock) so
+            // M5 assigns rather than translates — but a SUBSET of them, so M5
+            // merges this block OVER config('database.connections.pgsql') rather
+            // than replacing it. See §9.
             'connection' => [
                 'driver' => 'pgsql',
                 'host' => $endpoint->host,
+                // The transaction pooler, not the session pooler the console
+                // administers through (§7). Verified below by connecting as the
+                // role over this exact endpoint before the JSON is reported good.
                 'port' => $endpoint->port,
                 'database' => $endpoint->database,
                 'username' => $endpoint->loginName($role),
                 'password' => $password,
-                'search_path' => $business['schema'],
+                // NULL on purpose, and M5 must assign it as-is rather than
+                // substituting business.schema. The schema is pinned server-side
+                // by `ALTER ROLE ... SET search_path` (BranchRole::applyGrants),
+                // which Postgres applies at backend startup — so it reaches every
+                // pooled backend. A client-side `SET` would run on whichever
+                // backend Supavisor checked out and then handed back, which under
+                // transaction pooling means it lands nowhere useful. Null is also
+                // inert: PostgresConnector::configureSearchPath fires on isset().
+                'search_path' => null,
                 'sslmode' => $endpoint->sslmode,
             ],
 

@@ -90,8 +90,11 @@ Laravel app with its own dependency tree.
 cp console/.env.example console/.env
 php console/artisan key:generate
 
-# Paste your Supabase admin credentials into console/.env (CONSOLE_DB_*),
-# then verify the connection and its DDL capability:
+# Paste your Supabase admin credentials into console/.env (CONSOLE_DB_*), then
+# verify both endpoints: the admin connection and its DDL capability, and the
+# endpoint branches are issued (see the two-endpoint table below). It reports
+# the branch endpoint and connects to it, so a misconfiguration surfaces here
+# rather than at the end of a provision.
 php console/artisan console:ping
 
 # Create the console's OWN schema (evitan_console) — the provisioning audit
@@ -187,7 +190,7 @@ npm run format            # Prettier
 npm run build             # Production frontend build
 php artisan native:build  # Build the native desktop executable
 
-php console/artisan console:ping        # Verify the console's admin Supabase connection
+php console/artisan console:ping        # Verify both Supabase endpoints (admin + branch)
 php console/artisan console:migrate     # Create the console's provisioning audit schema
 php console/artisan business:provision  # Provision a business + its first branch
 ```

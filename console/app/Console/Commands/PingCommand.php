@@ -4,6 +4,7 @@ namespace Provisioning\Console\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
+use Provisioning\Support\SupabaseEndpoint;
 use Throwable;
 
 /**
@@ -14,13 +15,28 @@ use Throwable;
  * on. Deliberately contains NO provisioning logic and leaves NO persistent
  * objects behind: the DDL probe runs inside a transaction that is always
  * rolled back (Postgres makes CREATE SCHEMA and CREATE ROLE transactional).
+ *
+ * ## Why it speaks for two endpoints
+ *
+ * Since M3.1 the console depends on two: it administers over the session pooler
+ * and branches connect over the transaction pooler (see SupabaseEndpoint). The
+ * second is not a detail of this command's own connection — it is what gets
+ * stamped into every credentials JSON and shipped to a device.
+ *
+ * Reporting only the admin endpoint made "Connected" mean less than it looked
+ * like it meant. A wrong branch endpoint is first exercised by verify(), the
+ * second-to-last step of a provision, so it surfaced only after a schema,
+ * nineteen migrations, a seed, a role and the whole grant matrix had been
+ * created — and then rolled back. That check still exists and still gates the
+ * JSON; this command just makes the same answer available before the work.
  */
 class PingCommand extends Command
 {
     protected $signature = 'console:ping
-        {--no-ddl-probe : Skip the rolled-back CREATE SCHEMA / CREATE ROLE probe}';
+        {--no-ddl-probe : Skip the rolled-back CREATE SCHEMA / CREATE ROLE probe}
+        {--no-branch-probe : Skip connecting to the branch endpoint (it still gets reported)}';
 
-    protected $description = 'Verify the admin Supabase connection: server version, identity and DDL capability';
+    protected $description = 'Verify both Supabase endpoints: the admin connection and DDL capability, and the endpoint branches are issued';
 
     public function handle(): int
     {
@@ -94,11 +110,115 @@ class PingCommand extends Command
         $this->components->twoColumnDetail('CREATEDB', $this->yesNo($role?->rolcreatedb));
         $this->components->twoColumnDetail('CREATE on database (schemas)', $this->yesNo($facts->may_create_schema));
 
-        if ($this->option('no-ddl-probe')) {
+        $ddl = $this->option('no-ddl-probe') ? self::SUCCESS : $this->probeDdl($name);
+
+        // Runs even when the DDL probe failed, on purpose: two independent
+        // misconfigurations should both be visible in one run rather than one
+        // per run.
+        $branch = $this->reportBranchEndpoint();
+
+        return $ddl === self::SUCCESS && $branch === self::SUCCESS
+            ? self::SUCCESS
+            : self::FAILURE;
+    }
+
+    /**
+     * Report — and unless waived, reach — the endpoint branch devices are issued.
+     *
+     * Reporting is unconditional because it is free and it is the part an
+     * operator cannot otherwise see: nothing else in the console prints this
+     * endpoint until a provision has already done its work.
+     */
+    private function reportBranchEndpoint(): int
+    {
+        $endpoint = SupabaseEndpoint::forBranch();
+
+        $this->newLine();
+        $this->components->info('Endpoint branch devices are issued');
+        $this->components->twoColumnDetail('Host', $endpoint->host);
+        $this->components->twoColumnDetail('Port', (string) $endpoint->port);
+        $this->components->twoColumnDetail('Database', $endpoint->database);
+        $this->components->twoColumnDetail('SSL mode', $endpoint->sslmode);
+        $this->components->twoColumnDetail(
+            'Branch login name',
+            $endpoint->projectRef === null
+                ? 'branch_<32 hex> (no pooler suffix)'
+                : 'branch_<32 hex>.'.$endpoint->projectRef,
+        );
+
+        // A pooler tenant exists but branches would be handed the admin's own
+        // session endpoint. Not fatal — it will work — but it is the shape that
+        // does not survive more than a handful of branches, and it is silent.
+        if ($endpoint->projectRef !== null
+            && $endpoint->port === (int) config('database.connections.pgsql_admin.port')) {
+            $this->components->warn(
+                'Branches would be issued the admin SESSION endpoint. Session mode pins one '
+                .'Postgres backend per client for the connection\'s whole life; set '
+                .'CONSOLE_BRANCH_DB_PORT='.SupabaseEndpoint::TRANSACTION_POOLER_PORT.' (the default) instead.'
+            );
+        }
+
+        if ($this->option('no-branch-probe')) {
             return self::SUCCESS;
         }
 
-        return $this->probeDdl($name);
+        return $this->probeBranchEndpoint($endpoint);
+    }
+
+    /**
+     * Confirm the branch endpoint answers, using the ADMIN credentials.
+     *
+     * That is deliberate, and it is not the thing console/config/database.php
+     * warns against. The prohibition there protects session state — DDL, role
+     * management, search_path pinning — and this runs one `select 1` and needs
+     * none of it. What it proves is the transport: that the host answers on that
+     * port and completes a TLS handshake. That is exactly the failure the
+     * defaults can produce on their own, when the admin connects directly and
+     * the branch host inherits a `db.<ref>.supabase.co` that does not serve 6543.
+     *
+     * It cannot prove a branch ROLE works: this command holds no branch
+     * credential and must never hold one (§9). Provisioning's verify() remains
+     * the check that proves that, and remains the one that gates a JSON.
+     */
+    private function probeBranchEndpoint(SupabaseEndpoint $endpoint): int
+    {
+        /** @var array<string, mixed> $config */
+        $config = config('database.connections.pgsql_admin');
+
+        // Same hazards BranchConnection::open() handles: a CONSOLE_DB_URL would
+        // be merged over host and port and this would silently probe the admin
+        // endpoint instead, reporting success about the wrong thing.
+        unset($config['url'], $config['search_path']);
+
+        $config['host'] = $endpoint->host;
+        $config['port'] = $endpoint->port;
+        $config['database'] = $endpoint->database;
+        $config['sslmode'] = $endpoint->sslmode;
+
+        $name = 'pgsql_branch_probe';
+        config(["database.connections.{$name}" => $config]);
+
+        try {
+            DB::purge($name);
+            DB::connection($name)->select('select 1');
+
+            $this->components->info('Branch endpoint answers (TLS handshake completed, credentials accepted on this port)');
+
+            return self::SUCCESS;
+        } catch (Throwable $e) {
+            $this->components->error('Branch endpoint unreachable: '.$e->getMessage());
+            $this->components->bulletList([
+                'Every credentials JSON carries this endpoint, so provisioning will fail at verification until it answers.',
+                'CONSOLE_BRANCH_DB_HOST / CONSOLE_BRANCH_DB_PORT in console/.env override it; blank means the admin host on port '.SupabaseEndpoint::TRANSACTION_POOLER_PORT.'.',
+                'A direct db.<project-ref>.supabase.co host does not serve '.SupabaseEndpoint::TRANSACTION_POOLER_PORT.' — set CONSOLE_BRANCH_DB_HOST to the pooler host.',
+            ]);
+
+            return self::FAILURE;
+        } finally {
+            // Never leave the probe's connection (or its admin password) behind.
+            DB::purge($name);
+            config(["database.connections.{$name}" => null]);
+        }
     }
 
     /**

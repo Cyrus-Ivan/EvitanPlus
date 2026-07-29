@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Models\Concerns\HasUuidPrimaryKey;
 use App\Models\Concerns\Immutable;
+use App\Models\Concerns\PushedUpward;
 use Database\Factories\InventoryLedgerFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -16,7 +17,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class InventoryLedger extends Model
 {
     /** @use HasFactory<InventoryLedgerFactory> */
-    use HasFactory, HasUuidPrimaryKey, Immutable;
+    use HasFactory, HasUuidPrimaryKey, Immutable, PushedUpward;
 
     protected $table = 'inventory_ledger';
 
@@ -42,6 +43,25 @@ class InventoryLedger extends Model
             'resulting_snapshot' => 'integer',
             'created_at' => 'datetime',
         ];
+    }
+
+    /**
+     * The one table BOTH sides insert into (docs/glossary.md §4).
+     *
+     * `type = 'sale'` rows — any sale_type: sale, return or defect — originate
+     * at the till and push up. `type = 'stock_adjustment'` rows are
+     * online-authoritative: they are issued online, mediated through
+     * `inventory_update_queue` when subtractive (§10), and pulled down. Pushing
+     * them would give that class of row two writers and break
+     * single-writer-per-table, which is why there is no last-write-wins
+     * anywhere in this system.
+     *
+     * Note there is no `restock` here to exclude — it is not a value anywhere in
+     * the codebase, only a UI framing of a positive stock_adjustment.
+     */
+    public function shouldPush(): bool
+    {
+        return $this->type === 'sale';
     }
 
     /**

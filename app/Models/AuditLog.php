@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Models\Concerns\HasUuidPrimaryKey;
 use App\Models\Concerns\Immutable;
+use App\Models\Concerns\PushedUpward;
 use Database\Factories\AuditLogFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -16,7 +17,7 @@ use Illuminate\Database\Eloquent\Relations\MorphTo;
 class AuditLog extends Model
 {
     /** @use HasFactory<AuditLogFactory> */
-    use HasFactory, HasUuidPrimaryKey, Immutable;
+    use HasFactory, HasUuidPrimaryKey, Immutable, PushedUpward;
 
     public const UPDATED_AT = null;
 

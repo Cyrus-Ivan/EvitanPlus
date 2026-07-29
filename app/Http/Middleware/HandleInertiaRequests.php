@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\SyncStatus;
 use App\Support\Auth\Permissions;
 use App\Support\Settings\BusinessSettings;
 use Illuminate\Http\Request;
@@ -42,6 +43,13 @@ class HandleInertiaRequests extends Middleware
             // Business currency symbol for every money render. Rescued because
             // the settings table may not exist yet on a fresh install.
             'currency' => rescue(fn (): string => app(BusinessSettings::class)->all()['currency_symbol'], '₱', report: false),
+            // How far behind the business database this branch is, and why (M6).
+            // Rescued for the same reason as currency: the sync tables may not
+            // exist yet on a fresh install, and a shared prop must never be the
+            // thing that stops a page rendering. Cheap — two indexed local
+            // reads, no network: the connection state is what the LAST cycle
+            // concluded, never a probe fired per request.
+            'sync' => rescue(fn (): array => SyncStatus::snapshot(), null, report: false),
             'auth' => [
                 'user' => $request->user(),
                 // Role hierarchy resolved server-side so the client never

@@ -9,6 +9,7 @@ use App\Models\TransactionItem;
 use App\Models\User;
 use App\Support\Audit\AuditRecorder;
 use App\Support\Inventory\StockLedger;
+use App\Support\Sync\Outbox;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -32,6 +33,7 @@ class ProcessSaleReturn
         private readonly StockLedger $ledger,
         private readonly SaleReturnNumberGenerator $numbers,
         private readonly AuditRecorder $audit,
+        private readonly Outbox $outbox,
     ) {}
 
     /**
@@ -56,9 +58,14 @@ class ProcessSaleReturn
         // QueryException. Retry a few times with a fresh number.
         for ($attempt = 1; ; $attempt++) {
             try {
-                return DB::transaction(fn () => $this->write(
+                // One push batch for the whole event (M6): the sale_return, its
+                // lines, the restoring ledger entries and the audit row reach
+                // Postgres together or not at all. A half-pushed return reads as
+                // a return of fewer items, which is a wrong refund total in
+                // consolidated reporting rather than an obviously missing row.
+                return $this->outbox->group(fn () => DB::transaction(fn () => $this->write(
                     $transaction, $type, $lines, $reason, $refundPaymentType, $performedBy,
-                ));
+                )));
             } catch (QueryException $e) {
                 if ($attempt < 3 && str_contains($e->getMessage(), 'return_number')) {
                     continue;

@@ -8,8 +8,10 @@ use App\Models\ImportHistory;
 use App\Support\Audit\AuditRecorder;
 use App\Support\Inventory\CsvInventoryImporter;
 use App\Support\Inventory\InventoryCsvSchema;
+use App\Support\Sync\ConnectivityProbe;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -19,9 +21,26 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  * Upload History and hosts the template download, the upload form, and a link
  * to the export. Item Cost is Owner-only, so the cost column is only honoured
  * on import (and included in the template) for the Owner.
+ *
+ * ## Online-only since M6 (MULTIBRANCH-BRAINSTORM.md §17)
+ *
+ * An import writes `type = 'stock_adjustment'` ledger rows, and those are
+ * online-authoritative: they are pulled DOWN, never pushed up, so the outbox
+ * does not carry them. A branch importing while offline would therefore create
+ * stock movements that could never reach Postgres, and its stock would diverge
+ * from the business's permanently and silently — the one failure this whole
+ * design exists to prevent.
+ *
+ * Pushing them instead was considered and rejected: it would give
+ * `stock_adjustment` rows two writers, and single-writer-per-table is the reason
+ * there is no last-write-wins anywhere in this system. So the operation is
+ * refused offline, which also makes the branch role's SELECT-but-no-INSERT on
+ * `import_history` correct rather than incidental.
  */
 class InventoryImportController extends Controller
 {
+    public function __construct(private readonly ConnectivityProbe $probe) {}
+
     public function index(): Response
     {
         $history = ImportHistory::query()
@@ -43,11 +62,23 @@ class InventoryImportController extends Controller
 
         return Inertia::render('inventory/import', [
             'history' => $history,
+            'online' => $this->probe->online(),
         ]);
     }
 
     public function store(InventoryImportRequest $request, CsvInventoryImporter $importer, AuditRecorder $audit): RedirectResponse
     {
+        // Probed again rather than trusting the page's answer: the render may
+        // have been minutes ago, and this is the moment the unsyncable rows
+        // would be written.
+        if (! $this->probe->online()) {
+            throw ValidationException::withMessages([
+                'file' => 'CSV import needs a connection to the business database. '
+                    .'Importing offline would create stock movements that could never be synced. '
+                    .'Reconnect and try again.',
+            ]);
+        }
+
         $file = $request->file('file');
 
         $result = $importer->import(

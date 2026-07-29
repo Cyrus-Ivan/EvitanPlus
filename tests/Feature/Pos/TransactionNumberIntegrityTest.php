@@ -61,7 +61,7 @@ class TransactionNumberIntegrityTest extends TestCase
 
         $numbers = Transaction::query()->orderBy('created_at')->pluck('transaction_number')->all();
 
-        $this->assertSame(['0000000001', '0000000002', '0000000003'], $numbers);
+        $this->assertSame(['TST-0000000001', 'TST-0000000002', 'TST-0000000003'], $numbers);
     }
 
     public function test_oversell_failure_leaves_no_gap(): void
@@ -80,7 +80,7 @@ class TransactionNumberIntegrityTest extends TestCase
         $this->checkout($cashier, $variant, 1)->assertSessionHasNoErrors();
 
         $this->assertSame(
-            ['0000000001', '0000000002'],
+            ['TST-0000000001', 'TST-0000000002'],
             Transaction::query()->orderBy('created_at')->pluck('transaction_number')->all(),
         );
     }
@@ -98,7 +98,7 @@ class TransactionNumberIntegrityTest extends TestCase
         $this->checkout($cashier, $variant, 1)->assertSessionHasNoErrors();
 
         $this->assertSame(
-            ['0000000001', '0000000002'],
+            ['TST-0000000001', 'TST-0000000002'],
             Transaction::query()->orderBy('created_at')->pluck('transaction_number')->all(),
         );
     }
@@ -117,7 +117,7 @@ class TransactionNumberIntegrityTest extends TestCase
         // they would not exist for someone editing the DB with another tool.
         DB::unprepared('DROP TRIGGER transactions_immutable_delete');
         DB::unprepared('DROP TRIGGER transaction_items_immutable_delete');
-        DB::table('transactions')->where('transaction_number', '0000000002')->delete();
+        DB::table('transactions')->where('transaction_number', 'TST-0000000002')->delete();
 
         // A MAX-based serial continues from the highest committed number — a
         // count-based one would recompute #3, collide with the surviving row
@@ -125,7 +125,7 @@ class TransactionNumberIntegrityTest extends TestCase
         $this->checkout($cashier, $variant, 1)->assertSessionHasNoErrors();
 
         $this->assertSame(
-            ['0000000001', '0000000003', '0000000004'],
+            ['TST-0000000001', 'TST-0000000003', 'TST-0000000004'],
             Transaction::query()->orderBy('transaction_number')->pluck('transaction_number')->all(),
         );
     }
@@ -139,7 +139,7 @@ class TransactionNumberIntegrityTest extends TestCase
         // because the router caches the controller — and with it the injected
         // generator — after the first dispatch, so the fake below must be bound
         // before any checkout request runs.
-        Transaction::factory()->create(['transaction_number' => '0000000001', 'user_id' => $cashier->id]);
+        Transaction::factory()->create(['transaction_number' => 'TST-0000000001', 'user_id' => $cashier->id]);
 
         // A generator that first hands out the already-taken number (the shape
         // of a concurrency race) and only then computes a real one: checkout
@@ -152,7 +152,7 @@ class TransactionNumberIntegrityTest extends TestCase
             {
                 $this->calls++;
 
-                return $this->calls === 1 ? '0000000001' : parent::next();
+                return $this->calls === 1 ? 'TST-0000000001' : parent::next();
             }
         };
         $this->app->instance(TransactionNumberGenerator::class, $fake);
@@ -161,7 +161,7 @@ class TransactionNumberIntegrityTest extends TestCase
 
         $this->assertSame(2, $fake->calls);
         $this->assertSame(
-            ['0000000001', '0000000002'],
+            ['TST-0000000001', 'TST-0000000002'],
             Transaction::query()->orderBy('transaction_number')->pluck('transaction_number')->all(),
         );
     }

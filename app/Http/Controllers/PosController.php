@@ -12,6 +12,7 @@ use App\Support\Inventory\StockLedger;
 use App\Support\Printing\PrinterSettings;
 use App\Support\Printing\ReceiptPrinter;
 use App\Support\Sales\TransactionNumberGenerator;
+use App\Support\Sync\Outbox;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -39,6 +40,7 @@ class PosController extends Controller
         private readonly PrinterSettings $printerSettings,
         private readonly ReceiptPrinter $receiptPrinter,
         private readonly AuditRecorder $audit,
+        private readonly Outbox $outbox,
     ) {}
 
     /**
@@ -130,7 +132,15 @@ class PosController extends Controller
         // fresh number.
         for ($attempt = 1; ; $attempt++) {
             try {
-                $transaction = DB::transaction(fn () => $this->persistSale($data, $lines, $request));
+                // One push batch for the whole sale (M6): the transaction, its
+                // items, its ledger deductions and its audit row share a
+                // group_id and reach Postgres inside one Postgres transaction.
+                // A partially pushed sale is visible to consolidated reporting
+                // as a sale with missing lines — a wrong total, not an obviously
+                // absent one.
+                $transaction = $this->outbox->group(
+                    fn () => DB::transaction(fn () => $this->persistSale($data, $lines, $request)),
+                );
                 break;
             } catch (QueryException $e) {
                 if ($attempt < 3 && str_contains($e->getMessage(), 'transaction_number')) {

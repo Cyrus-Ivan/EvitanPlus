@@ -84,9 +84,9 @@ class SchemaParityTest extends TestCase
      * then this test read only the MIRRORED tables out of SQLite, so the local
      * side had no equivalent of the Postgres check below: a new local table was
      * invisible to the guard entirely. That gap was about to matter — M6 adds
-     * `sync_outbox`, `sync_cursor` and `sync_status`, and M8 wants a local
-     * `inventory_update_queue` (§11.6). Each of those belongs HERE rather than
-     * in MIRRORED, because a local-only table is intentionally a different,
+     * `sync_outbox` and `sync_status`, M7 adds `sync_cursor`, and M8 wants a
+     * local `inventory_update_queue` (§11.6). Each of those belongs HERE rather
+     * than in MIRRORED, because a local-only table is intentionally a different,
      * narrower table and not a mirror; forcing one into MIRRORED would make this
      * test demand a similarity nobody wants. That settles §11.6's open item.
      *
@@ -96,11 +96,16 @@ class SchemaParityTest extends TestCase
      * record of which credential is live (`credential_issuance`, in the console
      * schema) answer those questions from the other side.
      *
+     * M6 added the next two, and this check caught both on the first run — the
+     * gap the paragraph above describes, closing on the exact tables it named.
+     *
      * @var array<string, string>
      */
     private const SQLITE_LOCAL_ONLY = [
         'instance' => 'branch identity, from the credentials JSON — Postgres has a branches roster instead (M5)',
         'instance_secret' => 'the branch credential sealed with the per-install APP_KEY; it exists nowhere else (M5)',
+        'sync_outbox' => "this device's backlog of rows waiting to push; once pushed there is nothing left to record (M6)",
+        'sync_status' => 'why this device is or is not syncing; its counterpart is branch_status, a different, wider table (M6)',
         'cache' => "Laravel's own, rebuilt by a re-install",
         'cache_locks' => "Laravel's own, rebuilt by a re-install",
         'jobs' => "Laravel's own, rebuilt by a re-install",

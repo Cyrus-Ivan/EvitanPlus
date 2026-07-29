@@ -528,10 +528,93 @@ pre-created Owner and can browse the hydrated catalog offline.
 
 ---
 
-# Phase M6 — Sync engine: write path, outbox & push
+# Phase M6 — Sync engine: write path, outbox & push ✅
 
 ## Goal
 Local-first writes with reliable, idempotent upward sync.
+
+> **Done.** Sales made offline appear in Postgres after reconnect and re-running a push is a
+> no-op. `App\Support\Sync\` gained `Outbox`, `Pusher`, `ConnectivityProbe` and `SyncCycle`;
+> `sync_outbox` and `sync_status` are the first two of §11.6's proposed tables to exist;
+> `POST /sync` is the one entry point, and the header carries an indicator on every
+> authenticated screen. Scoping calls and findings:
+>
+> - **The receipt serial now carries its branch code, stored, not rendered.**
+>   `transaction_number` is `MNL-0000000001` in both schemas. The alternative — store the bare
+>   serial and add the prefix at print time — was rejected on the project's own history: a value
+>   with two spellings is the failure class `docs/glossary.md` exists to prevent, and a customer
+>   reading a number back off a receipt must be able to find it. `return_number` keeps **no**
+>   prefix: §12 asks for one on the receipt serial only, and Postgres already scopes returns to
+>   `(branch_id, return_number)`.
+> - **The `(int)` trap was real and the roadmap was right to flag it early.** It does not
+>   surface as an error: `(int) "MNL-0000000009"` is 0, every sale then claims serial 1, the
+>   UNIQUE index rejects it, and `PosController`'s bounded retry absorbs the whole thing. The
+>   symptom is checkouts that intermittently fail for no stated reason. Pinned by a regression
+>   test rather than by the docblock that describes it.
+> - **A replacement device would have lost its first day's takings, silently.** Hydration
+>   copies no history, so a device swapped in for existing hardware restarts its serial at 1
+>   against numbers Postgres already holds — and the push is insert-only, so the collision is
+>   absorbed rather than raised: a clean sync, a zero backlog, and the sales gone. M5's note
+>   said "M6 must not assume a replacement device is the same case as a new one"; this is what
+>   that meant. `Hydrator::serialFloors()` reads the branch's high-water marks at setup and both
+>   generators continue from them.
+> - **Both of Laravel's insert helpers are wrong here, in opposite directions.** `upsert()`
+>   compiles to `on conflict (...) do update set ...` on Postgres with no way to ask for
+>   anything else, and every pushed table carries a BEFORE UPDATE immutability trigger, so a
+>   re-push would raise. `insertOrIgnore()` compiles to a **bare** `on conflict do nothing` with
+>   no target, which absorbs a conflict on *any* unique constraint — including
+>   `(branch_id, transaction_number)`, i.e. exactly the collision above. The statement is
+>   therefore hand-written as `on conflict ("id") do nothing`: a repeat of the same row is
+>   absorbed, a different row wearing a taken serial raises. Proved both ways in
+>   `tests/Integration/PushTest.php`.
+> - **Timestamps were being converted wrongly in BOTH directions, and only the round trip
+>   showed it.** This app has stored **naive business-local** strings since v1.0.0
+>   (`ApplyBusinessTimezone` sets the default timezone at boot), not naive UTC. M5's hydrator
+>   converted incoming `timestamptz` to UTC, so every hydrated row read eight hours early in
+>   Manila; M6's first push stamped `+00` on local values, pushing every sale eight hours the
+>   other way. Each was individually plausible — the dates sorted correctly and looked like
+>   dates — and `HydrationTest` asserted only the *shape* of the string, which is why it passed
+>   for a whole phase. Both now convert against the business timezone, the hydrator resolving it
+>   from the `settings` row it copies first, and `HydrationTest` asserts the value.
+> - **`branch_id` is not on every mirrored table**, which the first real push discovered.
+>   `transaction_items` and `sale_return_items` inherit their branch from their parent row.
+>   `Pusher` asks `information_schema` which tables have the column rather than carrying a list —
+>   the same reasoning as the column-driven payload, and for the same reason: a hand-kept list is
+>   a fourth place to remember and the one nothing checks.
+> - **Postgres `stock_snapshots` is maintained here, and it exposed a gap worth recording.**
+>   Postgres has no trigger behind that table; the branch role holds INSERT and UPDATE on it
+>   because the till is what maintains it. The push recomputes it from Postgres's **own** ledger
+>   — idempotent, and authoritative rather than a copy of the local figure, which from M7 will be
+>   *reconciled* stock and deliberately different. But that is only correct while Postgres's
+>   ledger is complete, and **`business:provision` seeds no opening stock at all**. Seed a
+>   snapshot without the movement that produced it and the recompute reads the sum of this
+>   branch's sales alone, goes negative, and `stock_snapshots_non_negative` refuses the entire
+>   cycle — a branch that can never sync. So: **whatever puts opening stock into a business
+>   schema must write a ledger entry, not just a snapshot.** That binds M8's queue (which
+>   already creates a ledger entry on acceptance) and any future online CSV import.
+> - **`row_id`, not `id`, in the outbox** — a deviation from §11.6's ERD. The table's key is
+>   `sequence`, and an Eloquent model whose `id` attribute is not its key is a trap: `find()`,
+>   `$entry->id` and every relation read as though they meant the outbox entry when they mean
+>   the sale.
+> - **Enqueue hangs off the model, not the write sites.** `PosController::persistSale`,
+>   `ProcessSaleReturn`, `StockLedger::record`, `AuditRecorder` and `LoginHistoryRecorder` are
+>   five places today and a sixth is one feature away. A path that forgets to enqueue does not
+>   fail — it sells, prints, and the sale never reaches Postgres. `PushedUpward` on the seven
+>   local-write models makes forgetting require bypassing Eloquent entirely.
+> - **The probe is HTTPS to the project's REST endpoint**, never a Postgres connection (§11.3).
+>   The project ref comes from `connection.username`, which Supavisor requires to be
+>   `<role>.<project-ref>`. **Any** HTTP answer counts, 401 included: something spoke HTTP, so
+>   the link is up. An underivable endpoint answers "reachable" rather than "offline" — a probe
+>   that guessed offline would leave such a device unable to sync at all, reporting a network
+>   error that never happened.
+> - **`sync_status` carries all four `connection_state` values now**, not M10's two. A revoked
+>   credential, a version-blocked build and a dead connection are indistinguishable at the till
+>   and only one is fixed by waiting. M10's heartbeat becomes a straight copy.
+> - **The manual "Sync now" button landed here** though §11.3 files it under M7: it is the same
+>   route as the opportunistic sync and the only way to drive any of this by hand.
+> - **`Tests\TestCase` gained a `$connected` switch** alongside M5's `$hydrated`, for the same
+>   reason: CSV import is now online-only, so without a default answer the whole suite would
+>   test it in its refusing state.
 
 ## Tasks
 - Introduce the **outbox** for local-write tables (transactions, transaction_items,
@@ -572,6 +655,12 @@ Local-first writes with reliable, idempotent upward sync.
 > The generator must strip the branch prefix off the max — or better, store the numeric serial
 > separately from the rendered number. Worth flagging early because it fails *silently* into a
 > unique-constraint retry loop rather than into an obvious error.
+>
+> *As built: the strip, not the separate column. The prefix is **stored**, so there is one
+> number with one spelling everywhere and no second column to keep in step; and the max is
+> compared as a string, which is exact because every candidate carries the same prefix and the
+> same fixed-width padding. The floor added for replacement devices goes through the same
+> comparison.*
 
 ## Milestone
 Sales made offline appear in Postgres after reconnect; re-running a push is a no-op.

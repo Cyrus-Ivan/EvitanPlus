@@ -2,6 +2,7 @@
 
 namespace App\Support\Sales;
 
+use App\Models\Instance;
 use App\Models\SaleReturn;
 
 /**
@@ -10,6 +11,24 @@ use App\Models\SaleReturn;
  * Format: RET-YYYYMMDD-000001 — a per-day sequence that resets each day, mirroring
  * the human-readable receipt shape. Unlike the never-resetting transaction serial,
  * returns are scoped and counted per calendar day.
+ *
+ * ## No branch prefix, unlike the transaction serial
+ *
+ * MULTIBRANCH-BRAINSTORM.md §12 asks for the branch code on the *receipt serial*
+ * and says nothing about this number, and Postgres already scopes uniqueness to
+ * `(branch_id, return_number)` — two branches issuing `RET-20260729-000001` on
+ * the same day is expected and correct. Adding a prefix here would buy nothing
+ * and make the number a mouthful.
+ *
+ * ## The floor exists for exactly one day
+ *
+ * A device replacing an existing branch's hardware hydrates with no history, so
+ * its daily counter restarts at 1 against numbers Postgres already holds for
+ * today — and the push is insert-only, so those returns would be silently
+ * dropped. `instance.return_number_floor` is the highest number Postgres held
+ * for this branch at hydration; it only applies while it is still the same
+ * calendar day, because after midnight the prefix changes and the collision
+ * cannot recur.
  *
  * The sequence continues from today's highest issued number (MAX over the
  * number itself, not a row count — a count would collide for the rest of the
@@ -32,8 +51,22 @@ class SaleReturnNumberGenerator
             ->where('return_number', 'like', $prefix.'%')
             ->max('return_number');
 
-        $sequence = (int) substr($highest, -self::PAD_WIDTH) + 1;
+        $instance = Instance::current();
+        $floor = $instance === null ? '' : (string) $instance->return_number_floor;
 
-        return sprintf('%s%0'.self::PAD_WIDTH.'d', $prefix, $sequence);
+        // Yesterday's floor is not a floor: the day prefix has moved on and
+        // nothing Postgres holds for today can be higher than nothing.
+        if (! str_starts_with($floor, $prefix)) {
+            $floor = '';
+        }
+
+        $sequence = max($this->sequenceOf($highest), $this->sequenceOf($floor));
+
+        return sprintf('%s%0'.self::PAD_WIDTH.'d', $prefix, $sequence + 1);
+    }
+
+    private function sequenceOf(string $number): int
+    {
+        return $number === '' ? 0 : (int) substr($number, -self::PAD_WIDTH);
     }
 }

@@ -186,7 +186,8 @@ A table that exists in the **local mirror and nowhere else** — it has no Postg
 is exempt from the parity guard. The list is Laravel's own infrastructure (`sessions`,
 `cache`, `cache_locks`, `jobs`, `job_batches`, `failed_jobs`, `migrations`, and `sqlite_sequence`,
 which SQLite materialises for the AUTOINCREMENT on `migrations`) plus M5's `instance` and
-`instance_secret`. M6's sync tables and M8's narrowed `inventory_update_queue` join it.
+`instance_secret` and M6's `sync_outbox` and `sync_status`. M7's `sync_cursor` and M8's
+narrowed `inventory_update_queue` join it.
 *Anchor:* `SchemaParityTest::SQLITE_LOCAL_ONLY` (added in M4).
 ✗ **Not** "mirrored" — and the distinction is the whole reason this set exists rather than the
 tables being folded into `MIRRORED`. A local-only table is deliberately a *different, narrower*
@@ -275,15 +276,22 @@ The **single ordered unit of sync**, and the only thing that opens a Postgres co
 The order is load-bearing. Push runs first so the pulled baseline already reflects this
 branch's own movements; the queue runs after push so adjustments validate against true
 reconciled stock; the heartbeat runs last so it describes the cycle that just finished.
-A cycle **owns its connection**: connect → run → `DB::disconnect('pgsql')` in a `finally`.
-*Anchor:* `MULTIBRANCH-BRAINSTORM.md` §11.2/§11.5.
+A cycle **owns its connection**: connect → run → disconnect in a `finally`. (`DB::purge`, not
+`DB::disconnect`: disconnect closes the PDO but leaves the connection registered with the
+credentials it was built with, ready to reconnect behind the caller's back.)
+*Anchor:* `App\Support\Sync\SyncCycle` runs the ordered steps and records the outcome;
+`App\Support\Sync\BranchCycle` is the narrower piece that owns the connection those steps run
+inside. Two classes, one cycle — say "the cycle" for the sequence and name `BranchCycle` only
+when the subject is the connection itself. `MULTIBRANCH-BRAINSTORM.md` §11.2/§11.5.
 ✗ **Not** a session. No `SET`, no `LISTEN`, no temp tables, no advisory locks, no transaction
 spanning steps — a branch connects through the **transaction** pooler (`6543`), where no
 session state survives.
 
 ### Probe
-The lightweight **connectivity check** that decides whether a cycle should run at all. Runs
-every 10–20s while offline.
+The lightweight **connectivity check** that decides whether a cycle should run at all. An
+HTTPS request to the project's REST endpoint, derived from `connection.username`'s
+`<role>.<project-ref>` suffix; **any** HTTP answer, 401 included, means reachable.
+*Anchor:* `App\Support\Sync\ConnectivityProbe` (M6).
 ✗ **Must never open Postgres.** Every connected client holds a Supavisor client slot (capped
 per tenant in the low hundreds), so a probing offline till would permanently occupy one — the
 exact ceiling that connecting per cycle exists to avoid.
@@ -310,8 +318,10 @@ one.
 ### Outbox
 `sync_outbox` — the local FIFO of **rows waiting to push**. Stores *pointers, not payloads*:
 every local-write table is immutable, so a row can be re-read at push time and cannot have
-changed. `sequence` is an autoincrement integer because the outbox needs strict FIFO.
-*Anchor:* `MULTIBRANCH-BRAINSTORM.md` §11.6 (proposed, M6).
+changed. `sequence` is an autoincrement integer because the outbox needs strict FIFO; the row
+it points at is named by `table_name` + **`row_id`** (not `id` — the table's key is `sequence`,
+and a model whose `id` is not its key misreads every relation).
+*Anchor:* `App\Support\Sync\Outbox`; the `sync_outbox` table (M6).
 ✗ **Not** the inventory update queue. Two unrelated structures, opposite directions: the outbox
 holds *this branch's* work going **up**; the queue holds *adjustments issued elsewhere* coming
 **down**. Reserve the bare word "queue" for the latter; use "outbox" or "backlog" for the
@@ -320,8 +330,31 @@ former.
 ### Unsynced count
 `count(*) where synced_at is null` in the outbox. One definition, one place, no counter to
 drift.
-*Anchor:* `branch_status.unsynced_count` (`check (unsynced_count >= 0)`);
-`MULTIBRANCH-BRAINSTORM.md` §11.6 rationale.
+*Anchor:* `App\Support\Sync\Outbox::unsyncedCount()`; `branch_status.unsynced_count`
+(`check (unsynced_count >= 0)`); `MULTIBRANCH-BRAINSTORM.md` §11.6 rationale.
+
+### Serial floor
+The highest `transaction_number` / `return_number` **Postgres already holds for this branch**,
+read once at hydration and stored on `instance`. Both local generators continue from
+`max(local max, floor)`.
+It exists for one case: a device **replacing** an existing branch's hardware. Hydration copies
+no history, so such a device's local max is empty and it would restart at 1 against serials
+Postgres already has — and because the push is insert-only, that collision is *absorbed* rather
+than raised, losing the sales behind a clean sync and a zero backlog.
+*Anchor:* `instance.transaction_number_floor`, `instance.return_number_floor`;
+`App\Support\Sync\Hydrator::serialFloors()`.
+✗ **Not** a ceiling. Once the device has outrun it, it stops applying; the return floor also
+stops applying at midnight, when the daily prefix moves on.
+
+### Sync status
+`sync_status` — the local singleton answering "why is this device not syncing":
+`connection_state` (`online | offline | unauthorized | version_blocked`), `last_error_kind`
+(`auth | version | network`), `last_sync_at`, `blocked_since`. Written at the end of every
+cycle.
+*Anchor:* `App\Models\SyncStatus`; `App\Support\Sync\SyncCycle::run()`.
+✗ **Not** `branch_status`, which is the Postgres row the M10 heartbeat upserts. Same four
+`connection_state` values on purpose, so the heartbeat is a straight copy rather than a lossy
+one.
 
 ---
 

@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Models\Concerns\HasUuidPrimaryKey;
 use App\Models\Concerns\Immutable;
+use App\Models\Concerns\PushedUpward;
 use Database\Factories\SaleReturnFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -18,7 +19,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class SaleReturn extends Model
 {
     /** @use HasFactory<SaleReturnFactory> */
-    use HasFactory, HasUuidPrimaryKey, Immutable;
+    use HasFactory, HasUuidPrimaryKey, Immutable, PushedUpward;
 
     // Append-only / immutable: no updated_at (matches inventory_ledger).
     public const UPDATED_AT = null;

@@ -840,6 +840,27 @@ The sections above describe what a cycle *does*. This one names the tables it ne
 device, and is a **proposal for M5–M9** — none of it is built. The mirrored tables are not
 listed: they keep their v1.0.0 shape and `database/migrations/` defines them.
 
+> **As built (M6): `sync_outbox` and `sync_status` exist too; only `sync_cursor` and the local
+> `inventory_update_queue` are still proposals.** Both are in
+> `database/migrations/2026_07_30_000001_create_sync_tables.php` and on
+> `SchemaParityTest::SQLITE_LOCAL_ONLY` — which caught them on its first run, exactly the gap
+> M4's note said it had been written to close. Three corrections to the ERD below:
+>
+> - **The outbox's pointer column is `row_id`, not `id`.** The table's key is `sequence`, and an
+>   Eloquent model whose `id` attribute is not its key is a trap — `find()`, `$entry->id` and
+>   every relation would read as though they meant the outbox entry when they mean the sale.
+> - **`sync_outbox` carries a unique `(table_name, row_id)`**, not shown here, so enqueueing the
+>   same row twice is a no-op rather than a second push of one insert.
+> - **The `sync_status` singleton is a trigger, not a `check`**, for the reason M5 gave for
+>   `instance`: SQLite cannot add a check constraint after `CREATE TABLE`.
+>
+> `instance` also gained two columns the ERD does not show — `transaction_number_floor` and
+> `return_number_floor`, the highest serials Postgres already holds for this branch, read once
+> at hydration. They exist because a device replacing existing hardware hydrates with no history
+> and would restart its serial at 1; since the push is insert-only, the resulting collision is
+> *absorbed*, not raised, and the sales are gone with a clean sync to say otherwise. See
+> `MULTIBRANCH-ROADMAP.md` M6.
+
 > **As built (M5): `instance` and `instance_secret` exist; the other three do not yet.**
 > Both are in `database/migrations/2026_07_29_000001_create_instance_tables.php` and on
 > `SchemaParityTest::SQLITE_LOCAL_ONLY` — the first non-Laravel entries that list has. The

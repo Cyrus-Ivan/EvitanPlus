@@ -40,12 +40,33 @@ export interface FlashToast {
     message: string;
 }
 
+// Four values, not two: a branch whose credential was revoked, one running a
+// build the business database refuses, and one whose internet is down look
+// identical at the till and need three different responses. Only `offline` is
+// fixed by waiting. None of them stop the till selling.
+export type SyncState = 'online' | 'offline' | 'unauthorized' | 'version_blocked';
+
+export interface SyncSnapshot {
+    state: SyncState;
+    last_sync_at: string | null;
+    // Rows waiting to push. Derived from the outbox on every read, never a
+    // stored counter, so it cannot drift from the rows it describes.
+    unsynced_count: number;
+    // `conflict` pairs with state `online`: the connection works and the
+    // business database is refusing the data, so the backlog will not clear on
+    // its own — the one failure that waiting does not fix.
+    error_kind: 'auth' | 'version' | 'network' | 'conflict' | null;
+    error: string | null;
+}
+
 export interface SharedData {
     name: string;
     auth: Auth;
     // Business currency symbol (Business Settings; default ₱).
     currency: string;
     flash: { toast?: FlashToast | null; restart_required?: boolean; credentials_path?: string | null };
+    // Null on an install whose sync tables do not exist yet (pre-migration).
+    sync: SyncSnapshot | null;
     [key: string]: unknown;
 }
 

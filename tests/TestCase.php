@@ -3,6 +3,7 @@
 namespace Tests;
 
 use App\Models\Instance;
+use App\Support\Sync\ConnectivityProbe;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
 
@@ -13,6 +14,17 @@ abstract class TestCase extends BaseTestCase
      * The setup wizard's own tests are the only ones that should.
      */
     protected bool $hydrated = true;
+
+    /**
+     * What the connectivity probe answers, or null to use the real one.
+     *
+     * Since M6 some screens are online-only (CSV import, §17), so a suite with
+     * no answer here would test them all in their refusing state. Default true:
+     * a hydrated device with a working connection is the case nearly every test
+     * means. Set false to test a refusal, null when the probe itself is what is
+     * under test.
+     */
+    protected ?bool $connected = true;
 
     /**
      * Give every test a device that is already a branch.
@@ -41,6 +53,23 @@ abstract class TestCase extends BaseTestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        if ($this->connected !== null) {
+            $this->app->instance(ConnectivityProbe::class, new class($this->connected) extends ConnectivityProbe
+            {
+                public function __construct(private readonly bool $answer) {}
+
+                public function online(): bool
+                {
+                    return $this->answer;
+                }
+
+                public function reachable(array $connection): bool
+                {
+                    return $this->answer;
+                }
+            });
+        }
 
         if (! $this->hydrated || ! in_array(RefreshDatabase::class, class_uses_recursive(static::class), true)) {
             return;

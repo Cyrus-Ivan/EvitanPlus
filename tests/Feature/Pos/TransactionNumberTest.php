@@ -45,12 +45,14 @@ class TransactionNumberTest extends TestCase
 
         $numbers = Transaction::orderBy('created_at')->pluck('transaction_number')->all();
 
-        // A gapless, zero-padded running serial (BIR-shaped: unique, consecutive).
+        // A gapless, zero-padded running serial (BIR-shaped: unique,
+        // consecutive), prefixed by this branch's code (§12) — the prefix is
+        // what makes two branches both counting from 1 unambiguous business-wide.
         foreach ($numbers as $number) {
-            $this->assertMatchesRegularExpression('/^\d{10}$/', $number);
+            $this->assertMatchesRegularExpression('/^TST-\d{10}$/', $number);
         }
-        $this->assertSame('0000000001', $numbers[0]);
-        $this->assertSame('0000000002', $numbers[1]);
+        $this->assertSame('TST-0000000001', $numbers[0]);
+        $this->assertSame('TST-0000000002', $numbers[1]);
     }
 
     public function test_serial_does_not_reset_across_a_day_boundary()
@@ -68,7 +70,7 @@ class TransactionNumberTest extends TestCase
         $this->travelBack();
 
         $numbers = Transaction::orderBy('created_at')->pluck('transaction_number')->all();
-        $this->assertSame('0000000001', $numbers[0]);
-        $this->assertSame('0000000002', $numbers[1]);
+        $this->assertSame('TST-0000000001', $numbers[0]);
+        $this->assertSame('TST-0000000002', $numbers[1]);
     }
 }

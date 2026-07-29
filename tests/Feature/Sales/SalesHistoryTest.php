@@ -60,9 +60,9 @@ class SalesHistoryTest extends TestCase
             ->component('sales', false)
             ->has('transactions.data', 2)
             // Newest first: the second sale (serial 0000000002) leads.
-            ->where('transactions.data.0.transaction_number', '0000000002')
+            ->where('transactions.data.0.transaction_number', 'TST-0000000002')
             ->where('transactions.data.0.items_count', 1)
-            ->where('transactions.data.1.transaction_number', '0000000001'));
+            ->where('transactions.data.1.transaction_number', 'TST-0000000001'));
     }
 
     public function test_a_cashier_sees_sales_rung_up_by_others()
@@ -96,10 +96,10 @@ class SalesHistoryTest extends TestCase
 
         // Search by receipt number.
         $this->actingAs($cashier)
-            ->get(route('sales', ['search' => '0000000001']))
+            ->get(route('sales', ['search' => 'TST-0000000001']))
             ->assertInertia(fn ($page) => $page
                 ->has('transactions.data', 1)
-                ->where('transactions.data.0.transaction_number', '0000000001'));
+                ->where('transactions.data.0.transaction_number', 'TST-0000000001'));
     }
 
     public function test_show_returns_line_items_with_snapshotted_prices()
@@ -115,7 +115,7 @@ class SalesHistoryTest extends TestCase
             ->assertOk()
             ->assertInertia(fn ($page) => $page
                 ->component('sales/show', false)
-                ->where('transaction.transaction_number', '0000000001')
+                ->where('transaction.transaction_number', 'TST-0000000001')
                 ->has('transaction.items', 1)
                 ->where('transaction.items.0.quantity', 3)
                 ->where('transaction.items.0.selling_price', '100.00')

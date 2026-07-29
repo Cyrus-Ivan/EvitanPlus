@@ -291,9 +291,11 @@ Every branch device is prepared by a developer, in this order:
    business schema (`biz_<id>`), migrates it, seeds the Owner, business identity
    and first branch, creates the least-privilege `branch_<id>` Postgres role, and
    emits that branch's credentials JSON. It verifies the JSON by connecting as
-   the new role before reporting success.
-   *(shipped — Phase M2. Adding a branch to an existing business, and rotating or
-   disabling a branch's credentials, are planned — Phase M3.)*
+   the new role before reporting success. Adding a further branch to an existing
+   business, and rotating, disabling, enabling or revoking a branch's credentials,
+   are the `branch:*` commands — drive all of it from `php console/artisan`, the
+   interactive menu.
+   *(shipped — Phases M2 and M3.)*
 2. **Hardware** — prepare the till: OS install, operator account, receipt
    printer, cash drawer.
 3. **AppImage** — build the release and copy it to the device (see

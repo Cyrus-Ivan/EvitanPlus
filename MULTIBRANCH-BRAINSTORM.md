@@ -395,6 +395,35 @@ A separate **Laravel application** living in this monorepo but **excluded from e
 connection** for DDL. It reuses Laravel's migration engine to apply the Postgres schema
 migrations.
 
+> **As built (M3.2) — the interactive TUI this section opens with was specified from the
+> start and not built until now.** M2 and M3 shipped as eleven flag-driven commands, and every
+> branch command took `--business` XOR `--schema` and `--branch` XOR `--branch-code`. That
+> targeting machinery existed because targeting is the error-prone part: both resolvers are
+> guards against mistyping an identifier copied out of a previous command's output. `console:run`
+> retires the class outright — you cannot mistype a UUID you picked from a list — and is now
+> the **default command**, so a bare `php console/artisan` opens it.
+>
+> It is a **navigator, not a reimplementation**. Navigation is object-first (business, then
+> branch, then verb), and every action dispatches the real command through `call()`, never
+> with `--force`, so each one still confirms and still prints its own warnings rather than
+> restating them somewhere they can drift. Branch actions are offered against the role's
+> actual state, which applies §8.3's `--recreate` rule *before* you choose instead of as a
+> refusal afterwards. Two read-only commands stop being actions and become the screens:
+> `branch:list` is the branch picker, `schema:version` the business header. Nothing ever
+> clears the terminal, because a credentials JSON path is printed once and nowhere else.
+>
+> **Putting every console read on one screen exposed sixteen defects in the commands
+> themselves.** The three that change what the rest of §8 claims are annotated where they live
+> (§8.1, §8.3, §8.4). The pattern across all sixteen is worth stating once: each was a path
+> **no operator had ever walked** — a first branch's issuance row, a migration failing at #19,
+> a rotate against a disabled role, a `--pretend` on a fresh UUID, a failed `DROP ROLE`. Every
+> one of them presented as something other than what it was, which is the specific hazard of a
+> tool whose failure modes are all rare and all consequential. See `d86255e` for the full list.
+>
+> One deferral is now visible in the UI and stays deferred: **`schema:migrate` does not
+> re-apply branch grants** (§7, M9). The menu had promoted it to a first-class action with no
+> caveat, which is worse than the CLI was, so it warns and confirms before running it.
+
 ### 8.1 Provision a **business** (creates a new schema)
 Collects, in one flow, before anything is created:
 - **Owner** details (name, username, password → hashed);
@@ -414,6 +443,12 @@ Only when complete does it:
 > cluster-global and runs on a separate connection, and writing the JSON is not a database
 > operation at all. Atomicity is a **compensating undo stack**: the run records what it
 > created and unwinds it in reverse on failure.
+>
+> *(M3.2: as first written the stack did not cover the schema. The undo was pushed **after**
+> `migrateSchema()` returned, but `schema:migrate` creates the schema first and the migrator
+> commits per migration — so the entire create-plus-19 window was uncompensated. A failure at
+> migration #19 left a half-built `biz_<uuid>` behind while the rollback printed "Nothing was
+> left behind", and create-only then refused the retry. It is pushed before the call now.)*
 >
 > What makes that safe is a scoping decision, not a coding one: provisioning is
 > **create-only**. An existing schema is a **refusal**, never an upgrade path — so an undo
@@ -515,11 +550,29 @@ pulled by the new branch at hydrate.)
 > the password — plus a `generation` counter and `superseded_at`. It had to be built now rather
 > than later: generations could be reconstructed from the audit trail, but a fingerprint cannot
 > be, because the secret is gone the moment the command exits.
+>
+> *(M3.2, two corrections here. **`business:provision` was not recording** — only
+> `BranchIssuer` was — so every business's first branch held a live, verified, delivered
+> credential with no row for it: `branch:list` reported "active" and "never issued" at once,
+> and the first rotation then recorded **generation 1**, permanently naming two different
+> secrets. It records now, in the same guarded position. And **rotating a disabled branch
+> could never succeed while blaming the wrong thing**: nothing on the rotate path restores
+> `LOGIN`, and Postgres answers a `NOLOGIN` connect with "password authentication failed" —
+> which is exactly the string the pooler-lag matcher above looks for. So it announced pooler
+> lag, slept the full 180s budget, and advised waiting for a cache that was never involved.
+> It now answers in ~8s naming `LOGIN`, and says plainly that this is not pooler lag.)*
 
 ### 8.4 Migrate schemas on updates
 - The console holds the Postgres migration set and can apply pending migrations to **one or
   all** business schemas. Migrations carry a **schema version** and a **minimum-compatible
   app version** used by the sync version gate (§13).
+
+> **As built (M3.2).** `schema:migrate --pretend` **performed real DDL**: `ensureExists()` ran
+> before the flag was read, and Laravel's `MigrateCommand` calls `migrate:install` ahead of it
+> too. Previewing against a fresh UUID therefore left behind a schema holding nothing but
+> `migrations` — and one reachable by nothing, since create-only refuses it and every branch
+> command refuses it as not-a-business. A preview that creates is not a preview; the flag is
+> read first now. The command still does **not** re-apply branch grants (§7) — that is M9.
 
 ### 8.5 Monitor
 - Reads `branch_status` across all schemas to show, per branch: app version, schema version,

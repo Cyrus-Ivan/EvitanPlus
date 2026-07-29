@@ -149,6 +149,12 @@ One console command turns owner/business/branch input into a live, connectable s
 >   Not written to the JSON or the audit trail. No RLS: within its own schema a branch
 >   credential could still write rows tagged with another branch's `branch_id` — stated
 >   plainly rather than overclaimed, and deferred.
+>
+> **Corrected in M3.2** (see M3's note below and `MULTIBRANCH-BRAINSTORM.md` §8): the undo
+> stack did not in fact cover the schema — it was pushed *after* the migration, leaving the
+> whole create-plus-19 window uncompensated — and `business:provision` never wrote the
+> `credential_issuance` row, so a business's first branch was a live credential the ledger
+> had no row for and its first rotation claimed generation 1 twice.
 
 ## Tasks
 - Laravel Prompts flow collecting **Owner**, **Business**, and **first Branch** (incl. unique
@@ -249,6 +255,30 @@ Add branches to an existing business and manage branch credentials.
 >   read those from. It joins `branches` with `pg_roles`, which is what makes
 >   "no role" and "disabled" distinguishable at all. It is not M10's monitor —
 >   it reports what the console did, not what a branch is doing.
+>
+> **As built (M3.2) — the console front door.** `console:run` is now the default command, so
+> a bare `php console/artisan` opens an interactive menu: pick a business, pick a branch, pick
+> an action. This is what `MULTIBRANCH-BRAINSTORM.md` §8 specified from the outset and what
+> M2/M3 did not build. It retires the error class the `--business` XOR `--schema` /
+> `--branch` XOR `--branch-code` targeting machinery exists to guard — you cannot mistype a
+> UUID you selected from a list — and it is a navigator, not a reimplementation: every action
+> dispatches the real command through `call()`, never with `--force`, so the warnings and
+> confirmations above are inherited rather than restated. `branch:list` and `schema:version`
+> stop being actions and become the screens.
+>
+> **Sixteen defects in the M2/M3 commands became visible once every console read was on one
+> screen**, several worse than the two that prompted the audit. Every one of them lived on a
+> path no operator had walked. The three that change what a phase note above claims are
+> annotated in `MULTIBRANCH-BRAINSTORM.md` §8.1, §8.3 and §8.4 — the uncompensated migration
+> window, the missing first-branch issuance row plus rotate-on-disabled blaming pooler lag,
+> and `--pretend` performing real DDL. Also here: `BranchRole::drop()` ran its two `REVOKE`s
+> and its `DROP ROLE` outside a transaction, so a failed drop left a **live role stripped of
+> every privilege** — a state no `connection_state` can describe, presenting as offline while
+> online — with the audit saying `rolled_back`. See `d86255e` for the full list.
+>
+> **`schema:migrate` still does not re-apply branch grants** — M9, and deliberately still
+> deferred. But the menu had promoted it to a first-class action with no caveat, which is
+> worse than the CLI was, so it now warns and confirms.
 
 ## Tasks
 - **Provision branch**: insert a `branches` row (unique branch code) + create its role + emit

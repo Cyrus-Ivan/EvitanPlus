@@ -59,6 +59,14 @@ class DemoDataSeeder extends Seeder
     /** Past sales still eligible for a return/defect. @var Collection<int, Transaction> */
     private Collection $returnableSales;
 
+    /**
+     * The wall clock at the start of the run, captured before the first
+     * `setTestNow` — after that, `now()` is whichever backdated instant the
+     * seeder is currently pretending it is. Nothing seeded for TODAY may be
+     * stamped later than this.
+     */
+    private Carbon $realNow;
+
     public function __construct(
         private readonly StockLedger $ledger,
         private readonly TransactionNumberGenerator $numbers,
@@ -79,6 +87,7 @@ class DemoDataSeeder extends Seeder
 
         $today = today();
         $start = $today->copy()->subDays(self::HISTORY_DAYS);
+        $this->realNow = now();
 
         try {
             Carbon::setTestNow($start->copy()->setTime(7, 30));
@@ -237,18 +246,38 @@ class DemoDataSeeder extends Seeder
     }
 
     /**
+     * A morning trickle today, a full trading day otherwise — and today's
+     * window closes at the real clock, never at a fixed hour.
+     *
+     * Picking an hour in 8–10 regardless of the time of day seeds sales into
+     * the FUTURE whenever the seeder runs before 11:00. Everything that orders
+     * by `created_at` then ranks demo data above a sale the operator has just
+     * made: the Sales list opens on a seeded row, and `commerce.spec.ts` —
+     * which clicks "the newest row" — asserts against the wrong receipt. It
+     * fails in the morning and passes after lunch, which is why it survived
+     * this long.
+     *
      * @return list<Carbon>
      */
     private function saleTimes(Carbon $day, int $count, bool $isToday): array
     {
+        $opens = $day->copy()->setTime(8, 0);
+        $closes = $day->copy()->setTime($isToday ? 10 : 19, 59, 59);
+
+        if ($isToday && $closes->gt($this->realNow)) {
+            $closes = $this->realNow->copy();
+        }
+
+        // Seeded before the shop opens: today simply has no sales yet.
+        if ($closes->lt($opens)) {
+            return [];
+        }
+
+        $window = (int) $opens->diffInSeconds($closes);
         $times = [];
 
         for ($i = 0; $i < $count; $i++) {
-            $times[] = $day->copy()->setTime(
-                $isToday ? fake()->numberBetween(8, 10) : fake()->numberBetween(8, 19),
-                fake()->numberBetween(0, 59),
-                fake()->numberBetween(0, 59),
-            );
+            $times[] = $opens->copy()->addSeconds(fake()->numberBetween(0, $window));
         }
 
         usort($times, fn (Carbon $a, Carbon $b) => $a->getTimestamp() <=> $b->getTimestamp());
@@ -494,8 +523,18 @@ class DemoDataSeeder extends Seeder
         }
     }
 
+    /**
+     * Today's fixed clock times (an 09:xx admin login, an 18:xx owner login)
+     * are in the future for most of the working day, and login history is
+     * append-only — a row that has not happened yet cannot be corrected later.
+     * An event past the wall clock is simply one that has not happened.
+     */
     private function logAuth(User $user, LoginEventType $type, Carbon $at): void
     {
+        if ($at->gt($this->realNow)) {
+            return;
+        }
+
         Carbon::setTestNow($at);
 
         LoginHistory::create([

@@ -1,69 +1,52 @@
 import { expect, test } from '@playwright/test';
 
 /**
- * The initial setup wizard (post-v1.0.0). A fresh install has no user at all,
- * so RequireInitialSetup funnels every request to /setup; one atomic submit
- * creates the Owner, saves business identity and localization, and signs in.
+ * The setup wizard (M5). A device that has never been hydrated has no `instance`
+ * row, so RequireInitialSetup funnels every request to /setup, where one submit
+ * imports a branch credential, connects to the business database, and copies the
+ * baseline down.
  *
- * Runs against its own user-less server (:8124, see playwright.config.ts) —
- * the wizard is unreachable the moment any user exists, so it cannot share the
- * seeded database the rest of the suite uses. The server rebuilds that
- * database on every run, which is what keeps this spec repeatable: it is
- * inherently one-shot against any given database.
+ * Runs against its own un-hydrated server (:8124, see playwright.config.ts) —
+ * the wizard is unreachable the moment a device is set up, so it cannot share
+ * the seeded database the rest of the suite uses.
  *
- * The backend contract is covered by tests/Feature/Setup/InitialSetupTest.php;
- * this pins the rendered four-step flow and the state it leaves behind.
+ * SCOPE, and it is deliberately narrow: this spec drives everything up to the
+ * connection, because a successful import needs a real provisioned business in
+ * Supabase and `composer verify` must stay runnable on any machine. The
+ * connect-and-hydrate half is covered end to end against the real project by
+ * tests/Integration/HydrationTest.php (`composer verify:hydrate`).
  */
 
-const OWNER = {
-    name: 'Maria Cruz',
-    username: 'maria',
-    password: 'a-password-of-my-own',
-    business: 'Cruz Sari-Sari Store',
-};
-
-test('a fresh install is funnelled to the wizard and set up in one pass', async ({ page }) => {
+test('an un-hydrated device is funnelled to the wizard and refuses a file that is not a credential', async ({ page }) => {
     // Any entry point lands on the wizard, not on login.
     await page.goto('/');
     await page.waitForURL('**/setup');
 
-    await expect(page.getByRole('heading', { name: 'Welcome to Evitan Plus' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Set up this branch' })).toBeVisible();
 
-    // All four steps are advertised up front, current step marked.
+    // Both steps are advertised up front, current step marked.
     const steps = page.getByRole('list', { name: 'Setup progress' });
-    for (const label of ['Owner account', 'Business details', 'Localization', 'Printer']) {
+    for (const label of ['Branch credentials', 'Printer']) {
         await expect(steps.getByText(label, { exact: true })).toBeVisible();
     }
 
-    // Step 1 — the Owner account.
-    await page.locator('#name').fill(OWNER.name);
-    await page.locator('#username').fill(OWNER.username);
-    await page.locator('#password').fill(OWNER.password);
-    await page.locator('#password_confirmation').fill(OWNER.password);
-    await page.getByRole('button', { name: 'Next' }).click();
+    // Step 1 — the credentials file, defaulting to removing it after import.
+    await expect(page.locator('#delete_after_import')).toBeChecked();
+    await page.locator('#credentials_path').fill('/tmp/not-a-real-credentials-file.json');
 
-    // Step 2 — business identity.
-    await page.locator('#business_name').fill(OWNER.business);
+    // Step 2 — the printer, the one thing the wizard still collects itself
+    // because it belongs to this device rather than to the business.
     await page.getByRole('button', { name: 'Next' }).click();
+    await expect(page.getByRole('button', { name: 'Connect and set up' })).toBeVisible();
 
-    // Step 3 — localization, pre-filled with the seeded defaults.
-    await expect(page.locator('#currency_symbol')).toHaveValue('₱');
-    await page.getByRole('button', { name: 'Next' }).click();
-
-    // Step 4 — the printer is optional; skipping must still complete setup.
-    await expect(page.getByRole('button', { name: 'Finish setup' })).toBeVisible();
+    // Skipping the printer still submits, and the import is refused by name.
     await page.getByRole('button', { name: 'Skip for now' }).click();
 
-    // One submit: account created, settings saved, and already signed in.
-    await page.waitForURL('**/pos');
-    await expect(page.getByPlaceholder(/^Search or scan/)).toBeVisible();
-    await expect(page.getByRole('button', { name: new RegExp(OWNER.name) })).toBeVisible();
+    await expect(page.getByText(/No file found at/)).toBeVisible();
 
-    // The business identity from step 2 was saved by that same submit.
-    await page.goto('/business-settings');
-    await expect(page.locator('#business_name')).toHaveValue(OWNER.business);
-
-    // An Owner exists now, so the wizard is closed forever.
-    await page.goto('/setup');
-    await expect(page).not.toHaveURL(/\/setup$/);
+    // Refused all the way: still on the wizard, still un-hydrated, so every
+    // other route still redirects here.
+    await expect(page).toHaveURL(/\/setup$/);
+    await page.goto('/pos');
+    await page.waitForURL('**/setup');
 });

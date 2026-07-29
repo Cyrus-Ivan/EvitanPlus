@@ -22,9 +22,9 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->web(append: [
-            // First: a fresh install (no users at all) is routed to the setup
-            // wizard before any auth-flavoured guard runs — none of them can
-            // apply on an empty database.
+            // First: a device that has not been hydrated into a branch is routed
+            // to the setup wizard before any auth-flavoured guard runs — none of
+            // them can apply on a device with no users yet.
             RequireInitialSetup::class,
             // Runs after StartSession and before Inertia so a stale-boot session
             // is signed out (and short-circuited to login) before any page props
@@ -44,8 +44,8 @@ return Application::configure(basePath: dirname(__DIR__))
         // The middleware sorter pulls priority-listed entries (the auth
         // middleware, via its AuthenticatesRequests contract) ahead of
         // everything appended to the web group. The setup gate must answer
-        // before auth — a fresh install has no one to authenticate — so slot
-        // it into the priority list just before the auth entry.
+        // before auth — an un-hydrated device has no one to authenticate — so
+        // slot it into the priority list just before the auth entry.
         $middleware->prependToPriorityList(
             AuthenticatesRequests::class,
             RequireInitialSetup::class,

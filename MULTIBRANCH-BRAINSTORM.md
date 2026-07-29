@@ -840,6 +840,25 @@ The sections above describe what a cycle *does*. This one names the tables it ne
 device, and is a **proposal for M5–M9** — none of it is built. The mirrored tables are not
 listed: they keep their v1.0.0 shape and `database/migrations/` defines them.
 
+> **As built (M5): `instance` and `instance_secret` exist; the other three do not yet.**
+> Both are in `database/migrations/2026_07_29_000001_create_instance_tables.php` and on
+> `SchemaParityTest::SQLITE_LOCAL_ONLY` — the first non-Laravel entries that list has. The
+> ERD below is accurate except in two respects:
+>
+> - **`branch_address` was not carried.** It is in the credentials JSON and nothing on the
+>   device reads it: receipts print the *business* address from `settings`, which hydration
+>   copies. A column whose only reader would be a future report is a column that would be
+>   stale by the time one existed.
+> - **The singleton is a trigger, not a `check`.** SQLite cannot add a check constraint after
+>   `CREATE TABLE` and Laravel's blueprint has no `check()`, so `id = 1` is enforced by a
+>   `BEFORE INSERT` trigger that raises. Same guarantee at the moment that matters — a second
+>   identity cannot be inserted.
+>
+> `hydrated_at` turned out to be load-bearing beyond "did we finish": it is now the
+> fresh-install signal `RequireInitialSetup` reads on every request (M5 moved that gate off
+> "no user exists", which stopped being answerable once users arrive *during* setup). It is
+> stamped in the same SQLite transaction as the hydrated rows, so it cannot be half-true.
+
 ```mermaid
 erDiagram
     instance ||--|| instance_secret : "credentials for"
@@ -1094,6 +1113,27 @@ provisioning. It requires internet on first run and:
 5. **Hydrates** the branch-scoped baseline: full catalog, **all** users (business-wide),
    settings/identity, and this branch's stock snapshot.
 6. Leaves a ready device; the business logs in as the pre-created Owner.
+
+> **As built (M5).** The six steps are one atomic submit, in that order, and **nothing is
+> persisted unless all of them succeed** — the hydrated rows, `instance`, `instance_secret` and
+> the audit entry share one SQLite transaction with the Postgres work inside it. Three points
+> the list above does not settle:
+>
+> - **Step 4 needed no code.** `LaunchProvisioner` already runs `migrate` on every launch, so
+>   the wizard opens on a current schema.
+> - **Step 2's "prompts to remove the JSON" is a checkbox on the import step, ticked by
+>   default**, and the file is deleted only after hydration commits. A prompt *after* success
+>   would need a screen the device is no longer gated into — the wizard is unreachable the
+>   moment `hydrated_at` is set.
+> - **The printer step survives from the old wizard**, and is the only thing the wizard still
+>   asks for: it is device hardware, not business identity. It is why hydration upserts
+>   `settings` by key rather than copying the table — the printer's rows have no upstream
+>   counterpart and a whole-table copy would erase them.
+>
+> What the wizard does **not** do is bring down history. A device replacing an existing
+> branch's hardware therefore starts with empty branch-local reports and, since the serial is
+> `max(transaction_number) + 1`, would restart receipt numbering at 1. New devices are M5's
+> case; **M6 must treat a replacement device as a different one.**
 
 ---
 

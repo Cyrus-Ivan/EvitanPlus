@@ -42,7 +42,10 @@
     },
     "scripts-descriptions": {
         "verify": "Run every release gate, fail-fast, cheapest first: composer audit, pint, phpstan, backend tests, tsc, eslint, prettier, Playwright e2e. The audit step needs network; abandoned packages are ignored because nativephp/electron and nativephp/laravel are deliberate pins.",
-        "verify:console": "Run the provisioning console's WHOLE test suite, Unit and Feature. Needs (cd console && composer install) first plus CONSOLE_DB_* in console/.env pointing at the live Supabase project, which is why this is separate from `verify` rather than part of it — `verify` has to stay runnable offline and without admin credentials. --fail-on-skipped is the honesty guard: Tests\\TestCase skips silently without credentials, so without the flag a misconfigured console/.env exits 0 having tested nothing. That is exactly how SchemaParityTest sat unrun from M1 to M4."
+        "verify:console": "Run the provisioning console's WHOLE test suite, Unit and Feature. Needs (cd console && composer install) first plus CONSOLE_DB_* in console/.env pointing at the live Supabase project, which is why this is separate from `verify` rather than part of it — `verify` has to stay runnable offline and without admin credentials. --fail-on-skipped is the honesty guard: Tests\\TestCase skips silently without credentials, so without the flag a misconfigured console/.env exits 0 having tested nothing. That is exactly how SchemaParityTest sat unrun from M1 to M4.",
+        "rig": "Dev-only, not a gate: run TWO browser instances of the app as two branches of one throwaway business, to look at the product from a user's seat without rebuilding an AppImage. Provisions a real business + 2 branches on the live Supabase project, seeds a catalog with different stock per branch, hydrates both local SQLite databases, and serves them at 127.0.0.1:8131 and 127.0.0.2:8132. Two different loopback HOSTS rather than two ports on one: the XSRF-TOKEN cookie name is hardcoded in the framework and cookies are host-scoped, not port-scoped, so two ports would poison each other's CSRF token and every submit would bounce with 'your session expired'. Runs in the foreground; Ctrl-C destroys everything it made, including the Postgres schema and both branch roles. Needs network, console/.env, and `npm run build` first.",
+        "rig:wizard": "As `rig`, but stops before hydrating: both devices come up un-hydrated on /setup and the banner prints the two credentials JSON paths for you to type into the wizard by hand — which is the only way to see that screen as a user meets it. The wizard takes a filesystem PATH, not an upload, and there is no Browse button outside the desktop runtime, so the paths are printed absolute.",
+        "rig:clean": "The safety net for a rig that was killed before its Ctrl-C teardown could run. Reads tests/manual/.runtime/state.env — written incrementally as each artifact is created, so it is accurate even after a kill -9 — and destroys exactly what that one run made: its servers, SQLite files, credential JSONs, schema and roles. Nothing global, and no sweep by name pattern: a biz_% schema is indistinguishable from a real customer's, which is why there is no reaper (console/README.md §5). If the Postgres drop fails it prints the SQL and KEEPS the state file, because deleting it is the only way to lose a schema name for good."
     },
     "scripts": {
         "post-autoload-dump": [
@@ -74,7 +77,7 @@
             "@composer audit --abandoned=ignore",
             "./vendor/bin/pint --test",
             "./vendor/bin/phpstan analyse --memory-limit=1G",
-            "@php artisan test",
+            "@php artisan test --exclude-group=supabase",
             "npm run types",
             "npm run lint:check",
             "npm run format:check",
@@ -83,7 +86,20 @@
         "verify:console": [
             "Composer\\Config::disableProcessTimeout",
             "console/vendor/bin/phpunit -c console/phpunit.xml --fail-on-skipped"
-        ]
+        ],
+        "verify:hydrate": [
+            "Composer\\Config::disableProcessTimeout",
+            "@php artisan test --group=supabase --fail-on-skipped"
+        ],
+        "rig": [
+            "Composer\\Config::disableProcessTimeout",
+            "tests/manual/rig.sh ready"
+        ],
+        "rig:wizard": [
+            "Composer\\Config::disableProcessTimeout",
+            "tests/manual/rig.sh wizard"
+        ],
+        "rig:clean": "tests/manual/rig.sh clean"
     },
     "extra": {
         "laravel": {

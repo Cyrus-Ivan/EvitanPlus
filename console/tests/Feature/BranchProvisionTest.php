@@ -244,9 +244,18 @@ class BranchProvisionTest extends TestCase
         // The failure is on the record, and marked as having left nothing.
         $this->assertSame($auditBefore + 1, $this->auditCount(BranchIssuer::PROVISION));
 
+        // Scoped to THIS branch, not "the newest row of this action".
+        // `provisioning_audit` is shared, append-only and never reset between
+        // runs, so "newest" is only this run's row while every writer agrees
+        // about the clock — and one did not: the integration suite shells out to
+        // `console/artisan` from the POS app, whose putenv'd APP_TIMEZONE
+        // overrode console/.env and stamped rows eight hours into the future.
+        // That leak is fixed in Tests\Integration\Concerns\ProvisionsABusiness,
+        // but a test that can be broken by an unrelated suite's clock was
+        // fragile on its own terms. The branch id is unique to this run.
         $latest = SchemaConnection::pinConsole()->selectOne(
-            'select outcome, detail from provisioning_audit where action = ? order by created_at desc limit 1',
-            [BranchIssuer::PROVISION],
+            'select outcome, detail from provisioning_audit where action = ? and branch_id = ?',
+            [BranchIssuer::PROVISION, $branchId],
         );
 
         $this->assertSame(ProvisioningAudit::ROLLED_BACK, $latest->outcome);

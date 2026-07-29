@@ -416,10 +416,87 @@ Guarantee the SQLite mirror and Postgres schema agree on the mirrored tables.
 
 ---
 
-# Phase M5 — Setup wizard (connect-and-hydrate, developer-run)
+# Phase M5 — Setup wizard (connect-and-hydrate, developer-run) ✅
 
 ## Goal
 Replace the local Owner-creation wizard with a connect-and-hydrate flow.
+
+> **Done.** A device given a credentials JSON and internet becomes a working
+> branch: `/setup` imports the file, connects as the branch role, clears the
+> version gate, copies the baseline into SQLite, seals the credential and records
+> who the device is. `App\Support\Sync\` holds the pieces — `CredentialsDocument`,
+> `BranchCycle`, `VersionGate`, `Hydrator`, `CredentialVault`, `ConnectAndHydrate`
+> — and the first three are the primitives M6–M8 build their cycles on, not
+> setup-only code. Scoping calls and findings:
+>
+> - **Nothing is persisted until the whole cycle succeeds**, and that decision
+>   removed more design than it added. The hydrated rows, `instance`,
+>   `instance_secret` and the audit entry are one SQLite transaction with the
+>   Postgres work inside it, so a failed import leaves the device exactly as it
+>   was. What that buys is the absence of a state machine: no "credentials
+>   imported but not hydrated" screen, no retry route, no discard action, no way
+>   for a half-run to be discovered later. Every failure has the same remedy —
+>   fix what the message says, submit again — and the message is the whole
+>   remedy because there is nothing to clean up first. It mirrors
+>   `BusinessProvisioner`, which verifies before reporting success for the same
+>   reason.
+> - **The fresh-install gate moved from "no user exists" to
+>   `instance.hydrated_at`.** The old question was right for a wizard that
+>   *created* the Owner and is wrong now: users arrive *during* hydration, so
+>   their presence would mark a device ready part-way through the copy. Because
+>   the stamp shares the hydrate's transaction it cannot be half-true. The cost
+>   landed in the test suite, in one place: `Tests\TestCase` seeds a hydrated
+>   instance for anything using `RefreshDatabase`, or all 500-odd feature tests
+>   would be funnelled to `/setup`. **It must not hang off
+>   `afterRefreshingDatabase()`** — a trait's method beats an inherited one, so
+>   `RefreshDatabase`'s own empty version of that hook silently replaces the
+>   parent's, and the failure presents as "the gate ignores the instance row".
+> - **The JSON arrives by path, not upload**, reusing `DirectoryPicker` (the
+>   backup/restore picker) for a **Browse** button in the desktop build. The
+>   reason is the one-time rule: knowing the real path is what lets the wizard
+>   *delete* the credential after importing it, which §9 asks for and an upload
+>   cannot offer. The checkbox is on by default and the toast says which happened.
+> - **The copy is column-driven** — local `pragma table_info` names the columns,
+>   exactly those are selected from Postgres — so a mirrored column added later
+>   needs no edit in the hydrator. That is only safe because M4's parity guard
+>   proves both sides carry the same columns; the guard and this are the same
+>   decision seen twice.
+> - **Two value shapes had to be converted, and both fail silently if missed.**
+>   `pdo_pgsql` can return booleans as `'t'`/`'f'`, and `(bool) 'f'` is **true** —
+>   a `must_change_password` of false would force a password change on every user
+>   of a brand-new device. And `timestamptz` arrives with an offset while SQLite's
+>   datetime columns hold naive UTC. Both are handled by normalising against the
+>   local declared type, and the integration test asserts both against the real
+>   database, because neither reproduces against a stand-in.
+> - **`settings` is the one table the local mirror is deliberately WIDER than
+>   Postgres**, because printer configuration lives in it and is device hardware.
+>   So settings is upserted by `key`, restricted to `BusinessSettings::KEYS`;
+>   a whole-table copy would erase the printer the developer had just configured.
+> - **Prices confirmed a pre-existing property rather than a bug.** SQLite's
+>   NUMERIC affinity stores `'25.50'` as `25.5`; it does that for a price the POS
+>   writes itself too, and the `decimal:2` cast is what makes both read back
+>   identically. The assertion goes through the model, because the requirement is
+>   that a hydrated row is indistinguishable from a locally written one.
+> - **History is not hydrated** (§16 lists catalog, users, settings, stock only),
+>   and the consequence needs recording before M6: a device replacing an EXISTING
+>   branch's hardware starts with empty branch-local reports, and — since the
+>   serial is derived from `max(transaction_number)` — would restart its receipt
+>   numbering at 1 and collide with rows already in Postgres. Fine for M5's
+>   fresh-device milestone; **M6 must not assume a replacement device is the same
+>   case as a new one.**
+> - **A third gate exists: `composer verify:hydrate`.** It provisions a throwaway
+>   business through the console CLI, runs the real wizard route against the
+>   emitted JSON, checks the local mirror against what was provisioned, and drops
+>   the schema and role. Tagged `supabase` and excluded from `composer verify`
+>   (`--exclude-group=supabase`) so a fresh clone stays green, and run with
+>   `--fail-on-skipped` so on a credentialed machine a silent skip is a failure —
+>   M4's lesson, applied at the moment of writing rather than three phases later.
+> - **Verified in a browser as well as in tests**: the wizard was driven headless
+>   against a real provisioned business — funnel → import → hydrate → log in as
+>   the pre-created Owner → the hydrated catalog on the POS screen with this
+>   branch's stock quantities, then the schema and role dropped. The one path no
+>   suite covers is the native file dialog itself, which is the same
+>   `Dialog::new()->files()` call backup/restore has shipped since Phase 17.
 
 ## Tasks
 - Import JSON → **encrypt at rest** with per-install `APP_KEY` → prompt to remove JSON.
@@ -432,14 +509,18 @@ Replace the local Owner-creation wizard with a connect-and-hydrate flow.
   hydration — connects, runs, and `DB::disconnect('pgsql')`s in a `finally`. Assign the JSON's
   `connection` block **over** `config('database.connections.pgsql')` rather than replacing it,
   and assign `search_path` as-is (`null` — the schema is pinned server-side; see §9).
-- Run local SQLite migrations.
+- Run local SQLite migrations. *As built: nothing new — `LaunchProvisioner` already migrates on
+  every launch, before the first page load, so the wizard inherits a current schema.*
 - **Hydrate** the baseline: full catalog, **all** users (business-wide), settings/identity, this
   branch's stock snapshot. *Hydrate* is the one-time first fill of a new branch device — not a
   pull, which is the recurring delta. It is re-runnable from scratch, because the local mirror
   is the only store in the system that can be thrown away.
 - Gate the app behind setup until hydration succeeds (extends the existing
-  `RequireInitialSetup` behavior); no seeded local Owner.
-- Audit the setup event.
+  `RequireInitialSetup` behavior); no seeded local Owner. *As built: the gate is
+  `instance.hydrated_at`, not "no user exists" — see the note above for why the old question
+  stopped being answerable.*
+- Audit the setup event. *As built: `system.setup_completed`, actor `null` — a system event on a
+  device where nobody has signed in yet, carrying the per-table hydrated counts.*
 
 ## Milestone
 A fresh device, given a JSON and internet, becomes a ready branch that logs in as the

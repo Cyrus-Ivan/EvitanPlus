@@ -112,9 +112,12 @@ selling" guarantee. Prefer this word in offline-behaviour sentences; it is the o
 correct when a branch gains a second till.
 
 ### `instance`
-Reserved for the **local SQLite singleton table** holding branch identity (business id, schema
-name, branch id, branch code, versions, `hydrated_at`). Proposed for M5.
-*Anchor:* `MULTIBRANCH-BRAINSTORM.md` §11.6.
+The **local SQLite singleton table** holding branch identity (business id, schema name, branch
+id, branch code, versions, `hydrated_at`). One row, `id = 1`, written by the setup wizard from
+the credentials JSON. Its sibling `instance_secret` holds the sealed credential, split off so
+the hot path never loads ciphertext.
+*Anchor:* `App\Models\Instance`; `database/migrations/2026_07_29_000001_create_instance_tables.php`;
+`MULTIBRANCH-BRAINSTORM.md` §11.6.
 ✗ **Not** a synonym for a device or a business. "App instance" and "business instance" are
 retired; say *branch device* or *business*.
 
@@ -180,10 +183,10 @@ A table written **only** on the till, append-only, pushed **insert-only** keyed 
 
 ### Local-only (of a table)
 A table that exists in the **local mirror and nowhere else** — it has no Postgres counterpart and
-is exempt from the parity guard. Today the list is Laravel's own infrastructure (`sessions`,
+is exempt from the parity guard. The list is Laravel's own infrastructure (`sessions`,
 `cache`, `cache_locks`, `jobs`, `job_batches`, `failed_jobs`, `migrations`, and `sqlite_sequence`,
-which SQLite materialises for the AUTOINCREMENT on `migrations`). M6's sync tables and M8's
-narrowed `inventory_update_queue` join it.
+which SQLite materialises for the AUTOINCREMENT on `migrations`) plus M5's `instance` and
+`instance_secret`. M6's sync tables and M8's narrowed `inventory_update_queue` join it.
 *Anchor:* `SchemaParityTest::SQLITE_LOCAL_ONLY` (added in M4).
 ✗ **Not** "mirrored" — and the distinction is the whole reason this set exists rather than the
 tables being folded into `MIRRORED`. A local-only table is deliberately a *different, narrower*
@@ -196,9 +199,12 @@ other way.
 The setup wizard's **one-time first fill** of a new branch device: catalog, all users,
 settings/identity, and this branch's stock snapshot. Happens once per device, inside a normal
 sync cycle's connection.
-*Anchor:* `MULTIBRANCH-BRAINSTORM.md` §16; `instance.hydrated_at`.
+*Anchor:* `App\Support\Sync\Hydrator`; `instance.hydrated_at`;
+`MULTIBRANCH-BRAINSTORM.md` §16.
 ✗ **Not** a pull. A pull is the recurring delta; a hydrate is the initial baseline, and a
 device can be re-hydrated from scratch because the local mirror is disposable.
+✗ **Not** history. A hydrate brings down no transactions, ledger or audit rows — which is why a
+device replacing an existing branch's hardware is a different case from a new one.
 
 ---
 
@@ -349,6 +355,9 @@ If it fails, sync is refused in **both** directions — a stale push would write
 into a migrated Postgres, and a new-format pull would write columns the local SQLite lacks;
 both are corruption. The till **keeps selling** throughout, and the console shows the branch as
 version-behind.
+*Anchor:* `App\Support\Sync\VersionGate` (M5), which reads `schema_meta` **live** rather than
+trusting the version pair the credentials JSON was issued with — a schema migrated since
+issuance still carries the old numbers there.
 ✗ **Not** a schema-version comparison. `MULTIBRANCH-BRAINSTORM.md` §13 previously said the sync
 carries "the app's schema version", which named neither of the two values actually compared.
 The schema version is *recorded* by both sides; it is not what the gate tests.
@@ -418,7 +427,8 @@ on a customer's device.
 The **one-time file** the console emits per branch and the setup wizard imports. A versioned
 envelope (`format: evitan.branch-credentials`, `format_version: 1`), written with an exclusive
 create at `0600` inside a `0700` directory; an existing path is a refusal, never an overwrite.
-*Anchor:* `console/app/Support/BranchCredentials.php`.
+*Anchor:* `console/app/Support/BranchCredentials.php` (emitting);
+`App\Support\Sync\CredentialsDocument` (reading).
 Two importer rules that are easy to get wrong:
 - Merge `connection` **over** `config('database.connections.pgsql')`; do not replace it. The
   block is a subset and a wholesale assignment drops `url`, `charset`, `prefix`,
@@ -430,7 +440,10 @@ Two importer rules that are easy to get wrong:
 A deterministic sha256 of an issued credential — **never the password** — stored so the console
 can answer "is this device still holding what I last issued?" without either side transmitting
 the secret.
-*Anchor:* `credential_issuance` in `evitan_console`; `console/app/Support/BranchSecret.php`.
+*Anchor:* `credential_issuance` in `evitan_console`; `console/app/Support/BranchSecret.php`;
+`App\Support\Sync\CredentialVault` on the device. The domain separator
+(`evitan.branch-credential.v1|`) is duplicated in both apps — §18 forbids a runtime reference
+either way — and a unit test reads the console's file to keep them byte-identical.
 
 ---
 

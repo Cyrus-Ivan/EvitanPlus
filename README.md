@@ -79,8 +79,10 @@ composer native:dev
 ```
 
 Default development login: **`owner` / `password`** (created by the local demo
-seed — `migrate:fresh --seed`). A packaged fresh install has no seeded account:
-the app opens an initial setup wizard that creates the Owner.
+seed — `migrate:fresh --seed`, which also writes a fake `DEV` branch identity so
+the app does not funnel to the setup wizard). A packaged fresh install has
+neither: it opens the setup wizard, which imports a branch credential and
+hydrates the business from Postgres.
 
 ### Provisioning console (developer-only)
 
@@ -223,9 +225,12 @@ php console/artisan business:provision  # Provision a business + its first branc
 1. Bump the version default in `config/nativephp.php` and add an entry to
    [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 2. Run every gate with `composer verify`. It chains them fail-fast, cheapest
-   first: `composer audit` → `pint --test` → `phpstan` → `php artisan test` →
-   `npm run types` → `npm run lint:check` → `npm run format:check` →
-   `npm run e2e` (which builds the frontend before it starts Playwright).
+   first: `composer audit` → `pint --test` → `phpstan` →
+   `php artisan test --exclude-group=supabase` → `npm run types` →
+   `npm run lint:check` → `npm run format:check` → `npm run e2e` (which builds
+   the frontend before it starts Playwright). The `supabase` group is the
+   hydration gate, which needs a real project and admin credentials; run it
+   separately with `composer verify:hydrate`, alongside `composer verify:console`.
    The audit step needs network access and ignores *abandoned* packages —
    `nativephp/electron` and `nativephp/laravel` are deliberate pins, not
    oversights. The M0 build gates —
@@ -270,20 +275,20 @@ php console/artisan business:provision  # Provision a business + its first branc
    and [`tests/Feature/Build/PhpBinaryTest.php`](tests/Feature/Build/PhpBinaryTest.php)
    gate the same invariants in `composer verify`; this step is the
    belt-and-braces check against the real artifact.
-5. Smoke-test the installed app with a scratch `HOME`: the initial setup
-   wizard (create the Owner, business details, timezone/currency, optional
-   printer), a sale, a backup, a restore + restart.
+5. Smoke-test the installed app with a scratch `HOME`: the setup wizard
+   (import a branch credentials JSON, optional printer), a sale, a backup, a
+   restore + restart.
 
 The packaged app provisions itself on every launch (migrate → stock
-reconcile) and generates a per-install `APP_KEY` on first boot; a fresh
-install (no users yet) opens the setup wizard before anything else.
+reconcile) and generates a per-install `APP_KEY` on first boot; a device that
+has not been hydrated into a branch opens the setup wizard before anything else.
 
 ## Developer onboarding: standing up a branch
 
-> **Status:** this is the target flow for **Evitan Plus** (multi-branch). Steps
-> tagged *(planned — Phase Mx)* are **not implemented** as of `v1.0.0`; today a
-> device is still a single, self-contained install set up by the existing setup
-> wizard. Phase status lives in [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md).
+> **Status:** the flow below is **shipped end to end** as of Phase M5 — a device
+> given a credentials JSON and internet becomes a working branch. What is still
+> missing is everything *after* setup: pushing sales up and pulling changes down
+> (M6–M8). Phase status lives in [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md).
 
 Every branch device is prepared by a developer, in this order:
 
@@ -301,18 +306,30 @@ Every branch device is prepared by a developer, in this order:
 3. **AppImage** — build the release and copy it to the device (see
    "Building a release" above). Credential rotation is delivered the same way:
    a fresh AppImage plus a new JSON, never an in-place swap.
-4. **Wizard** — run the setup wizard on the device: import the JSON (stored
-   encrypted at rest under the per-install `APP_KEY`), verify version
-   compatibility, run the local SQLite migrations, and hydrate the branch
-   baseline — catalog, all users, settings/identity, and this branch's stock
-   snapshot. *(planned — Phases M5/M6. The current wizard creates the Owner
-   locally instead.)*
+4. **Wizard** — launch the app on the device; with no branch identity it opens
+   the setup wizard. Give it the path to the JSON (**Browse** opens the OS file
+   picker in the desktop build), optionally configure the receipt printer, and
+   submit. One atomic step connects as the branch role, checks the version gate
+   against `schema_meta`, copies the baseline down — catalog, **all** users,
+   business settings, this branch's stock snapshot — seals the credential under
+   the per-install `APP_KEY`, and records who this device is. Nothing is written
+   unless all of it succeeds, so a failure means "fix what the message says and
+   submit again" and never leaves a half-set-up device.
+   *(shipped — Phase M5.)*
 
 The business then simply powers on a ready device and logs in as the Owner
-created during provisioning. The credentials JSON is one-time: after a
-successful import the wizard prompts to remove it. Admin/service credentials
-never leave `console/.env`. See
+created during provisioning. The credentials JSON is one-time: the wizard offers
+to delete it after a successful import (checked by default) and says so either
+way — it holds a live database password in plaintext, and the device now has its
+own encrypted copy. Admin/service credentials never leave `console/.env`. See
 [`MULTIBRANCH-BRAINSTORM.md`](MULTIBRANCH-BRAINSTORM.md) §2, §9, §16.
+
+```bash
+# The setup wizard end to end against the real Supabase project: provisions a
+# throwaway business, hydrates a device from its JSON, then drops the schema and
+# role. Needs console/.env, so it is NOT part of `composer verify`.
+composer verify:hydrate
+```
 
 ## Architecture & invariants
 

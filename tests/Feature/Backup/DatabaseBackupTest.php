@@ -78,6 +78,13 @@ class DatabaseBackupTest extends TestCase
             {
                 return $this->file;
             }
+
+            // Not reachable from backup/restore; the setup wizard's half of the
+            // interface (M5) has its own fake in tests/Feature/Setup.
+            public function pickCredentialsFile(?string $default = null): ?string
+            {
+                return null;
+            }
         });
     }
 

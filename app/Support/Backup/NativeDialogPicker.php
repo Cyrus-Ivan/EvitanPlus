@@ -45,6 +45,23 @@ class NativeDialogPicker implements DirectoryPicker
         return $dialog->open();
     }
 
+    public function pickCredentialsFile(?string $default = null): ?string
+    {
+        $this->ensureDesktop();
+
+        $dialog = Dialog::new()
+            ->title('Choose the branch credentials file')
+            ->button('Import')
+            ->files()
+            ->filter('Credentials JSON', ['json']);
+
+        if ($default !== null && $default !== '') {
+            $dialog->defaultPath($default);
+        }
+
+        return $dialog->open();
+    }
+
     private function ensureDesktop(): void
     {
         if (! config('nativephp-internal.running')) {

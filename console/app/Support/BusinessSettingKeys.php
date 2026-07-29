@@ -59,9 +59,11 @@ final class BusinessSettingKeys
      * Insert-ready rows for the settings table, one per key.
      *
      * Values are cast to strings and blanks become '' rather than null, exactly
-     * as the app's CompleteSetupRequest::businessPayload() does — the app reads
-     * these with a string cast and a read-time default, so a null would present
-     * as the default instead of the empty value the operator actually chose.
+     * as the app's BusinessSettings::update() stores them — the app reads these
+     * with a string cast and a read-time default, so a null would present as the
+     * default instead of the empty value the operator actually chose. M5's
+     * hydration copies these rows down verbatim, which makes that distinction
+     * the device's too.
      *
      * created_at/updated_at are set explicitly: the Postgres settings table
      * declares timestampsTz() with no default, and nothing here goes through

@@ -8,14 +8,15 @@
 #
 #   full   migrate + seed (settings, demo catalog/sales, the `owner` dev login)
 #          then the e2e fixtures — the database the main specs run against.
-#   fresh  migrate only: settings defaults exist but NO user does, so
-#          RequireInitialSetup funnels the app to the setup wizard. Used by
-#          setup.spec.ts, which cannot share a database with a seeded server.
+#   fresh  migrate only: settings defaults exist but the device has no
+#          `instance` row, so RequireInitialSetup funnels the app to the setup
+#          wizard. Used by setup.spec.ts, which cannot share a database with a
+#          seeded server.
 #
 # The database is BUILT, never copied from database/nativephp.sqlite: the dev
-# DB's contents are whatever the developer last did, and post-v1.0.0 it is not
-# even guaranteed to hold an Owner (the setup wizard creates one, no seeded
-# production account exists). Inheriting it is what silently broke this suite.
+# DB's contents are whatever the developer last did, and it is not even
+# guaranteed to hold an Owner (users arrive by hydration from Postgres; there is
+# no seeded production account). Inheriting it is what silently broke this suite.
 #
 # Never `php artisan serve` — it drops the DB_DATABASE/APP_DEBUG overrides.
 set -euo pipefail
@@ -41,9 +42,10 @@ rm -f "$DB" "$DB-shm" "$DB-wal"
 touch "$DB"
 
 # APP_ENV decides the seeded set, and is pinned rather than inherited so it
-# never depends on the developer's .env: DatabaseSeeder calls DemoDataSeeder —
-# which creates the `owner`/`password` login the specs use — only when local.
-# In fresh mode that must NOT happen; a user-less database is the whole point.
+# never depends on the developer's .env: only when local does DatabaseSeeder
+# write the dev `instance` row AND call DemoDataSeeder, which creates the
+# `owner`/`password` login the specs use. In fresh mode neither must happen; an
+# un-hydrated device is the whole point.
 SEED_ENV=$([[ "$MODE" == "full" ]] && echo local || echo production)
 
 (cd "$ROOT" && APP_ENV="$SEED_ENV" DB_DATABASE="$DB" php artisan migrate --force --seed)

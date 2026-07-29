@@ -8,16 +8,17 @@ import path from 'path';
  * - NEVER the real database: each server BUILDS its own SQLite file under
  *   tests/e2e/.runtime from migrations + seeders. Copying the dev database is
  *   what silently broke this suite — its contents are whatever the developer
- *   last did, and post-v1.0.0 it need not contain an Owner at all.
+ *   last did, and it need not contain an Owner at all.
  * - `php -S` from public/ with the framework router — NOT `artisan serve`,
  *   whose child process drops the DB_DATABASE/APP_DEBUG overrides.
  * - `npm run e2e` runs `vite build` BEFORE Playwright: the servers render
  *   through the built manifest, and building once up front keeps the two
  *   servers from racing on public/build.
  *
- * Two servers, because the setup wizard needs a database with zero users
- * (RequireInitialSetup redirects /setup → /login the moment one exists), which
- * is irreconcilable with the seeded database every other spec needs.
+ * Two servers, because the setup wizard needs an un-hydrated device
+ * (RequireInitialSetup redirects /setup → /login the moment `instance` says the
+ * device is a branch), which is irreconcilable with the seeded database every
+ * other spec needs.
  */
 
 const serve = path.join(import.meta.dirname, 'tests/e2e/serve.sh');
@@ -53,9 +54,9 @@ export default defineConfig({
             timeout: 180_000,
         },
         {
-            // User-less: the app funnels to /setup. setup.spec.ts creates the
-            // Owner and thereby makes the wizard unreachable, so this server
-            // must never be reused — its database has to be rebuilt each run.
+            // Un-hydrated: the app funnels to /setup. A successful import would
+            // make the wizard unreachable, so this server must never be reused —
+            // its database has to be rebuilt each run.
             command: `${serve} 8124 setup.sqlite fresh`,
             url: 'http://127.0.0.1:8124/setup',
             reuseExistingServer: false,

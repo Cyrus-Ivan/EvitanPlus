@@ -270,9 +270,10 @@ class BusinessProvisionCommand extends Command
     }
 
     /**
-     * Mirrors app/Http/Requests/Setup/CompleteSetupRequest.php, which is the
-     * app's equivalent atomic submit — a business provisioned here must be
-     * indistinguishable from one the in-app wizard would have created.
+     * These rules are the ONLY validation an Owner account and a business
+     * identity now get. Until M5 they mirrored the app's own setup wizard, which
+     * collected the same fields on the device; that wizard connects and hydrates
+     * instead, so nothing downstream re-checks what is accepted here.
      *
      * Rule::unique('users', 'username') is deliberately absent: the console's
      * default connection is the admin one pinned to `public`, so the rule would

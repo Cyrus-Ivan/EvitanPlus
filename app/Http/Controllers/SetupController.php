@@ -2,88 +2,118 @@
 
 namespace App\Http\Controllers;
 
-use App\Enums\UserRole;
-use App\Http\Requests\Setup\CompleteSetupRequest;
-use App\Models\User;
-use App\Support\Audit\AuditRecorder;
-use App\Support\Auth\SessionManager;
+use App\Exceptions\SetupFailedException;
+use App\Http\Requests\Setup\ImportCredentialsRequest;
+use App\Support\Backup\DirectoryPicker;
 use App\Support\Printing\PrinterSettings;
-use App\Support\Settings\BusinessSettings;
+use App\Support\Sync\ConnectAndHydrate;
+use App\Support\Sync\CredentialsDocument;
 use Illuminate\Http\RedirectResponse;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Hash;
 use Inertia\Inertia;
 use Inertia\Response;
+use Throwable;
 
 /**
- * The initial setup wizard for a fresh install. Replaces any seeded default
- * account: the Owner is created here, pre-login, together with the business
- * details and (optionally) the printer configuration — all in one atomic
- * submit. RequireInitialSetup routes every request here while no user exists
- * and locks the wizard away forever once one does.
+ * The setup wizard: connect this device to its business and hydrate it
+ * (MULTIBRANCH-BRAINSTORM.md §16).
+ *
+ * It replaces v1.0.0's create-the-Owner-locally flow outright. The Owner, the
+ * business identity and the catalog already exist in Postgres — provisioned by
+ * the developer-only console — so a device's job at setup is to prove it holds a
+ * working branch credential and to copy the baseline down, not to invent a
+ * second business. The only thing still collected here is the printer, because
+ * a printer belongs to the device.
+ *
+ * RequireInitialSetup routes every request here until `instance.hydrated_at` is
+ * set, and locks the wizard away once it is.
+ *
+ * One atomic submit, and nothing survives a failure — see ConnectAndHydrate.
  */
 class SetupController extends Controller
 {
-    public function create(BusinessSettings $settings, PrinterSettings $printerSettings): Response
+    public function create(PrinterSettings $printerSettings): Response
     {
         return Inertia::render('setup', [
-            'defaults' => $settings->all(),
             'printerDefaults' => $printerSettings->all(),
+            'appVersion' => (string) config('nativephp.version'),
+            // The native file dialog only exists inside the desktop runtime; in
+            // a plain browser the developer types the path instead.
+            'desktop' => (bool) config('nativephp-internal.running'),
         ]);
     }
 
+    /**
+     * Open the OS file picker and hand the chosen path back to the form.
+     *
+     * A POST because it has a side effect the user sees (a modal window), and
+     * because it mirrors BackupController's external-drive actions, which is
+     * where this picker already lives.
+     */
+    public function browse(DirectoryPicker $picker): RedirectResponse
+    {
+        try {
+            $path = $picker->pickCredentialsFile();
+        } catch (Throwable $e) {
+            return back()->withErrors(['credentials_path' => $e->getMessage()]);
+        }
+
+        // Cancelled: not an error, and not something to say anything about.
+        return $path === null
+            ? back()
+            : back()->with('picked_credentials_path', $path);
+    }
+
     public function store(
-        CompleteSetupRequest $request,
-        BusinessSettings $settings,
+        ImportCredentialsRequest $request,
+        ConnectAndHydrate $setUpDevice,
         PrinterSettings $printerSettings,
-        AuditRecorder $audit,
-        SessionManager $sessions,
     ): RedirectResponse {
-        $owner = DB::transaction(function () use ($request, $settings, $printerSettings, $audit): User {
-            // Double-submit / race guard; the single-Owner model guard backs
-            // this up at the persistence layer.
-            abort_if(User::withTrashed()->exists(), 403);
+        $path = $request->credentialsPath();
 
-            $owner = User::create([
-                'name' => $request->validated('name'),
-                'username' => $request->validated('username'),
-                'password' => Hash::make($request->validated('password')),
-                'role' => UserRole::Owner,
-                'must_change_password' => false,
-            ]);
+        try {
+            $document = CredentialsDocument::fromFile($path);
 
-            $settings->update($request->businessPayload());
+            $summary = DB::transaction(function () use ($setUpDevice, $document, $request, $printerSettings): array {
+                $summary = $setUpDevice($document);
 
-            if ($request->boolean('configure_printer')) {
-                $printerSettings->update($request->printerPayload());
-            }
+                // Inside the same transaction as the hydrate: a device that ends
+                // up hydrated without the printer settings the developer just
+                // entered would send them looking in the settings screen for a
+                // step they know they completed.
+                if ($request->boolean('configure_printer')) {
+                    $printerSettings->update($request->printerPayload());
+                }
 
-            $audit->record(
-                action: 'system.setup_completed',
-                auditable: $owner,
-                description: 'Initial setup completed: Owner account created and business settings configured.',
-                actor: $owner,
-            );
+                return $summary;
+            });
+        } catch (SetupFailedException $e) {
+            // Every one of these leaves the device untouched, so the message is
+            // the whole remedy and it belongs on the field that caused it.
+            return back()->withErrors(['credentials_path' => $e->getMessage()]);
+        }
 
-            return $owner;
-        });
-
-        Auth::login($owner);
-
-        $request->session()->regenerate();
-
-        // Record the login event.
-        $sessions->handleLogin($owner);
-
-        // Stamp this run's boot id onto the session so the boot-session guard
-        // recognises it as belonging to the current run (mirrors the login
-        // controller — without it the fresh Owner would be signed out on the
-        // very next request under the native runtime).
-        $request->session()->put('boot_id', $sessions->currentBootId());
+        $removed = $request->boolean('delete_after_import') && $this->removeCredentialsFile($path);
 
         return redirect()
-            ->route('pos')
-            ->with('toast', ['type' => 'success', 'message' => 'Welcome to Evitan Plus — setup complete.']);
+            ->route('login')
+            ->with('toast', [
+                'type' => 'success',
+                'message' => "This device is now branch {$summary['branch_code']} of {$summary['business']}. "
+                    .($removed
+                        ? 'The credentials file has been deleted.'
+                        : "Delete the credentials file at {$path} — it holds a live database password."),
+            ]);
+    }
+
+    /**
+     * §9 treats the JSON as one-time: it carries a live database password in
+     * plaintext, and once it has been imported the device holds the same
+     * credential sealed under its own key. Best effort — a file on a read-only
+     * stick is not a failed setup, and the toast says so either way.
+     */
+    private function removeCredentialsFile(string $path): bool
+    {
+        return is_file($path) && @unlink($path);
     }
 }

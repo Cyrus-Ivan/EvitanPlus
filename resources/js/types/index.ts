@@ -45,7 +45,7 @@ export interface SharedData {
     auth: Auth;
     // Business currency symbol (Business Settings; default ₱).
     currency: string;
-    flash: { toast?: FlashToast | null; restart_required?: boolean };
+    flash: { toast?: FlashToast | null; restart_required?: boolean; credentials_path?: string | null };
     [key: string]: unknown;
 }
 

@@ -2,159 +2,334 @@
 
 namespace Tests\Feature\Setup;
 
-use App\Enums\UserRole;
-use App\Models\Setting;
+use App\Http\Requests\Setup\ImportCredentialsRequest;
+use App\Models\Instance;
 use App\Models\User;
-use App\Support\Auth\SessionManager;
+use App\Support\Backup\DirectoryPicker;
+use App\Support\Printing\PrinterSettings;
+use App\Support\Sync\CredentialsDocument;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\File;
 use Tests\TestCase;
 
 /**
- * The initial setup wizard (post-v1.0.0, replaces the seeded first-launch
- * Owner): a fresh install — no users at all — is funnelled to /setup, where
- * one atomic submit creates the Owner, saves business/printer settings, and
- * signs in. Once any user exists the wizard is unreachable forever.
+ * The setup wizard (M5): a device that is not yet a branch imports a credentials
+ * JSON, connects, and hydrates.
+ *
+ * What can be proved here without a Postgres server is everything up to the
+ * connection — the gate that funnels a device here, the envelope rules, and the
+ * guarantee that a failed attempt writes nothing — plus the connection itself
+ * failing cleanly. What happens once a connection SUCCEEDS is proved against the
+ * real Supabase project by tests/Integration/HydrationTest.php
+ * (`composer verify:hydrate`), because hydration's remaining risks are Postgres
+ * value shapes and nothing here would exercise them.
  */
 class InitialSetupTest extends TestCase
 {
     use RefreshDatabase;
 
     /**
-     * A complete, valid wizard submission (printer configured over network).
-     *
-     * @return array<string, string>
+     * Every test here is about a device that has NOT been set up, so the base
+     * case's hydrated instance would defeat all of them.
      */
-    private function payload(array $overrides = []): array
+    protected bool $hydrated = false;
+
+    private string $directory;
+
+    protected function setUp(): void
     {
-        return array_merge([
-            'name' => 'Maria Cruz',
-            'username' => 'maria',
-            'password' => 'a-password-of-my-own',
-            'password_confirmation' => 'a-password-of-my-own',
-            'business_name' => 'Cruz Sari-Sari Store',
-            'business_address' => '123 Mabini St, Manila',
-            'tin' => '123-456-789',
-            'receipt_footer' => 'Salamat po!',
-            'timezone' => 'Asia/Manila',
-            'currency_symbol' => '₱',
-            'configure_printer' => '1',
-            'receipt_paper_size' => '58mm',
-            'receipt_connection' => 'network',
-            'receipt_printer_name' => '',
-            'receipt_device_path' => '',
-            'receipt_network_host' => '192.168.1.50',
-            'receipt_network_port' => '9100',
-            'auto_print' => '1',
-            'open_cash_drawer' => '0',
-        ], $overrides);
+        parent::setUp();
+
+        $this->directory = storage_path('framework/testing/credentials');
+
+        File::ensureDirectoryExists($this->directory);
+
+        $this->fakePicker(null);
     }
 
-    public function test_a_fresh_install_is_routed_to_the_setup_wizard(): void
+    protected function tearDown(): void
     {
-        $this->assertDatabaseCount('users', 0);
+        File::deleteDirectory($this->directory);
+
+        parent::tearDown();
+    }
+
+    public function test_a_device_that_is_not_a_branch_is_routed_to_the_wizard(): void
+    {
+        $this->assertDatabaseCount('instance', 0);
 
         $this->get(route('pos'))->assertRedirect(route('setup'));
         $this->get(route('login'))->assertRedirect(route('setup'));
         $this->get(route('setup'))->assertOk()->assertInertia(fn ($page) => $page->component('setup', false));
     }
 
-    public function test_the_wizard_is_unreachable_once_any_user_exists(): void
+    public function test_users_alone_no_longer_count_as_a_set_up_device(): void
     {
+        // The gate moved off "a user exists" in M5 precisely because users
+        // arrive DURING hydration: their presence would otherwise mark a device
+        // ready part-way through the copy.
         User::factory()->cashier()->create();
+
+        $this->get(route('pos'))->assertRedirect(route('setup'));
+        $this->get(route('setup'))->assertOk();
+    }
+
+    public function test_the_wizard_is_unreachable_once_the_device_is_hydrated(): void
+    {
+        $this->hydratedDevice();
 
         $this->get(route('setup'))->assertRedirect(route('login'));
         $this->post(route('setup.store'), $this->payload())->assertRedirect(route('login'));
-
-        $this->assertDatabaseCount('users', 1);
     }
 
-    public function test_an_archived_user_still_counts_as_an_installed_database(): void
+    public function test_an_unhydrated_instance_row_still_routes_to_the_wizard(): void
     {
-        // A restored backup whose only user was archived must not re-trigger
-        // the wizard (it would allow creating a second Owner).
-        User::factory()->cashier()->create()->delete();
+        // Belt and braces on a state the atomic import makes unreachable: if
+        // identity ever existed without a baseline, the device must come back
+        // to the wizard rather than into an empty catalog.
+        $this->hydratedDevice(['hydrated_at' => null]);
 
-        $this->get(route('setup'))->assertRedirect(route('login'));
-        $this->get(route('pos'))->assertRedirect(route('login'));
+        $this->get(route('pos'))->assertRedirect(route('setup'));
+        $this->get(route('setup'))->assertOk();
     }
 
-    public function test_completing_setup_creates_the_owner_saves_settings_and_signs_in(): void
+    public function test_a_missing_file_is_refused_and_writes_nothing(): void
     {
-        // Mirror the native runtime: a boot id exists before any request.
-        app(SessionManager::class)->handleBoot();
+        $this->post(route('setup.store'), $this->payload(['credentials_path' => $this->directory.'/nope.json']))
+            ->assertSessionHasErrors('credentials_path');
 
-        $response = $this->post(route('setup.store'), $this->payload());
-
-        $response->assertSessionHasNoErrors()->assertRedirect(route('pos'));
-
-        $owner = User::sole();
-        $this->assertSame('maria', $owner->username);
-        $this->assertSame(UserRole::Owner, $owner->role);
-        $this->assertFalse($owner->must_change_password);
-        $this->assertAuthenticatedAs($owner);
-
-        $this->assertSame('Cruz Sari-Sari Store', Setting::where('key', 'business_name')->value('value'));
-        $this->assertSame('Asia/Manila', Setting::where('key', 'timezone')->value('value'));
-        $this->assertSame('₱', Setting::where('key', 'currency_symbol')->value('value'));
-        $this->assertSame('network', Setting::where('key', 'receipt_connection')->value('value'));
-        $this->assertSame('192.168.1.50', Setting::where('key', 'receipt_network_host')->value('value'));
-
-        $this->assertDatabaseHas('audit_logs', [
-            'action' => 'system.setup_completed',
-            'user_id' => $owner->id,
-            'auditable_id' => $owner->id,
-        ]);
-        $this->assertDatabaseHas('login_history', ['user_id' => $owner->id]);
-
-        // The session survives the boot-session guard (boot id was stamped).
-        $this->get(route('pos'))->assertOk();
+        $this->assertNothingPersisted();
     }
 
-    public function test_the_printer_step_can_be_skipped(): void
+    public function test_a_file_that_is_not_json_is_refused(): void
     {
-        $response = $this->post(route('setup.store'), $this->payload([
-            'configure_printer' => '0',
-            // With the printer skipped, its fields are not validated…
-            'receipt_connection' => 'network',
-            'receipt_network_host' => '',
+        $path = $this->write('garbage.json', 'this is not json');
+
+        $this->post(route('setup.store'), $this->payload(['credentials_path' => $path]))
+            ->assertSessionHasErrors('credentials_path');
+
+        $this->assertNothingPersisted();
+    }
+
+    public function test_a_json_document_of_another_kind_is_refused(): void
+    {
+        $path = $this->write('other.json', (string) json_encode(['hello' => 'world']));
+
+        $this->post(route('setup.store'), $this->payload(['credentials_path' => $path]))
+            ->assertSessionHasErrors('credentials_path');
+
+        $this->assertNothingPersisted();
+    }
+
+    public function test_a_newer_credentials_format_is_refused_rather_than_half_read(): void
+    {
+        $path = $this->write('v2.json', (string) json_encode($this->document(['format_version' => 2])));
+
+        $this->post(route('setup.store'), $this->payload(['credentials_path' => $path]))
+            ->assertSessionHasErrors('credentials_path');
+
+        $this->assertNothingPersisted();
+    }
+
+    public function test_a_document_missing_a_required_value_is_refused(): void
+    {
+        $document = $this->document();
+        unset($document['connection']['password']);
+
+        $path = $this->write('partial.json', (string) json_encode($document));
+
+        $this->post(route('setup.store'), $this->payload(['credentials_path' => $path]))
+            ->assertSessionHasErrors('credentials_path');
+
+        $this->assertNothingPersisted();
+    }
+
+    public function test_a_credential_that_cannot_connect_leaves_the_device_untouched(): void
+    {
+        $path = $this->write('unreachable.json', (string) json_encode($this->unreachable()));
+
+        $this->post(route('setup.store'), $this->payload(['credentials_path' => $path]))
+            ->assertSessionHasErrors('credentials_path');
+
+        $this->assertNothingPersisted();
+
+        // The file is never deleted on a failed import, whatever the checkbox
+        // said: it may be the only copy of the credential.
+        $this->assertFileExists($path);
+    }
+
+    public function test_a_failed_import_leaves_the_connection_fail_closed(): void
+    {
+        $this->post(route('setup.store'), $this->payload([
+            'credentials_path' => $this->write('unreachable.json', (string) json_encode($this->unreachable())),
         ]));
 
-        $response->assertSessionHasNoErrors()->assertRedirect(route('pos'));
-
-        // …and nothing printer-related is written; defaults apply at read time.
-        $this->assertSame(0, Setting::where('key', 'like', 'receipt_paper%')->count());
-        $this->assertNull(Setting::where('key', 'receipt_connection')->first());
-        $this->assertNull(Setting::where('key', 'auto_print')->first());
+        // The cycle restores the shipped (empty) connection config on the way
+        // out, so nothing running afterwards inherits a live credential — the
+        // §11.5 rule that a cycle owns its connection, seen from the config side.
+        $this->assertEmpty(config('database.connections.pgsql.host'));
+        $this->assertEmpty(config('database.connections.pgsql.password'));
     }
 
-    public function test_validation_failures_persist_nothing(): void
+    public function test_the_browse_button_returns_the_picked_path(): void
     {
-        $invalid = [
-            ['business_name' => ''],
-            ['timezone' => 'Mars/Olympus_Mons'],
-            ['password_confirmation' => 'something-else'],
-            ['username' => ''],
-            // Printer configured but its required-per-connection field missing.
-            ['receipt_connection' => 'network', 'receipt_network_host' => ''],
-            ['receipt_connection' => 'system', 'receipt_printer_name' => ''],
-        ];
+        $this->fakePicker('/media/usb/biz_abc-MNL.json');
 
-        foreach ($invalid as $overrides) {
-            $this->post(route('setup.store'), $this->payload($overrides))->assertSessionHasErrors();
-
-            $this->assertDatabaseCount('users', 0);
-            $this->assertDatabaseCount('settings', 0);
-            $this->assertGuest();
-        }
+        $this->post(route('setup.browse'))
+            ->assertRedirect()
+            ->assertSessionHas('picked_credentials_path', '/media/usb/biz_abc-MNL.json');
     }
 
-    public function test_a_double_submit_cannot_create_a_second_user(): void
+    public function test_a_cancelled_picker_says_nothing(): void
     {
-        $this->post(route('setup.store'), $this->payload())->assertRedirect(route('pos'));
+        $this->post(route('setup.browse'))
+            ->assertRedirect()
+            ->assertSessionMissing('picked_credentials_path')
+            ->assertSessionHasNoErrors();
+    }
 
-        $this->post(route('setup.store'), $this->payload(['username' => 'second']))
-            ->assertRedirect(route('login'));
+    public function test_the_wizard_still_collects_the_printer_and_nothing_else(): void
+    {
+        // The Owner, the business identity and localization all come from
+        // Postgres now. The printer is device hardware, which is why it stayed.
+        $this->assertSame(
+            ['credentials_path', 'delete_after_import', 'configure_printer'],
+            array_keys((new ImportCredentialsRequest)->rules()),
+        );
 
-        $this->assertDatabaseCount('users', 1);
+        $this->get(route('setup'))->assertInertia(
+            fn ($page) => $page
+                ->where('printerDefaults.receipt_paper_size', app(PrinterSettings::class)->all()['receipt_paper_size'])
+                ->where('appVersion', config('nativephp.version'))
+                ->has('desktop')
+        );
+    }
+
+    private function assertNothingPersisted(): void
+    {
+        $this->assertDatabaseCount('instance', 0);
+        $this->assertDatabaseCount('instance_secret', 0);
+        $this->assertDatabaseCount('users', 0);
+        $this->assertDatabaseCount('audit_logs', 0);
+        $this->assertDatabaseCount('settings', 0);
+    }
+
+    /**
+     * @param  array<string, mixed>  $overrides
+     */
+    private function hydratedDevice(array $overrides = []): void
+    {
+        Instance::query()->create(array_merge([
+            'id' => Instance::ID,
+            'business_id' => '00000000-0000-0000-0000-00000000b12b',
+            'schema_name' => 'biz_test',
+            'branch_id' => '00000000-0000-0000-0000-0000000b4a4c',
+            'branch_code' => 'TST',
+            'branch_name' => 'Test Branch',
+            'schema_version' => 1,
+            'min_app_version' => '1.0.0',
+            'hydrated_at' => now(),
+        ], $overrides));
+    }
+
+    private function fakePicker(?string $path): void
+    {
+        $this->app->instance(DirectoryPicker::class, new class($path) implements DirectoryPicker
+        {
+            public function __construct(private ?string $path) {}
+
+            public function pickDirectory(?string $default = null): ?string
+            {
+                return null;
+            }
+
+            public function pickFile(?string $default = null): ?string
+            {
+                return null;
+            }
+
+            public function pickCredentialsFile(?string $default = null): ?string
+            {
+                return $this->path;
+            }
+        });
+    }
+
+    private function write(string $name, string $contents): string
+    {
+        $path = $this->directory.'/'.$name;
+
+        File::put($path, $contents);
+
+        return $path;
+    }
+
+    /**
+     * A valid document pointed at a port nothing listens on, so it fails at
+     * connect rather than at authentication. Which failure it is does not
+     * matter here; that the failure path writes nothing does.
+     *
+     * @return array<string, mixed>
+     */
+    private function unreachable(): array
+    {
+        $document = $this->document();
+
+        $document['connection']['host'] = '127.0.0.1';
+        $document['connection']['port'] = 1;
+
+        return $document;
+    }
+
+    /**
+     * A structurally valid credentials document — the shape
+     * Provisioning\Support\BranchCredentials::document() emits.
+     *
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    private function document(array $overrides = []): array
+    {
+        return array_merge([
+            'format' => CredentialsDocument::FORMAT,
+            'format_version' => CredentialsDocument::FORMAT_VERSION,
+            'issued_at' => now()->toIso8601String(),
+            'business' => [
+                'id' => '11111111-1111-1111-1111-111111111111',
+                'name' => 'Cruz Sari-Sari Store',
+                'schema' => 'biz_test',
+            ],
+            'branch' => [
+                'id' => '22222222-2222-2222-2222-222222222222',
+                'code' => 'MNL',
+                'name' => 'Manila',
+                'address' => null,
+            ],
+            'connection' => [
+                'driver' => 'pgsql',
+                'host' => 'aws-0-ap-southeast-1.pooler.supabase.com',
+                'port' => 6543,
+                'database' => 'postgres',
+                'username' => 'evitan_branch_x.projectref',
+                'password' => 'a-branch-secret',
+                'search_path' => null,
+                'sslmode' => 'require',
+            ],
+            'role' => ['name' => 'evitan_branch_x'],
+            'versions' => ['schema_version' => 1, 'min_app_version' => '1.0.0'],
+        ], $overrides);
+    }
+
+    /**
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    private function payload(array $overrides = []): array
+    {
+        return array_merge([
+            'credentials_path' => $this->directory.'/credentials.json',
+            'delete_after_import' => '1',
+            'configure_printer' => '0',
+        ], $overrides);
     }
 }

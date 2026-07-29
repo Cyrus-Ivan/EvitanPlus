@@ -729,6 +729,13 @@ only); `DatabaseSeeder` seeds settings defaults only; the local demo seed
 still provides the dev login. `must_change_password` remains for
 administrative resets.
 
+> **Superseded by Evitan Plus M5 (`MULTIBRANCH-ROADMAP.md`).** The wizard no
+> longer creates anything: the Owner and the business identity come from
+> Postgres, and `/setup` imports a branch credential and hydrates the device.
+> The gate moved with it — from "no user exists" to `instance.hydrated_at` —
+> because users now arrive *during* setup. The paragraph above is kept as the
+> record of what `v1.0.0` shipped.
+
 ---
 
 # Development Order Summary

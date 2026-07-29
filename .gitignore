@@ -28,6 +28,9 @@ yarn-error.log
 /database/*.sqlite
 /database/*.sqlite-journal
 /tests/e2e/.runtime
+# The manual rig's runtime: throwaway SQLite databases AND the branch
+# credentials JSONs it provisions, which hold plaintext Postgres passwords.
+/tests/manual/.runtime
 /test-results
 /playwright-report
 /storage/backups

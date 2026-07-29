@@ -24,11 +24,13 @@ use Illuminate\Support\Facades\Route;
 // POS screen; the auth middleware bounces guests to the login screen.
 Route::redirect('/', '/pos')->name('home');
 
-// Initial setup wizard (fresh install only). Pre-auth by design: no user
-// exists yet. RequireInitialSetup funnels every request here while that is
-// true and redirects these routes to login for installed apps.
+// Setup wizard (fresh device only): import the branch credentials, connect,
+// and hydrate. Pre-auth by design — the Owner exists in Postgres, not yet on
+// this device. RequireInitialSetup funnels every request here until the device
+// is hydrated and redirects these routes to login once it is.
 Route::get('setup', [SetupController::class, 'create'])->name('setup');
 Route::post('setup', [SetupController::class, 'store'])->name('setup.store');
+Route::post('setup/browse', [SetupController::class, 'browse'])->name('setup.browse');
 // OS print-queue detection for the wizard's printer step.
 Route::get('setup/printers', [PrinterSettingsController::class, 'printers'])->name('setup.printers');
 

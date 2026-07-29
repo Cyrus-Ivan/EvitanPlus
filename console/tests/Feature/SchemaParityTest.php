@@ -90,12 +90,17 @@ class SchemaParityTest extends TestCase
      * narrower table and not a mirror; forcing one into MIRRORED would make this
      * test demand a similarity nobody wants. That settles §11.6's open item.
      *
-     * Everything currently on the list is Laravel's own infrastructure (§11.6:
-     * "never synced, and rebuilt by a re-install").
+     * M5 put the first non-Laravel entries on it: `instance` and
+     * `instance_secret`. Both are local-only in the strict sense — Postgres has
+     * no counterpart to add, because the roster of branches (`branches`) and the
+     * record of which credential is live (`credential_issuance`, in the console
+     * schema) answer those questions from the other side.
      *
      * @var array<string, string>
      */
     private const SQLITE_LOCAL_ONLY = [
+        'instance' => 'branch identity, from the credentials JSON — Postgres has a branches roster instead (M5)',
+        'instance_secret' => 'the branch credential sealed with the per-install APP_KEY; it exists nowhere else (M5)',
         'cache' => "Laravel's own, rebuilt by a re-install",
         'cache_locks' => "Laravel's own, rebuilt by a re-install",
         'jobs' => "Laravel's own, rebuilt by a re-install",

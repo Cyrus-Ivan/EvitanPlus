@@ -11,6 +11,15 @@
         <testsuite name="Feature">
             <directory>tests/Feature</directory>
         </testsuite>
+        <!--
+            Talks to the real Supabase project: provisions a throwaway business
+            with the console, hydrates a device from it, and destroys it again.
+            Every test in here carries the `supabase` group, so `composer verify`
+            excludes it and `composer verify:hydrate` runs exactly it.
+        -->
+        <testsuite name="Integration">
+            <directory>tests/Integration</directory>
+        </testsuite>
     </testsuites>
     <source>
         <include>

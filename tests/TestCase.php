@@ -2,10 +2,15 @@
 
 namespace Tests;
 
+use App\Exceptions\OfflineWriteException;
 use App\Models\Instance;
 use App\Support\Sync\ConnectivityProbe;
+use App\Support\Sync\OnlineWrite;
+use Closure;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
+use Illuminate\Support\Facades\DB;
 
 abstract class TestCase extends BaseTestCase
 {
@@ -65,6 +70,46 @@ abstract class TestCase extends BaseTestCase
                 }
 
                 public function reachable(array $connection): bool
+                {
+                    return $this->answer;
+                }
+            });
+
+            // Shared-data writes go to Postgres AND SQLite as one act (M6.5).
+            // There is no Postgres here, so the online half is stood down and
+            // the local half runs exactly as it always did — which is what the
+            // several hundred tests written before M6.5 are actually about.
+            //
+            // The real two-database behaviour cannot be faked honestly and is
+            // not faked: OnlineWriteTest sets $connected = null to exercise this
+            // class for real, and tests/Integration/OnlineWriteTest.php proves
+            // the round trip against a provisioned business.
+            $this->app->instance(OnlineWrite::class, new class($this->connected) extends OnlineWrite
+            {
+                public function __construct(private readonly bool $answer) {}
+
+                public function run(Closure $work, string $subject = 'This'): mixed
+                {
+                    if (! $this->answer) {
+                        throw OfflineWriteException::forSubject($subject);
+                    }
+
+                    return DB::transaction($work);
+                }
+
+                public function mirror(Model ...$models): void
+                {
+                    //
+                }
+
+                public function afterMirroring(Closure $work): void
+                {
+                    // Nothing has been mirrored, so nothing follows it. The
+                    // work this drops is `RemoteStock::recompute`, which has no
+                    // meaning without a Postgres to recompute in.
+                }
+
+                public function possible(): bool
                 {
                     return $this->answer;
                 }

@@ -2,6 +2,7 @@ import { useConfirm } from '@/components/confirm-dialog';
 import EmptyState from '@/components/empty-state';
 import InputError from '@/components/input-error';
 import ImportGuideDialog from '@/components/inventory/import-guide-dialog';
+import { OfflineNotice } from '@/components/offline-notice';
 import Pagination from '@/components/pagination';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -57,7 +58,7 @@ function formatWhen(value: string): string {
     return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-export default function InventoryImport({ history }: { history: Paginated<ImportHistoryRow> }) {
+export default function InventoryImport({ history, online }: { history: Paginated<ImportHistoryRow>; online: boolean }) {
     const confirm = useConfirm();
     const fileInput = useRef<HTMLInputElement>(null);
     const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -123,15 +124,30 @@ export default function InventoryImport({ history }: { history: Paginated<Import
                         Each row carries its own mode column: <span className="font-medium">replace_stock_count</span> sets the exact on-hand count,{' '}
                         <span className="font-medium">add_to_current_stock</span> adjusts it by the given amount.
                     </p>
+                    {/*
+                        An import creates catalog rows and stock-adjustment
+                        ledger rows, all of which belong to the whole business.
+                        Since M6.5 it writes them straight to the business
+                        database (CsvInventoryImporter runs as an online write),
+                        which is what "online-only" was always supposed to mean —
+                        M6 gated the screen on connectivity believing that alone
+                        was enough, and being online is not the same as arriving.
+                    */}
+                    {!online && (
+                        <div className="mt-3">
+                            <OfflineNotice what="Your catalog and stock" />
+                        </div>
+                    )}
                     <div className="mt-3 flex flex-wrap items-center gap-2">
                         <Input
                             ref={fileInput}
                             type="file"
                             accept=".csv,text/csv"
                             className="w-80"
+                            disabled={!online}
                             onChange={(e) => form.setData('file', e.target.files?.[0] ?? null)}
                         />
-                        <Button type="submit" disabled={!form.data.file || form.processing}>
+                        <Button type="submit" disabled={!online || !form.data.file || form.processing}>
                             <Upload className="size-4" /> Import
                         </Button>
                     </div>

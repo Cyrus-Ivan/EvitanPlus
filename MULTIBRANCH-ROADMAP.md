@@ -667,6 +667,91 @@ Sales made offline appear in Postgres after reconnect; re-running a push is a no
 
 ---
 
+# Phase M6.5 — Online writes: the upward path for shared data ✅
+
+## Goal
+Make a change to shared business data — the catalog, staff, settings — reach the business
+database instead of the device it was typed on.
+
+> **Done.** A product created at one branch now appears at another; that is proved end to end
+> in `tests/Integration/OnlineWriteTest.php` against two real provisioned branches, and it is
+> the first time this system does the thing the initiative is named for.
+>
+> **This phase should not have existed, and how it came to is the finding.**
+> M6 built the upward path for what a branch *authors* (sales, returns, logins). M7 builds the
+> downward path for what the business *shares*. Nobody built the upward path for shared data,
+> and the reason is a single sentence: `MULTIBRANCH-BRAINSTORM.md` §5.1 states that the till
+> "**never** edits them locally". That is a claim about the shipped app which has never been
+> true — Item, Category, User and Settings CRUD have written to local SQLite since v1.0.0. The
+> data model was built on it, so no sync phase had a reason to consider the case, and the work
+> needed is not a sync feature but a rewrite of five v1.0.0 CRUD paths — which falls between
+> `ROADMAP.md` (pre-Postgres) and every M-phase (sync, provisioning, console).
+>
+> §17 examined exactly this for CSV import and settled *"Keeping import online-only resolves it
+> without weakening anything"*, treating "requires internet" as equivalent to "reaches
+> Postgres". It is not, and being written down as settled is why it stopped being questioned.
+> M6 implemented that conclusion faithfully and gated the screen; the rows still went nowhere.
+>
+> Scoping calls and findings:
+>
+> - **The grant matrix had to widen, and §7's least-privilege claim weakens with it.** No branch
+>   role held INSERT or UPDATE on `categories`, `items`, `variants`, `users` or `settings`, so
+>   §5.1's "edited online … in-app admin" described an operation the credential could not
+>   perform. A leaked branch credential can now rewrite that one business's catalog, prices and
+>   staff, where before it could only append history. It still cannot delete anything, reach
+>   another business, or run DDL. **DELETE stays granted on nothing** — archiving is
+>   `UPDATE archived_at` and removing a user is `UPDATE deleted_at`, so the never-delete
+>   invariant costs nothing here.
+> - **`schema:reapply-grants` finally exists.** `BranchRole::reapplyGrants()` was written in M2
+>   and *nothing had ever called it*; the only way to give an existing branch a privilege was
+>   `branch:rotate`, which changes the password and so obliges a fresh AppImage and a new JSON
+>   to every till — an enormous price for a GRANT. Widening the matrix for
+>   already-provisioned businesses forced the issue. This retires the caveat the console menu
+>   carried on its upgrade action and pulls M9's deferred call forward.
+> - **`ON CONFLICT DO UPDATE` requires the UPDATE privilege**, which cost an hour and is the
+>   kind of thing that presents as the wrong problem. Upserting an `inventory_ledger` row fails
+>   with `permission denied for table inventory_ledger` — reading as a missing grant when it is
+>   the matrix being exactly right. Append-only tables get `do nothing`; only genuinely mutable
+>   ones get `do update`.
+> - **The safety story needed no M7.** An earlier reading had this waiting for the pull, on the
+>   grounds that a local write failing after Postgres succeeded needs the downward flow to
+>   repair it. `ConnectAndHydrate` already ships the answer: put the Postgres work *inside* the
+>   local SQLite transaction and write locally first, so any failure at either end leaves the
+>   device untouched. The residual window is a local COMMIT failing after Postgres accepted —
+>   the same one hydration has always accepted, self-healing because the local mirror is
+>   disposable.
+> - **CSV import is now the first path that puts opening stock into a business schema as a
+>   ledger row**, which M6's note said everything else would be bound by. Its
+>   `type = 'stock_adjustment'` rows go straight up, synchronously — §17's two-writer objection
+>   was about *queueing* them, which this does not do — and `RemoteStock::recompute()` then
+>   rebuilds the upstream stock cache Postgres keeps no trigger for.
+> - **The `conflict` error kind, separately unclaimed.** §11.6 names four `last_error_kind`
+>   values and M6 shipped three, so a push refused by the DATA (a duplicate serial, a missing
+>   grant) was reported as `offline` — telling staff to wait for a connection they already had
+>   while the backlog grew. Classified by SQLSTATE class: 23 (integrity) and 42 (access rule,
+>   i.e. a missing grant) are conflicts and pair with `connection_state = online`; 08 stays a
+>   network fault. `PushTest`'s weakened `assertNotSame(ONLINE)` is now an equality.
+> - **The suite needed a third default.** `Tests\TestCase` gained an `OnlineWrite` stand-in
+>   beside M5's `$hydrated` and M6's `$connected`, for the same reason: several hundred tests
+>   written before this phase are about the local half, and there is no Postgres for them to
+>   reach. The real two-database behaviour is not faked — `OnlineWriteTest` uses the real class.
+
+## Tasks
+- Widen `BranchGrants` (INSERT/UPDATE on the five shared tables, INSERT on `import_history`);
+  keep DELETE empty and keep `branches`/`schema_meta` refused.
+- `schema:reapply-grants`, wired into `console:run`, audited per role.
+- `App\Support\Sync\OnlineWrite` over M5/M6's `BranchCycle`, `VersionGate`, `ConnectivityProbe`;
+  `RowMapper` and `RemoteStock` extracted so the push and the online write share one
+  local-row-to-Postgres-row implementation.
+- Rework the five write paths and refuse them offline, once, in `bootstrap/app.php`.
+- The `conflict` error kind end to end.
+
+## Milestone
+A product created at one branch is visible at another; a shared write attempted offline changes
+nothing on either side.
+
+---
+
 # Phase M7 — Sync engine: connectivity detection & pull + stock reconciliation
 
 ## Goal

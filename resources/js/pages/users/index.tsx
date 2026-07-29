@@ -1,5 +1,6 @@
 import { useConfirm } from '@/components/confirm-dialog';
 import EmptyState from '@/components/empty-state';
+import { OfflineNotice } from '@/components/offline-notice';
 import Pagination from '@/components/pagination';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -30,10 +31,12 @@ export default function UsersIndex({
     users,
     assignableRoles,
     filters,
+    online,
 }: {
     users: Paginated<ManagedUser>;
     assignableRoles: UserRole[];
     filters: Filters;
+    online: boolean;
 }) {
     const { role } = usePermissions();
     const confirm = useConfirm();
@@ -101,6 +104,7 @@ export default function UsersIndex({
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="User Management" />
             <div className="flex min-h-full flex-1 flex-col gap-4 p-4">
+                {!online && <OfflineNotice what="Staff accounts" />}
                 <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-2">
                         <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name or username" className="w-64" />

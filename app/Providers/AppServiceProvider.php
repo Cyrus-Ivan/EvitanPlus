@@ -10,6 +10,7 @@ use App\Support\Backup\NativeDialogPicker;
 use App\Support\Boot\EncryptionKeyBootstrapper;
 use App\Support\Search\LikeQuery;
 use App\Support\Settings\ApplyBusinessTimezone;
+use App\Support\Sync\OnlineWrite;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
@@ -23,6 +24,13 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->app->bind(DirectoryPicker::class, NativeDialogPicker::class);
+
+        // Singleton because OnlineWrite::mirror() records against the run
+        // currently in progress. A controller and the importer it calls must
+        // reach the same instance, or rows declared by one would be invisible
+        // to the other and would silently never reach the business database —
+        // which is the exact failure M6.5 exists to end.
+        $this->app->singleton(OnlineWrite::class);
 
         // Packaged builds ship without an APP_KEY; generate a per-install one
         // on first use. Runs after the NativePHP provider's register phase, so

@@ -1,6 +1,7 @@
 import { useConfirm } from '@/components/confirm-dialog';
 import EmptyState from '@/components/empty-state';
 import CategoryDialog from '@/components/inventory/category-dialog';
+import { OfflineNotice } from '@/components/offline-notice';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -17,7 +18,7 @@ const breadcrumbs: BreadcrumbItem[] = [
     { title: 'Categories', href: '/inventory/categories' },
 ];
 
-export default function Categories({ categories, filters }: { categories: Category[]; filters: { status: string } }) {
+export default function Categories({ categories, filters, online }: { categories: Category[]; filters: { status: string }; online: boolean }) {
     const { hasRoleAtLeast } = usePermissions();
     const confirm = useConfirm();
     const canManage = hasRoleAtLeast('admin');
@@ -66,6 +67,7 @@ export default function Categories({ categories, filters }: { categories: Catego
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="Categories" />
             <div className="flex min-h-full flex-1 flex-col gap-4 p-4">
+                {!online && <OfflineNotice what="The product catalog" />}
                 <div className="flex flex-wrap items-center justify-between gap-2">
                     <Select value={filters.status} onValueChange={changeStatus}>
                         <SelectTrigger className="w-36">

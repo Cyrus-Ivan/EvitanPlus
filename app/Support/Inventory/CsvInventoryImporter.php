@@ -6,10 +6,14 @@ use App\Exceptions\ImportRowException;
 use App\Exceptions\NegativeInventoryException;
 use App\Models\Category;
 use App\Models\ImportHistory;
+use App\Models\Instance;
+use App\Models\InventoryLedger;
 use App\Models\Item;
 use App\Models\User;
 use App\Models\Variant;
 use App\Rules\SpreadsheetSafeName;
+use App\Support\Sync\OnlineWrite;
+use App\Support\Sync\RemoteStock;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -39,7 +43,11 @@ use Throwable;
  */
 class CsvInventoryImporter
 {
-    public function __construct(private readonly StockLedger $ledger) {}
+    public function __construct(
+        private readonly StockLedger $ledger,
+        private readonly OnlineWrite $online,
+        private readonly RemoteStock $stock,
+    ) {}
 
     /**
      * Import the CSV at $path. $canViewCost gates whether the cost column is
@@ -147,16 +155,76 @@ class CsvInventoryImporter
             // recording it fails, the catalog changes roll back with it, so the
             // fallback "failed — no changes were saved" entry import() then
             // writes is actually true.
-            return DB::transaction(function () use ($rows, $user, $canViewCost, $importId, $filename, $mode, $total, $variantsBySku) {
+            // An ONLINE WRITE, not a plain local transaction (M6.5). An import
+            // creates categories, items and variants — shared catalog every
+            // branch reads — and `stock_adjustment` ledger rows, which are
+            // online-authoritative. Written locally only, none of it would ever
+            // reach the business database: §17 gated this screen on connectivity
+            // in M6 believing that was enough, and being online is not the same
+            // as arriving. See MULTIBRANCH-ROADMAP.md M6.5.
+            return $this->online->run(function () use ($rows, $user, $canViewCost, $importId, $filename, $mode, $total, $variantsBySku) {
                 $this->apply($rows, $user, $canViewCost, $importId, $variantsBySku);
 
-                return $this->record($importId, $user, $filename, $mode, 'success', $total, $total, 0, []);
-            });
+                $import = $this->record($importId, $user, $filename, $mode, 'success', $total, $total, 0, []);
+
+                $this->mirrorImport($import, $importId, $rows);
+
+                return $import;
+            }, 'A CSV import');
         } catch (ImportRowException $e) {
             return $this->record($importId, $user, $filename, $mode, 'failed', $total, 0, 1, [
                 ['row' => $e->csvLine, 'messages' => [$e->getMessage()]],
             ]);
         }
+    }
+
+    /**
+     * Send everything this import produced to the business database.
+     *
+     * Read back rather than threaded through: the import writes catalog rows
+     * from six private methods and its ledger rows from a seventh, and passing a
+     * collector through all of them would be one more thing to forget in each.
+     * Every row is reachable from the import's own id or from the SKUs in the
+     * file, so the set is derived rather than accumulated.
+     *
+     * The ledger rows are the reason `stock_adjustment` finally has a writer at
+     * all: §5.1 calls them online-authoritative and M6's outbox deliberately
+     * does not carry them, which left nothing at all putting them upstream. This
+     * is that path, and it is single-writer — one synchronous online operation,
+     * not a queued push, so the objection §17 raised does not apply.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     */
+    private function mirrorImport(ImportHistory $import, string $importId, array $rows): void
+    {
+        $ledger = InventoryLedger::query()->where('reference_id', $importId)->get();
+        $variantIds = $ledger->pluck('variant_id')->unique();
+
+        // Catalog rows the import may have created or changed, resolved upward:
+        // variants it touched, their items, and those items' categories. A
+        // variant whose stock did not move has no ledger row, so the file's SKUs
+        // are the wider net.
+        $variants = Variant::query()
+            ->where(fn ($query) => $query->whereIn('id', $variantIds)->orWhereIn('sku', array_column($rows, 'sku')))
+            ->get();
+
+        $items = Item::query()->whereIn('id', $variants->pluck('item_id')->unique())->get();
+        $categories = Category::query()->whereIn('id', $items->pluck('category_id')->filter()->unique())->get();
+
+        $this->online->mirror(...$categories->all());
+        $this->online->mirror(...$items->all());
+        $this->online->mirror(...$variants->all());
+        $this->online->mirror(...$ledger->all());
+        $this->online->mirror($import);
+
+        // Postgres keeps no trigger on stock_snapshots, so the rows just sent
+        // change the ledger sum without changing the cached total. Recomputed
+        // upstream once they have landed — which is what afterMirroring() is for.
+        $branchId = (string) Instance::current()?->branch_id;
+
+        $this->online->afterMirroring(
+            fn ($remote) => $this->stock->recompute($remote, $branchId, $variantIds->values()->all()),
+        );
     }
 
     /**

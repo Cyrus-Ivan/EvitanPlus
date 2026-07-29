@@ -1,5 +1,6 @@
 import HeadingSmall from '@/components/heading-small';
 import InputError from '@/components/input-error';
+import { OfflineNotice } from '@/components/offline-notice';
 import PrinterSettingsFields, { type PrinterSettingsData } from '@/components/printer-settings-fields';
 import TimezoneSelect from '@/components/timezone-select';
 import { Button } from '@/components/ui/button';
@@ -26,7 +27,15 @@ interface BusinessSettingsData {
     [key: string]: string;
 }
 
-export default function BusinessSettings({ settings, printerSettings }: { settings: BusinessSettingsData; printerSettings: PrinterSettingsData }) {
+export default function BusinessSettings({
+    settings,
+    printerSettings,
+    online,
+}: {
+    settings: BusinessSettingsData;
+    printerSettings: PrinterSettingsData;
+    online: boolean;
+}) {
     const { data, setData, errors, patch, processing, recentlySuccessful } = useForm<BusinessSettingsData>({
         business_name: settings.business_name,
         business_address: settings.business_address,
@@ -62,6 +71,7 @@ export default function BusinessSettings({ settings, printerSettings }: { settin
             <Head title="Business Settings" />
 
             <div className="flex min-h-full flex-1 flex-col gap-8 p-4">
+                {!online && <OfflineNotice what="Your business details" />}
                 <section className="space-y-4">
                     <HeadingSmall title="Business Settings" description="Business identity used on receipts and reports." />
 

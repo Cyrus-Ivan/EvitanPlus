@@ -1,6 +1,7 @@
 import { useConfirm } from '@/components/confirm-dialog';
 import EmptyState from '@/components/empty-state';
 import StockAdjustDialog from '@/components/inventory/stock-adjust-dialog';
+import { OfflineNotice } from '@/components/offline-notice';
 import Pagination from '@/components/pagination';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -38,10 +39,12 @@ export default function InventoryIndex({
     items,
     categories,
     filters,
+    online,
 }: {
     items: Paginated<Item>;
     categories: Pick<Category, 'id' | 'name'>[];
     filters: Filters;
+    online: boolean;
 }) {
     const { hasRoleAtLeast, can } = usePermissions();
     const confirm = useConfirm();
@@ -107,6 +110,7 @@ export default function InventoryIndex({
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="Inventory" />
             <div className="flex min-h-full flex-1 flex-col gap-4 p-4">
+                {!online && <OfflineNotice what="The product catalog" />}
                 <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-2">
                         <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name, SKU, barcode" className="w-64" />

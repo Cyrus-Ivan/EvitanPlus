@@ -311,16 +311,21 @@ class ConsoleRunCommand extends Command
 
             $options['add'] = 'Add a branch';
             $options['upgrade'] = 'Upgrade this schema to the latest migrations (does not re-grant branch roles)';
+            $options['regrant'] = 'Re-apply branch grants to every role in this schema';
             $options['back'] = 'Back';
 
             // Stated where the action is taken, not only in the runbook. Grants
             // are enumerated per table (BranchGrants), so a migration adding one
             // leaves every existing branch role without privileges on it until
-            // BranchRole::reapplyGrants runs — and schema:migrate does not run
-            // it. Today the only in-console recovery is a rotate PER BRANCH,
-            // which obliges a fresh AppImage and JSON to every till. Fixing
-            // that is M9; being quiet about it was this menu's own regression.
-            $upgradeCaveat = 'Upgrading does not re-apply branch grants — see README §3 before you do it.';
+            // BranchRole::reapplyGrants runs — and schema:migrate still does not
+            // run it (M9).
+            //
+            // What changed in M6.5: there is now a one-command fix. The recovery
+            // used to be a rotate PER BRANCH, which obliges a fresh AppImage and
+            // a new JSON to every till — an enormous price for a GRANT, and the
+            // reason this caveat used to end in a shrug.
+            $upgradeCaveat = 'Upgrading does not re-apply branch grants. '
+                ."Run 'Re-apply branch grants' afterwards — it changes no password and needs no new JSON.";
 
             $choice = (string) select(
                 label: 'Branches',
@@ -333,6 +338,10 @@ class ConsoleRunCommand extends Command
                 $choice === 'back' => null,
                 $choice === 'add' => $this->dispatch('branch:provision', ['--schema' => $schema]),
                 $choice === 'upgrade' => $this->upgrade($schema, $upgradeCaveat),
+                // No confirmation: it changes no password, issues no file and
+                // removes nothing an operator could want back. Re-running it is
+                // running it once.
+                $choice === 'regrant' => $this->dispatch('schema:reapply-grants', ['--schema' => $schema]),
                 default => $this->branchScreen($schema, substr($choice, strlen('branch:'))),
             };
 

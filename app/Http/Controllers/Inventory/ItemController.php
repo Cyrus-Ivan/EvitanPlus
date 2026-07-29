@@ -9,16 +9,27 @@ use App\Models\Category;
 use App\Models\Item;
 use App\Models\Variant;
 use App\Support\Audit\AuditRecorder;
+use App\Support\Sync\OnlineWrite;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 
+/**
+ * Items and their variants are SHARED business data (§5.1). A product, its
+ * price and whether it is archived are the same at every branch, so each write
+ * here is an ONLINE WRITE that reaches the business database or does not happen
+ * at all ({@see OnlineWrite}; M6.5).
+ *
+ * Reading is untouched and stays fully offline — the catalog a till sells from
+ * is its local mirror.
+ */
 class ItemController extends Controller
 {
+    public function __construct(private readonly OnlineWrite $online) {}
+
     /**
      * Paginated item catalog with search, category filter and archived filter.
      */
@@ -53,6 +64,7 @@ class ItemController extends Controller
 
         return Inertia::render('inventory/index', [
             'items' => $items,
+            'online' => $this->online->possible(),
             'categories' => Category::active()->orderBy('name')->get(['id', 'name']),
             'filters' => [
                 'search' => $search,
@@ -71,6 +83,7 @@ class ItemController extends Controller
 
         return Inertia::render('inventory/create', [
             'categories' => Category::active()->orderBy('name')->get(['id', 'name']),
+            'online' => $this->online->possible(),
         ]);
     }
 
@@ -78,7 +91,7 @@ class ItemController extends Controller
     {
         $data = $request->validated();
 
-        $item = DB::transaction(function () use ($data) {
+        $item = $this->online->run(function () use ($data, $audit) {
             $item = Item::create([
                 'name' => $data['name'],
                 'unit' => $data['unit'],
@@ -86,19 +99,21 @@ class ItemController extends Controller
                 'description' => $data['description'] ?? null,
             ]);
 
+            $this->online->mirror($item);
+
             foreach ($data['variants'] as $variant) {
-                $item->variants()->create($this->variantAttributes($variant));
+                $this->online->mirror($item->variants()->create($this->variantAttributes($variant)));
             }
 
-            return $item;
-        });
+            $audit->record(
+                action: 'inventory.item.created',
+                auditable: $item,
+                description: "Created item \"{$item->name}\".",
+                new: $this->itemSnapshot($item->load('variants')),
+            );
 
-        $audit->record(
-            action: 'inventory.item.created',
-            auditable: $item,
-            description: "Created item \"{$item->name}\".",
-            new: $this->itemSnapshot($item->load('variants')),
-        );
+            return $item;
+        }, 'A product');
 
         return to_route('inventory')->with('toast', [
             'type' => 'success',
@@ -118,6 +133,7 @@ class ItemController extends Controller
         return Inertia::render('inventory/edit', [
             'item' => $item,
             'categories' => Category::active()->orderBy('name')->get(['id', 'name']),
+            'online' => $this->online->possible(),
         ]);
     }
 
@@ -127,7 +143,7 @@ class ItemController extends Controller
 
         $before = $this->itemSnapshot($item->load('variants'));
 
-        DB::transaction(function () use ($data, $item) {
+        $this->online->run(function () use ($data, $item, $audit, $before) {
             // `name` is deliberately absent: item names are immutable after
             // creation (UpdateItemRequest rejects a differing name; even a
             // case-only resubmission must not drift the stored value).
@@ -145,18 +161,31 @@ class ItemController extends Controller
 
                 if ($id !== null && $existing->has($id)) {
                     $existing->get($id)->update($this->variantAttributes($variant));
+                    $this->online->mirror($existing->get($id));
                     $keptIds[] = $id;
                 } else {
-                    $keptIds[] = $item->variants()->create($this->variantAttributes($variant))->id;
+                    $created = $item->variants()->create($this->variantAttributes($variant));
+                    $this->online->mirror($created);
+                    $keptIds[] = $created->id;
                 }
             }
 
             // Variants removed from the form are archived, never deleted. Newly
             // created variants are in $keptIds, so they are not swept here.
+            // Read back before the mass update so the archived rows can be
+            // mirrored: a bulk builder update returns a count, not the rows, and
+            // a variant archived only locally would go on selling at every other
+            // branch.
+            $archiving = $item->variants()->active()->whereNotIn('id', $keptIds)->get();
+
             $item->variants()
                 ->active()
                 ->whereNotIn('id', $keptIds)
                 ->update(['archived_at' => now()]);
+
+            $this->online->mirror(...$archiving->fresh()->all());
+
+            $this->online->mirror($item);
 
             // Every item must keep at least one active variant.
             if ($item->variants()->active()->count() === 0) {
@@ -164,15 +193,15 @@ class ItemController extends Controller
                     'variants' => 'An item must have at least one active variant.',
                 ]);
             }
-        });
 
-        $audit->record(
-            action: 'inventory.item.updated',
-            auditable: $item,
-            description: "Updated item \"{$item->name}\".",
-            old: $before,
-            new: $this->itemSnapshot($item->load(['variants' => fn ($query) => $query->active()])),
-        );
+            $audit->record(
+                action: 'inventory.item.updated',
+                auditable: $item,
+                description: "Updated item \"{$item->name}\".",
+                old: $before,
+                new: $this->itemSnapshot($item->load(['variants' => fn ($query) => $query->active()])),
+            );
+        }, 'A product');
 
         return to_route('inventory')->with('toast', [
             'type' => 'success',
@@ -184,13 +213,17 @@ class ItemController extends Controller
     {
         Gate::authorize('manage-inventory');
 
-        $item->update(['archived_at' => now()]);
+        $this->online->run(function () use ($item, $audit): void {
+            $item->update(['archived_at' => now()]);
 
-        $audit->record(
-            action: 'inventory.item.archived',
-            auditable: $item,
-            description: "Archived item \"{$item->name}\".",
-        );
+            $this->online->mirror($item);
+
+            $audit->record(
+                action: 'inventory.item.archived',
+                auditable: $item,
+                description: "Archived item \"{$item->name}\".",
+            );
+        }, 'A product');
 
         return back()->with('toast', [
             'type' => 'success',
@@ -202,13 +235,17 @@ class ItemController extends Controller
     {
         Gate::authorize('manage-inventory');
 
-        $item->update(['archived_at' => null]);
+        $this->online->run(function () use ($item, $audit): void {
+            $item->update(['archived_at' => null]);
 
-        $audit->record(
-            action: 'inventory.item.restored',
-            auditable: $item,
-            description: "Restored item \"{$item->name}\".",
-        );
+            $this->online->mirror($item);
+
+            $audit->record(
+                action: 'inventory.item.restored',
+                auditable: $item,
+                description: "Restored item \"{$item->name}\".",
+            );
+        }, 'A product');
 
         return back()->with('toast', [
             'type' => 'success',

@@ -1,5 +1,6 @@
 <?php
 
+use App\Exceptions\OfflineWriteException;
 use App\Http\Middleware\EnforceBootSession;
 use App\Http\Middleware\EnsureUserHasRole;
 use App\Http\Middleware\HandleInertiaRequests;
@@ -52,6 +53,20 @@ return Application::configure(basePath: dirname(__DIR__))
         );
     })
     ->withExceptions(function (Exceptions $exceptions) {
+        // A change to shared business data attempted while offline (M6.5). Not
+        // an error and never a 500: products, prices, staff and settings belong
+        // to the whole business, so changing one needs the business database.
+        // Handled here rather than caught in each of the five screens, so every
+        // one of them refuses in the same words — and so a screen added later
+        // inherits the behaviour instead of having to remember it.
+        $exceptions->render(function (OfflineWriteException $e, Request $request) {
+            if ($request->expectsJson()) {
+                return response()->json(['message' => $e->getMessage()], 409);
+            }
+
+            return back()->with('toast', ['type' => 'error', 'message' => $e->getMessage()]);
+        });
+
         $exceptions->respond(function (Response $response, Throwable $e, Request $request) {
             $status = $response->getStatusCode();
 

@@ -171,9 +171,13 @@ own history, *and* `schema_meta` on every sync.
 *Anchor:* `BranchGrants::SELECT`.
 
 ### Pulled (of a table)
-An **online-authoritative** table whose rows flow **down** to the till and are never written
-locally: `categories`, `items`, `variants`, `users`, `settings`, `branches`, `schema_meta`.
-*Anchor:* the complement of `BranchGrants::INSERT` within `BranchGrants::SELECT`.
+An **online-authoritative** table whose rows flow **down** to the till: `categories`, `items`,
+`variants`, `users`, `settings`, `branches`, `schema_meta`.
+*Anchor:* `MULTIBRANCH-BRAINSTORM.md` §5.1.
+✗ **Not** "never written by a branch", which is what this entry and §5.1 both used to say. A
+branch may change the catalog, users and settings — from the in-app admin, while online, as an
+**online write**. What it may never do is change them *offline*, or write them locally and
+leave them there. `branches` and `schema_meta` remain genuinely read-only to a branch role.
 
 ### Local-write (of a table)
 A table written **only** on the till, append-only, pushed **insert-only** keyed by UUID:
@@ -299,6 +303,18 @@ exact ceiling that connecting per cycle exists to avoid.
 ### Push
 Sending local-write rows up, **insert-only and UUID-keyed**, so a re-push is a harmless no-op.
 
+### Online write
+A change to an **online-authoritative** table — the catalog, users, settings, an import —
+made from any branch device **while online**, and written to Postgres and the local mirror as
+one atomic act. Refused when the device has no connection.
+*Anchor:* `App\Support\Sync\OnlineWrite`; `App\Exceptions\OfflineWriteException` (M6.5).
+✗ **Not** a push. A push carries what a branch *authors*, on its own schedule, and works
+offline by design. An online write carries what every branch *shares*, so it has to be agreed
+centrally at the moment it is made — queueing one would give those tables a second writer.
+✗ **Not** "online-only". That phrase (§17) means only *requires a connection*, and treating it
+as equivalent to *reaches Postgres* is the error that left every catalog and staff edit stranded
+on one device until M6.5.
+
 ### Pull
 Fetching **deltas** of pulled tables by `updated_at`, plus the recomputed stock baseline.
 
@@ -326,6 +342,16 @@ and a model whose `id` is not its key misreads every relation).
 holds *this branch's* work going **up**; the queue holds *adjustments issued elsewhere* coming
 **down**. Reserve the bare word "queue" for the latter; use "outbox" or "backlog" for the
 former.
+
+### Conflict (as an error kind)
+`sync_status.last_error_kind = 'conflict'`, paired with `connection_state = 'online'`: the
+branch reached the business database and the business database **refused the data** — a
+duplicate serial, a missing grant. The backlog will not clear on its own.
+*Anchor:* `SyncStatus::KIND_CONFLICT`; classified by SQLSTATE class in
+`SyncCycle::isConflict()` — 23 (integrity constraint) and 42 (access rule, i.e. a missing
+GRANT) are conflicts; 08 (connection exception) stays `network` (M6.5).
+✗ **Not** `offline`, which is what M6 reported for it. The two need opposite responses: one is
+fixed by waiting and this one never is.
 
 ### Unsynced count
 `count(*) where synced_at is null` in the outbox. One definition, one place, no counter to

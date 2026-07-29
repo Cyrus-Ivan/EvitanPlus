@@ -224,6 +224,28 @@ Tables fall into three classes. The class determines sync direction and grants.
 Edited **only** online (Provisioning Console or in-app admin while online); the till mirrors
 them for offline reads and **never** edits them locally.
 
+> **As built (M6.5): that last clause was a claim about the app, not a description of it, and
+> it cost this initiative a whole phase.** The till *did* edit these tables locally — Item,
+> Category, User and Settings CRUD have written to local SQLite since v1.0.0, and still do.
+> What M6.5 changed is where the write *also* goes.
+>
+> The sentence should read: these tables are edited from the in-app admin **while online**, and
+> every such edit is written to Postgres and the local mirror **as one atomic act** — an
+> **online write** (`docs/glossary.md` §5, `App\Support\Sync\OnlineWrite`). Offline the screens
+> refuse; reading is untouched and stays fully offline.
+>
+> Two consequences that were not obvious while the false claim stood:
+>
+> - **The branch role needs INSERT and UPDATE on these tables**, which it did not have. §5.1
+>   asserted an operation the credential could not perform, so the feature was unreachable and
+>   the rows went nowhere — silently. See §7's As-built note for what that costs.
+> - **"Online-authoritative" is not one bucket.** `branches` and `schema_meta` stay refused to
+>   a branch role: a branch may not invent branches, rename itself, or move the floor the
+>   version gate compares against. Only the catalog, users and settings opened up.
+>
+> How a sentence like this survives three phases is worth recording: it reads as a design
+> constraint, so every later phase treated the case as impossible rather than unbuilt.
+
 - `categories`, `items`, `variants`, `prices` — the shared **catalog** (mirrored in full).
 - `users` — mirrored **business-wide** (all users' credential hashes on every device) so
   **any user can log in offline at any branch** (see §6). Still one Owner; Item Cost stays
@@ -365,6 +387,33 @@ Written **only** on the till, append-only/immutable, pushed as brand-new UUID-ke
 >   `pg_catalog`/`information_schema`. That leaks other schema *names*, never their rows —
 >   `information_schema` is privilege-filtered. The negative tests assert this real boundary
 >   rather than a flattering one.
+
+> **As built (M6.5) — the boundary moved, and the sentence describing it has to move too.**
+> `INSERT` and `UPDATE` were extended to `categories`, `items`, `variants`, `users` and
+> `settings` (plus `INSERT` on `import_history`), because §5.1 and §6 both specify that these
+> are edited from the in-app admin while online — and the in-app admin authenticates as this
+> role. Until M6.5 those sentences described an operation the credential could not perform, so
+> every catalog, staff and settings edit went to local SQLite and reached Postgres never.
+>
+> **This section could previously say a leaked branch credential "can read/append within one
+> schema but cannot delete history, touch other businesses, or run DDL". The middle clause is
+> weaker now:** such a credential can also rewrite that one business's catalog, prices, staff
+> accounts and settings. It still cannot delete anything, reach another business, or run DDL,
+> and it is still revocable in one console command.
+>
+> Three things deliberately did **not** move:
+>
+> - **`DELETE` is granted on nothing, anywhere.** Archiving is `UPDATE archived_at`; removing a
+>   user is `UPDATE deleted_at`. The never-delete-a-business-record invariant never depended on
+>   withholding UPDATE, and `BranchRoleGrantsTest` still proves every DELETE is refused.
+> - **`branches` and `schema_meta` stay refused.** A branch may not invent branches, rename
+>   itself, or move the floor the version gate compares against. "Online-authoritative" was
+>   never one bucket.
+> - **Grants are still enumerated per table**, with the same accepted cost — which is finally
+>   payable: **`schema:reapply-grants`** applies the matrix to every branch role in a schema.
+>   `BranchRole::reapplyGrants()` had existed since M2 with nothing calling it, so before this
+>   the only way to deliver a GRANT to an existing branch was `branch:rotate` — a new password,
+>   and therefore a fresh AppImage and JSON to every till.
 >
 > **As built (M3.1) — a branch does not connect where the console connects.** The console
 > administers over Supabase's **session** pooler (`5432`), which pins one Postgres backend per
@@ -1167,8 +1216,8 @@ provisioning. It requires internet on first run and:
 | Branch-local reports | ✅ | Recomputed from local sales−returns−defects |
 | Read catalog / prices | ✅ | From last-pulled mirror (may be slightly stale) |
 | Stock adjustment (in / out) | ❌ | Online-only; subtractive ones mediated via the queue (§10) |
-| User CRUD, item/catalog CRUD | ❌ | Online-only (authoritative in Postgres) |
-| **CSV import** | ❌ | **Online-only** — see below |
+| User CRUD, item/catalog CRUD | ❌ | Online-only — an **online write** (§5.1 As built, M6.5) |
+| **CSV import** | ❌ | **Online-only** — an online write too; see below |
 | Consolidated cross-branch reports | ❌ | Online-only (queries Postgres across branches) |
 | Sync / monitoring | ❌ | Requires connectivity; till keeps selling regardless |
 
@@ -1184,6 +1233,25 @@ provisioning. It requires internet on first run and:
 > online-authoritative — so the branch role holding `SELECT` but no `INSERT` on it (§5's
 > annotation flagged this as an unexamined grant-matrix side effect) turns out to be correct,
 > and stays as it is.
+>
+> > **As built (M6.5): the paragraph above is wrong, and it is the single sentence that cost
+> > this initiative a phase.** "Keeping import online-only resolves it" treats *requires
+> > internet* as equivalent to *reaches Postgres*. It is not. An online import still wrote its
+> > catalog rows, its `stock_adjustment` ledger rows and its `import_history` row to local
+> > SQLite and stopped there — the same permanent, silent divergence, now merely requiring a
+> > connection to cause. Recorded as **settled**, it stopped being questioned; M6 implemented
+> > the conclusion faithfully, gated the screen, and the rows still went nowhere.
+> >
+> > What actually resolves it is writing them upstream. `CsvInventoryImporter` now runs as an
+> > **online write**: one synchronous operation into Postgres and SQLite together. The
+> > two-writer objection below still stands and is untouched by this — it was about *queueing*
+> > those ledger rows for later push, which would give `stock_adjustment` a second asynchronous
+> > writer. A single online write does not.
+> >
+> > So `import_history` **does** need INSERT, and the branch role now has it. The import is
+> > also the first path in the system that puts opening stock into a business schema as a
+> > ledger entry rather than a bare snapshot — which M6's note established that everything
+> > touching upstream stock is bound by.
 >
 > The alternative — pushing imports and reclassifying their ledger rows as local-write — was
 > rejected because it would give `stock_adjustment` rows **two writers**, and single-writer-per

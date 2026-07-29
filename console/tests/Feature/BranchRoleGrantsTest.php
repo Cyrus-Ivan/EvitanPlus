@@ -217,6 +217,75 @@ class BranchRoleGrantsTest extends TestCase
             ->update(['notes' => 'tampered']));
     }
 
+    /**
+     * The M6.5 grants: shared data, written from a branch device while online.
+     *
+     * §5.1 always said these tables are "edited only online (Provisioning
+     * Console or in-app admin while online)" and §6 said users are "managed
+     * online (in-app admin, when connected)". The in-app admin runs on a branch
+     * device and authenticates as this role, so until M6.5 those sentences
+     * described operations the credential could not perform — and the app
+     * quietly wrote them to local SQLite instead, where no other branch would
+     * ever see them.
+     *
+     * Asserted as real statements rather than as matrix membership because a
+     * grant is the kind of thing that looks right and is not; the matrix
+     * equality test above would pass on a matrix that was wrong.
+     */
+    public function test_it_can_write_shared_data_online(): void
+    {
+        $branch = $this->branch();
+        $categoryId = (string) Str::orderedUuid();
+        $itemId = (string) Str::orderedUuid();
+
+        $this->assertAllowed(fn () => $branch->table('categories')->insert([
+            'id' => $categoryId, 'name' => 'Grants Probe', 'created_at' => now(), 'updated_at' => now(),
+        ]));
+
+        $this->assertAllowed(fn () => $branch->table('items')->insert([
+            'id' => $itemId, 'name' => 'Grants Probe Item', 'unit' => 'pc',
+            'category_id' => $categoryId, 'created_at' => now(), 'updated_at' => now(),
+        ]));
+
+        $this->assertAllowed(fn () => $branch->table('variants')->insert([
+            'id' => (string) Str::orderedUuid(), 'item_id' => $itemId, 'sku' => 'GRANTPROBE1',
+            'selling_price' => 10, 'cost' => 5, 'created_at' => now(), 'updated_at' => now(),
+        ]));
+
+        // A price change from a till — the edit that reaches every branch.
+        $this->assertAllowed(fn () => $branch->table('variants')
+            ->where('item_id', $itemId)->update(['selling_price' => 12]));
+
+        // Archiving is an UPDATE, which is why withholding DELETE costs nothing.
+        $this->assertAllowed(fn () => $branch->table('items')
+            ->where('id', $itemId)->update(['archived_at' => now()]));
+
+        $this->assertAllowed(fn () => $branch->table('users')->insert([
+            'id' => (string) Str::orderedUuid(), 'name' => 'Grants Probe', 'username' => 'grants-probe',
+            'password' => '$2y$04$abcdefghijklmnopqrstuv', 'role' => 'cashier',
+            'created_at' => now(), 'updated_at' => now(),
+        ]));
+
+        // Role changes and soft deletes, both UPDATEs.
+        $this->assertAllowed(fn () => $branch->table('users')
+            ->where('username', 'grants-probe')->update(['role' => 'admin']));
+
+        $this->assertAllowed(fn () => $branch->table('users')
+            ->where('username', 'grants-probe')->update(['deleted_at' => now()]));
+
+        $this->assertAllowed(fn () => $branch->table('settings')
+            ->where('key', 'business_name')->update(['value' => 'Renamed From A Till']));
+
+        $this->assertAllowed(fn () => $branch->table('import_history')->insert([
+            'id' => (string) Str::orderedUuid(),
+            'branch_id' => (string) $this->provisioned()['branch']['id'],
+            'user_id' => $branch->selectOne('select id from users where deleted_at is null limit 1')->id,
+            'filename' => 'probe.csv', 'mode' => 'replace_stock_count', 'status' => 'success',
+            'total_rows' => 0, 'success_count' => 0, 'error_count' => 0,
+            'created_at' => now(), 'updated_at' => now(),
+        ]));
+    }
+
     #[DataProvider('forbiddenStatements')]
     public function test_the_role_is_refused(string $sql): void
     {
@@ -242,21 +311,27 @@ class BranchRoleGrantsTest extends TestCase
         yield 'delete stock_snapshots' => ['delete from stock_snapshots'];
         yield 'truncate transactions' => ['truncate transactions'];
 
-        // Online-authoritative data arrives by pull and is never written locally.
-        yield 'update users' => ["update users set name = 'x'"];
-        yield 'update settings' => ["update settings set value = 'x'"];
-        yield 'update items' => ["update items set name = 'x'"];
-        yield 'update variants' => ['update variants set selling_price = 1'];
+        // Provisioning and version territory: a branch may not invent branches,
+        // rename itself, or move the floor the version gate compares against.
+        // These four stayed refused when M6.5 opened up the catalog, and the
+        // distinction is the point — "online-authoritative" is not one bucket.
         yield 'update branches' => ["update branches set code = 'ZZZ'"];
         yield 'update schema_meta' => ['update schema_meta set min_app_version = 0'];
-        yield 'insert users' => [
-            "insert into users (id, username, password, role) values (gen_random_uuid(), 'x', 'x', 'admin')",
-        ];
-        yield 'insert settings' => ["insert into settings (id, key) values (gen_random_uuid(), 'x')"];
         yield 'insert branches' => [
             "insert into branches (id, code, name) values (gen_random_uuid(), 'ZZZ', 'x')",
         ];
-        yield 'insert items' => ["insert into items (id, name) values (gen_random_uuid(), 'x')"];
+        yield 'insert schema_meta' => [
+            'insert into schema_meta (id, schema_version, min_app_version) values (2, 1, 1)',
+        ];
+
+        // Catalog, users and settings are NOT here any more — see
+        // test_it_can_write_shared_data_online(). Deleting them still is.
+        yield 'delete users' => ['delete from users'];
+        yield 'delete items' => ['delete from items'];
+        yield 'delete categories' => ['delete from categories'];
+        yield 'delete variants' => ['delete from variants'];
+        yield 'delete settings' => ['delete from settings'];
+        yield 'delete import_history' => ['delete from import_history'];
 
         // The migration ledger is console territory.
         yield 'select migrations' => ['select count(*) from migrations'];

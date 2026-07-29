@@ -8,6 +8,7 @@ use App\Models\Category;
 use App\Models\Item;
 use App\Models\LoginHistory;
 use App\Models\SaleReturn;
+use App\Models\StockSnapshot;
 use App\Models\Transaction;
 use App\Models\TransactionItem;
 use App\Models\User;
@@ -288,7 +289,17 @@ class DemoDataSeeder extends Seeder
     /**
      * One sale through the same shape as PosController::persistSale — money in
      * integer centavos, price/cost snapshotted from the variant, stock deducted
-     * via the ledger, and an audit entry. Skips silently if nothing is in stock.
+     * via the ledger, and an audit entry.
+     *
+     * Draws only from variants that have stock RIGHT NOW. `sellable` is fixed
+     * when the catalog is created — "opening stock > 0, not archived" — and is
+     * never re-filtered, while 45 days of seeded sales empty a handful of SKUs
+     * (there is one restock, on day 18, covering four of them). Drawing from
+     * that stale list and skipping the empties meant a sale whose single line
+     * had sold out wrote NOTHING, silently. Today's trickle is exactly two
+     * sales, so losing one of them failed DemoDataSeederTest's count about one
+     * run in three — and made a real demo database quietly shorter than it
+     * claims to be.
      */
     private function makeSale(Carbon $at): void
     {
@@ -296,12 +307,24 @@ class DemoDataSeeder extends Seeder
 
         $lines = [];
 
-        foreach ($this->sellable->shuffle()->take(fake()->numberBetween(1, 3)) as $variant) {
-            $available = $this->ledger->currentStock($variant);
+        // One read for the whole sellable set rather than StockLedger::currentStock
+        // per variant: that is ~24 queries per sale across ~225 seeded sales, and
+        // it doubled the seeder's runtime. Same table and same answer —
+        // currentStock() is itself a single-row read of stock_snapshots — and this
+        // is a READ, so the rule that every stock MOVEMENT goes through the ledger
+        // is untouched.
+        $stock = StockSnapshot::query()
+            ->whereIn('variant_id', $this->sellable->pluck('id'))
+            ->pluck('quantity', 'variant_id');
 
-            if ($available < 1) {
-                continue;
-            }
+        $inStock = $this->sellable->filter(
+            fn (Variant $variant): bool => (int) ($stock[$variant->getKey()] ?? 0) >= 1
+        );
+
+        foreach ($inStock->shuffle()->take(fake()->numberBetween(1, 3)) as $variant) {
+            // Distinct variants (take() off a shuffle), so no line can spend
+            // another line's stock behind this cached figure.
+            $available = (int) $stock[$variant->getKey()];
 
             $quantity = min(fake()->numberBetween(1, 3), $available);
             $unit = $this->centavos($variant->selling_price);
@@ -313,6 +336,10 @@ class DemoDataSeeder extends Seeder
             ];
         }
 
+        // Only reachable now if the ENTIRE catalog is sold out, which the day-18
+        // restock and the fixture's opening quantities make unrealistic — but a
+        // seeder that would otherwise write a sale with no lines should stop,
+        // not produce one.
         if ($lines === []) {
             return;
         }

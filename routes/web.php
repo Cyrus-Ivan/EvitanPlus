@@ -103,6 +103,9 @@ Route::middleware(['auth'])->group(function () {
         Route::patch('inventory/{item}/restore', [ItemController::class, 'restore'])->name('items.restore');
 
         // Manual stock adjustment (Phase 6). Writes an inventory_ledger entry.
+        // Online-only since M7: stock is shared with the business, and a
+        // recount that reached only this device would be reverted by the next
+        // cycle's baseline. Refused offline by OnlineWrite, not by this route.
         Route::post('inventory/variants/{variant}/stock', [StockAdjustmentController::class, 'store'])->name('stock.adjust');
 
         Route::post('inventory/categories', [CategoryController::class, 'store'])->name('categories.store');

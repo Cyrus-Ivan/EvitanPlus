@@ -254,6 +254,14 @@ them for offline reads and **never** edits them locally.
 - `inventory_ledger` rows of type **restock / manual adjustment / import** (stock-ins and
   online adjustments) — see §10 for how adjustments are mediated.
 
+> **As built (M7): two of these are pulled tables that `Puller` deliberately does not read.**
+> `branches` has no local counterpart at all — branch identity lives in `instance`, written once
+> from the credentials JSON, and no console command renames a branch or sets `disabled_at`, so a
+> pull would have no consumer. `schema_meta` *is* pulled every cycle, by `VersionGate` before
+> anything else runs, and recorded on `instance` by `SyncCycle::rememberVersions()`; reading it
+> again in `Puller` would give one table two readers. What comes down is `settings`, `users`,
+> `categories`, `items`, `variants` and `type = 'stock_adjustment'` ledger rows.
+
 ### 5.2 Local-write (pushed up, insert-only)
 Written **only** on the till, append-only/immutable, pushed as brand-new UUID-keyed rows.
 
@@ -732,6 +740,30 @@ already includes them and the unsynced set is empty again. It self-heals.
 > insert), and **reconciled stock** is the subtraction above — the number the till actually
 > sells against. `docs/glossary.md` §4.
 
+> **As built (M7): the rule is an ADDITION of signed quantities, and one write path had to
+> change before it was safe.** `App\Support\Sync\StockReconciler` implements
+> `baseline + Σ(unsynced local ledger quantities)`. That is the same arithmetic the box above
+> states, but writing it as a subtraction of *absolute* values — which is how the phrase "local
+> unsynced out-movements" reads — gets returns exactly backwards: the local ledger is signed, so
+> a `+3` return would be taken away rather than kept. Defects are `0` and need no case at all.
+>
+> Two consequences worth recording:
+>
+> - **Reconciling writes no ledger row.** Nothing happened; it is the same stock counted against
+>   a better source. Routing it through `StockLedger` would append inventory history that never
+>   occurred *and* double-count against the `type = 'stock_adjustment'` rows the pull has already
+>   inserted. It writes `stock_snapshots` and nothing else, clamped at 0 — unreachable today,
+>   since nothing subtracts a branch's stock remotely without the queue below, but that column is
+>   what the POS reads to decide what may be sold.
+> - **The manual stock adjustment had to become an online write first.** It wrote a
+>   `type = 'stock_adjustment'` row to local SQLite and stopped there, and `shouldPush()`
+>   correctly keeps those rows out of the outbox — so a shelf recount reached nothing. Invisible
+>   until a baseline is pulled; after that, `baseline + unsynced sales` restores the old count on
+>   every cycle, silently, with a healthy sync indicator. This is §5.1's M6.5 finding recurring:
+>   that phase enumerated the five shared *tables*, and stock is not one — it is a derived
+>   quantity whose writer is `inventory_ledger`, which §5.1 splits by a column value instead of
+>   naming.
+
 **Why staleness is safe:**
 - A price change / archive done online while offline: the sale **snapshots** its price and
   commits (immutable history). The online dataset just holds a now-old price; next pull
@@ -842,6 +874,32 @@ it detects nothing, it just asks for a cycle at the moment there is something to
 - *Deferred:* OS network-change listeners and a Supabase **Realtime** channel (the latter
   would also give the console a live monitor/command channel).
 
+> **As built (M7): four triggers, and the timer's job is not the one described above.**
+> Everything in this section still feeds one `probe → sync` path with no tuning knob, and the
+> confirming probe is unchanged. Two corrections:
+>
+> - **A fourth trigger exists: the outbox listener** (`docs/glossary.md` §5). Every server
+>   response already carries `unsynced_count` in the shared `sync` prop, read straight from the
+>   outbox, so the client learns the backlog grew without anything being built to tell it. It
+>   replaces polling for the upward direction outright — a sale, return, login or audit row fires
+>   a cycle seconds later — and it *absorbs* M6's opportunistic post-checkout sync, which was an
+>   explicit call on the POS page and covered sales alone. One mechanism, wider coverage, and the
+>   fourth paragraph's argument against tuning surfaces is untouched by it.
+>
+>   It needs one guard the paragraphs above give no reason to expect: a backlog that **cannot**
+>   clear (revoked credential, version-blocked build, refused payload) leaves the count non-zero
+>   on every later response, so the listener is suppressed unless the last cycle ended `online`
+>   and clean, and is keyed on the count so a stalled cycle costs one retry per *new* write.
+>
+> - **The interval is 5 minutes, and it is now the freshness bound on shared data rather than a
+>   safety net.** The third bullet sizes this timer against the case where "the webview event does
+>   not fire at all" — true when it was written, and incomplete once the pull exists. Nothing
+>   local signals that another branch changed a price: Branch A's edit writes nothing whatever on
+>   Branch B, so on an **already-online** till the timer is the only thing that ever pulls. At 15
+>   minutes a branch opening in the morning trades a quarter of an hour on yesterday's catalog.
+>   Still one interval, hard-coded, the same online and offline — the constraint this section
+>   actually argues for.
+
 ### 11.4 Idempotency & atomicity
 - All pushes are inserts keyed by UUID → re-push is a harmless upsert-by-UUID.
 - A cycle is transactional per store; a mid-cycle failure leaves the outbox intact for retry.
@@ -888,6 +946,19 @@ and a failed sync never stops a till selling.
 The sections above describe what a cycle *does*. This one names the tables it needs on the
 device, and is a **proposal for M5–M9** — none of it is built. The mirrored tables are not
 listed: they keep their v1.0.0 shape and `database/migrations/` defines them.
+
+> **As built (M7): `sync_cursor` exists; only the local `inventory_update_queue` is still a
+> proposal.** In `database/migrations/2026_07_31_000001_create_sync_cursor_table.php`, on
+> `SchemaParityTest::SQLITE_LOCAL_ONLY`, and read and written by `App\Support\Sync\Puller` and
+> `StockReconciler`. One correction to the ERD below, and it is the whole design of the table:
+>
+> - **`pulled_through` is a `varchar`, not a `datetime`.** It holds Postgres's own rendering of
+>   the watermark and hands it straight back; nothing on the device ever parses it. A datetime
+>   column would store it through this app's naive second-resolution convention, dropping the
+>   microseconds and the offset, so the bookmark would land up to a second away from the row it
+>   was read off — re-reading a second of rows every cycle, or stepping over one. The second is
+>   silent and permanent. `docs/glossary.md` §5 carries the full entry, including why the
+>   comparison is `>=` and why the position is the newest row read rather than `now()`.
 
 > **As built (M6): `sync_outbox` and `sync_status` exist too; only `sync_cursor` and the local
 > `inventory_update_queue` are still proposals.** Both are in

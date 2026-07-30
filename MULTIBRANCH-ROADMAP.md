@@ -752,20 +752,145 @@ nothing on either side.
 
 ---
 
-# Phase M7 — Sync engine: connectivity detection & pull + stock reconciliation
+# Phase M7 — Sync engine: connectivity detection & pull + stock reconciliation ✅
 
 ## Goal
 Near-instant reconnect and correct bidirectional data flow.
+
+> **Done.** A price changed at one branch reaches another **through a sync cycle**, on a device
+> that has been live all along — which is the first time data has moved *down* in this system at
+> all. `App\Support\Sync\` gained `Puller` and `StockReconciler`; `sync_cursor` is the last of
+> §11.6's proposed tables to exist; polling for the backlog was replaced by a listener on the
+> outbox. Proved end to end in `tests/Integration/PullTest.php` against two real provisioned
+> branches. Scoping calls and findings:
+>
+> - **A pre-existing defect had to be fixed first, because this phase turned it from invisible
+>   into destructive.** `StockAdjustmentController` wrote its `type = 'stock_adjustment'` ledger
+>   row to local SQLite and stopped there — `InventoryLedger::shouldPush()` excludes those rows
+>   from the outbox (correctly; they are online-authoritative), so a shelf recount typed at a till
+>   reached nothing. Harmless while nothing read the upstream number. The moment a baseline is
+>   pulled, `reconciled = baseline + unsynced sales` restores the old count on the next cycle and
+>   on every cycle after it, with a green indicator throughout. It is now an **online write**,
+>   exactly as CSV import became in M6.5 — and it is the *same* defect, on the one write path that
+>   phase did not reach. Worth stating plainly: **M6.5's finding was not fully worked out.** That
+>   phase enumerated "the five write paths" from §5.1's list of shared tables, and stock is not a
+>   table on that list — it is a *derived quantity* whose writer is `inventory_ledger`, which §5.1
+>   splits by a column value rather than naming. A list of tables was the wrong instrument for
+>   finding it.
+> - **The cursor is stored as Postgres's own string and never parsed locally.** `timestamptz`
+>   carries microseconds and an offset; this app's datetime convention is a naive
+>   second-resolution local string. Round-tripping the watermark through a `datetime` column would
+>   land the bookmark up to a second away from the row it was read off — re-reading a second of
+>   rows every cycle, or stepping over one, and stepping over is silent and permanent. So
+>   `sync_cursor.pulled_through` is a `varchar`, bound straight back, and only Postgres ever
+>   interprets it. `tests/Integration/PullTest.php` asserts the stored shape, because the moment it
+>   reads as a bare `Y-m-d H:i:s` the precision is already gone.
+> - **`>=`, not `>`.** Two rows edited in the same instant share a timestamp; with `>` the second
+>   lands behind the bookmark the first one set and is never read again — no error, no gap, nothing
+>   to notice. The cost is re-reading the boundary row each cycle, which the upserts absorb. Both
+>   halves are pinned by tests, because the fix and its cost are easy to mistake for a bug in
+>   either direction.
+> - **The bookmark is the newest row actually READ, never `now()`** — and this is the subtle one. A
+>   Postgres row's `updated_at` is stamped when its transaction *begins* but becomes visible when
+>   it *commits*, so an edit starting at :00 and committing at :09 carries :00. A cycle running at
+>   :05 does not see it, and had it bookmarked :05 that row would sit permanently behind the mark:
+>   a branch on a stale price forever, reporting a healthy sync. Taken by position rather than by
+>   comparison, since the query is ordered by the watermark — comparing `timestamptz` renderings as
+>   strings happens to work for Postgres's current format and would break silently if it changed.
+> - **Deletions need no handling, and that is a property of the schema rather than luck.**
+>   Categories, items and variants archive; users soft-delete. Both are UPDATEs, so both ride the
+>   same cursor. The never-delete invariant is precisely what makes a watermark pull sufficient — a
+>   schema that really deleted rows would need tombstones and none of this would work.
+> - **A fifth reason to avoid Eloquent appeared, on top of M5's four.** The hydrator writes through
+>   the query builder to dodge the single-Owner guard, the `hashed` cast, UUID generation and the
+>   `SoftDeletes` scope. The pull adds one the hydrate never faced: a model write fires
+>   `PushedUpward::created`, which would enqueue every pulled row into the outbox and hand the
+>   business's own data straight back to it.
+> - **`RowMapper` now owns both directions.** `Hydrator::normalise()` and the new pull needed the
+>   identical Postgres→SQLite conversion, and M6 already demonstrated the cost of writing the two
+>   directions apart: hydration converted timestamps to UTC while the push stamped local values as
+>   UTC, so a date moved eight hours down and eight hours back up, each plausible alone. They are
+>   inverses and now sit in one class. The timezone is an explicit parameter, because the two
+>   callers know it differently — a fresh device's `config('app.timezone')` is still the build's
+>   default until the hydrate copies `settings`.
+> - **The outbox listener replaced polling, and needed no new plumbing.** Every response already
+>   carries `unsynced_count` in the shared `sync` prop, read from the outbox, so the client learns
+>   the backlog grew for free — a sale, return, login or audit row produces a response and a cycle
+>   fires seconds later. M6's explicit post-checkout `runSync()` in `pos.tsx` is retired by it: one
+>   mechanism now covers returns, logins and audit rows too, where the special case covered only
+>   sales. It is client-side rather than a `dispatchAfterResponse`, because NativePHP serves from
+>   one PHP process and a cycle stalling on a dead connection would occupy it during shutdown —
+>   reintroducing at the process level the blocking the outbox exists to prevent.
+> - **The listener needs a suppression rule or it retries forever.** A backlog that cannot clear —
+>   revoked credential, version-blocked build, refused payload — leaves `unsynced_count` non-zero
+>   on every subsequent response, so a naive listener fires on every page navigation for something
+>   only a person can fix. Suppressed unless the last cycle ended `online` with no `conflict`, and
+>   keyed on the count so a stalled cycle costs one retry per *new* write rather than one per
+>   navigation.
+> - **The backstop is 5 minutes, and its job changed.** §11.3 sized this timer to stop a till being
+>   "stuck offline indefinitely" and `docs/glossary.md` recorded 15 minutes. With the listener
+>   taking the push, the timer's only remaining duty is the one nothing else can do: nothing local
+>   signals that another branch changed a price, so it is now the freshness bound on shared data,
+>   not a safety net. A branch opening in the morning would otherwise trade a quarter of an hour on
+>   yesterday's catalog. Still one interval, hard-coded, same online and offline — §11.3's actual
+>   constraint is untouched.
+> - **`branches` and `schema_meta` are not pulled, though §5.1 lists them as pulled tables.**
+>   Neither has a local counterpart. Branch identity lives in `instance`, written once from the
+>   credentials JSON, and no console command renames a branch or sets `disabled_at` — so a
+>   `branches` pull would have no consumer today. `schema_meta` *is* pulled, by `VersionGate`, on
+>   every cycle before anything else runs; `SyncCycle::rememberVersions()` records it on `instance`.
+>   That is its pull, and duplicating it in `Puller` would give one table two readers.
+> - **Reconciliation writes only `stock_snapshots`, never a ledger row.** Nothing happened — it is
+>   the same stock counted against a better source — so routing it through `StockLedger` would
+>   invent inventory history and double-count against the pulled adjustment rows. It is also
+>   clamped at 0: unreachable today, since nothing subtracts a branch's stock remotely without M8's
+>   queue, but the column is what the POS reads to decide what may be sold and the never-negative
+>   invariant needs a floor rather than a comment.
+> - **§10's "baseline − out-movements" is implemented as an ADDITION of signed quantities.** The
+>   local ledger is signed — a sale negative, a return positive, a defect zero — so subtracting
+>   absolute values gets returns exactly backwards and hands the branch stock it never regained. A
+>   test exists for the return case alone.
+> - **Driving the rig found a defect no suite could: `tests/manual/pg.php` seeded opening stock
+>   as `stock_snapshots` rows with no `inventory_ledger` behind them.** M6's note states the rule
+>   — *whatever puts opening stock into a business schema must write a ledger entry, not just a
+>   snapshot* — and the rig, written around the same time, broke it. The consequence is total and
+>   was invisible: `RemoteStock::recompute()` sums Postgres's own ledger after a push, so the
+>   first sale from a rig branch summed to `-1`, `stock_snapshots_non_negative` refused it, and
+>   the refusal took the whole cycle down. **No rig branch had ever been able to sync a sale.**
+>   Nothing caught it because every automated suite seeds its own opening stock correctly; the
+>   rig is the one path that did not, and the rig is the one path no test drives.
+>
+>   Two things worth keeping from it. The failure surfaced as **"Sync stuck"** on the indicator —
+>   `online` + `conflict`, M6.5's error kind doing exactly its job on the first real conflict this
+>   project has produced, rather than the `offline` M6 would have shown and the pointless wait
+>   that implies. And the rule is now stated where the seeder can be read: a zero opening balance
+>   still gets no ledger row, because that is the absence of a movement rather than a movement of
+>   nothing.
+> - **Two test layers, deliberately split.** `tests/Feature/Sync/PullTest.php` runs the cursor
+>   algorithm against a SQLite stand-in (`FakesTheBusinessDatabase`), credential-free and in
+>   milliseconds; `tests/Integration/PullTest.php` runs the round trip against real Supabase.
+>   The split is not convenience: `timestamptz` precision, `pdo_pgsql` returning booleans as
+>   `'t'`/`'f'`, the timezone conversion and the real grants all pass against a stand-in and fail
+>   in a shop, so a finding belonging to the round trip must never be asserted in the fast half.
 
 ## Tasks
 - **Connectivity:** webview `online`/`offline` trigger + confirming **probe** + **one
   fixed-interval backstop poll** (same rate online and offline, no knob) + manual "sync now".
   §11.3 is normative on why it is one interval and not adaptive polling plus a configurable
-  timer.
+  timer. *As built: four triggers, not three — an **outbox listener** off the shared `sync` prop
+  replaced polling for the upward direction entirely, and retired M6's post-checkout special
+  case. The interval is 5 minutes and its job is now the pull; see the note above.*
 - **Pull** deltas of catalog/users/settings/identity via `updated_at`/change markers.
+  *As built: `settings`, `users`, `categories`, `items`, `variants` and `type =
+  'stock_adjustment'` ledger rows. Identity is `settings`; `branches` has no local counterpart
+  and `schema_meta` is already pulled by the version gate.*
 - **Stock reconciliation:** pull the recomputed **stock baseline** and apply
   `reconciled stock = baseline − local unsynced out-movements` (never blind-overwrite).
+  *As built: `baseline + Σ(signed unsynced)`, which is the same arithmetic said in signed values
+  — see the note above for why the absolute-value reading breaks returns.*
 - Enforce cycle order: **version gate → push → (queue, M8) → pull → heartbeat**.
+- *Not in the task list, and not optional:* **make the manual stock adjustment an online write**,
+  or the reconciliation silently reverts every shelf recount. See the first note above.
 
 > **Baseline, snapshot and reconciled stock are three numbers, and this phase uses all three**
 > (`docs/glossary.md` §4): the **stock baseline** is what Postgres hands back, a **stock

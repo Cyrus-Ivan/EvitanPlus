@@ -8,13 +8,22 @@ use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
 /**
- * The one place that knows how a local SQLite row becomes a Postgres row.
+ * The one place that knows how a SQLite row and a Postgres row correspond, in
+ * both directions.
  *
  * Extracted in M6.5 because a second caller appeared. {@see Pusher} sends
  * history up insert-only; {@see OnlineWrite} sends shared data up with update
  * semantics. They disagree about the conflict clause and agree about everything
  * else, and "everything else" is where the two silent bugs live — so it lives
  * once.
+ *
+ * M7 added the way back. {@see Hydrator} filled a new device and {@see Puller}
+ * keeps it current; both convert Postgres rows into local ones, which is
+ * {@see outbound()}'s exact inverse. Keeping the pair in one class is not tidying
+ * — the two directions have to be inverses, and M6 proved what happens when they
+ * are written apart: hydration converted timestamps into UTC while the push
+ * stamped local values as UTC, so a row's date moved eight hours one way going
+ * down and eight hours the other going up. Neither was visible alone.
  *
  * ## Column-driven, not hand-listed
  *
@@ -143,10 +152,69 @@ class RowMapper
         return $branchId === null ? $row : ['branch_id' => $branchId] + $row;
     }
 
+    /**
+     * Convert a Postgres row to what the local SQLite column actually holds.
+     *
+     * The mirror image of {@see outbound()}, and it lives beside it because the
+     * two must agree exactly — a round trip that converts differently in each
+     * direction is how M6 shipped every hydrated row eight hours early and every
+     * pushed row eight hours late, each individually plausible and neither
+     * visible until the trip was closed.
+     *
+     * Two conversions, both silent failures if skipped:
+     *
+     *  - BOOLEANS. pdo_pgsql can hand back the strings 't'/'f', and `(bool) 'f'`
+     *    is TRUE. A `must_change_password` of false arriving as 'f' would force a
+     *    password change on every user of the device, with nothing in the logs to
+     *    explain it.
+     *  - TIMESTAMPS. Postgres returns `timestamptz` with an offset; SQLite's
+     *    datetime columns hold naive BUSINESS-LOCAL strings, because
+     *    ApplyBusinessTimezone sets the default timezone at boot and this app has
+     *    written local time since v1.0.0. Storing the raw value leaves dates that
+     *    sort right and parse inconsistently; storing UTC shifts every row by the
+     *    business's offset. Both read as plausible dates.
+     *
+     * $timezone is a parameter rather than a config read because the two callers
+     * know it differently. {@see Puller} can use `config('app.timezone')`, which
+     * boot has already resolved from the local settings; {@see Hydrator} cannot —
+     * on a fresh device that config is still the build's default, and the real
+     * answer arrives in the `settings` rows the hydrate copies first.
+     *
+     * @param  array<string, mixed>  $row
+     * @param  array<string, string>  $types
+     * @return array<string, mixed>
+     */
+    public function inbound(array $row, array $types, string $timezone): array
+    {
+        foreach ($row as $column => $value) {
+            if ($value === null) {
+                continue;
+            }
+
+            $row[$column] = match ($types[$column] ?? '') {
+                'tinyint(1)' => $this->toBool($value) ? 1 : 0,
+                'datetime' => Carbon::parse((string) $value)->setTimezone($timezone)->format('Y-m-d H:i:s'),
+                'integer' => (int) $value,
+                default => $value,
+            };
+        }
+
+        return $row;
+    }
+
     public function assertIdentifier(string $name): void
     {
         if (preg_match(self::IDENTIFIER, $name) !== 1) {
             throw new RuntimeException("Refusing to build SQL around the identifier [{$name}].");
         }
+    }
+
+    private function toBool(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return in_array(strtolower((string) $value), ['t', 'true', '1', 'y', 'yes'], true);
     }
 }

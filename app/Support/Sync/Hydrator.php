@@ -5,8 +5,8 @@ namespace App\Support\Sync;
 use App\Exceptions\SetupFailedException;
 use App\Support\Settings\BusinessSettings;
 use Illuminate\Database\Connection;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use RuntimeException;
 
 /**
  * The one-time first fill of a new branch device (MULTIBRANCH-BRAINSTORM.md §16,
@@ -76,6 +76,8 @@ class Hydrator
      * this run copies, which is the first moment the device knows it.
      */
     private string $timezone = 'UTC';
+
+    public function __construct(private readonly RowMapper $rows) {}
 
     /**
      * @return array<string, int> table => rows copied
@@ -273,42 +275,36 @@ class Hydrator
     /**
      * Column => declared SQLite type for a local table.
      *
-     * Read from `pragma table_info` — the same source the parity guard reads, so
-     * the type vocabulary here ('tinyint(1)', 'datetime', …) is the vocabulary
-     * that guard already speaks.
+     * Delegates to {@see RowMapper}, which reads `pragma table_info` — the same
+     * source the parity guard reads, so the type vocabulary here ('tinyint(1)',
+     * 'datetime', …) is the vocabulary that guard already speaks. Wrapped only
+     * to restate a missing table as a setup failure: during the wizard, "run the
+     * app's migrations first" is an answer the developer can act on.
      *
      * @return array<string, string>
      */
     private function localTypes(string $table): array
     {
-        $types = [];
-
-        foreach (DB::select("pragma table_info(\"{$table}\")") as $column) {
-            $types[$column->name] = strtolower((string) $column->type);
+        try {
+            return $this->rows->localTypes($table);
+        } catch (RuntimeException $e) {
+            throw new SetupFailedException(
+                "The local table [{$table}] does not exist; run the app's migrations first.",
+                previous: $e,
+            );
         }
-
-        if ($types === []) {
-            throw new SetupFailedException("The local table [{$table}] does not exist; run the app's migrations first.");
-        }
-
-        return $types;
     }
 
     /**
      * Convert Postgres values to what the local column actually holds.
      *
-     * Not defensive dressing — two of these are live bugs waiting:
-     *
-     *  - BOOLEANS. pdo_pgsql can hand back the strings 't'/'f', and `(bool) 'f'`
-     *    is TRUE. A `must_change_password` of false would arrive as 'f', store
-     *    as truthy, and force a password change on every user of a brand-new
-     *    device — with nothing in the logs to explain it.
-     *  - TIMESTAMPS. Postgres returns `timestamptz` with an offset
-     *    ('2026-07-26 04:00:00+00'); SQLite's datetime columns hold naive
-     *    BUSINESS-LOCAL strings. Storing the raw value would leave dates that
-     *    sort correctly and parse inconsistently; storing UTC would leave every
-     *    row silently shifted by the business's offset. Both read as plausible
-     *    dates, which is what makes this worth converting explicitly.
+     * The conversion itself lives in {@see RowMapper::inbound()}, beside its
+     * inverse, because the two directions have to agree and M6 proved what
+     * happens when they are written apart. The timezone is passed rather than
+     * read from config for a reason specific to this class: on a fresh device
+     * `config('app.timezone')` is still the build's default, and the business's
+     * real answer only exists once {@see copySettings()} has run — which is why
+     * `settings` is copied first and $timezone is set from it.
      *
      * @param  array<string, mixed>  $row
      * @param  array<string, string>  $types
@@ -316,28 +312,6 @@ class Hydrator
      */
     private function normalise(array $row, array $types): array
     {
-        foreach ($row as $column => $value) {
-            if ($value === null) {
-                continue;
-            }
-
-            $row[$column] = match ($types[$column] ?? '') {
-                'tinyint(1)' => $this->toBool($value) ? 1 : 0,
-                'datetime' => Carbon::parse((string) $value)->setTimezone($this->timezone)->format('Y-m-d H:i:s'),
-                'integer' => (int) $value,
-                default => $value,
-            };
-        }
-
-        return $row;
-    }
-
-    private function toBool(mixed $value): bool
-    {
-        if (is_bool($value)) {
-            return $value;
-        }
-
-        return in_array(strtolower((string) $value), ['t', 'true', '1', 'y', 'yes'], true);
+        return $this->rows->inbound($row, $types, $this->timezone);
     }
 }

@@ -67,6 +67,21 @@ exit(0);
  * deliberately short of a couple of things — one variant out of stock, one
  * under its low-stock threshold — so both of those UI states are visible on
  * arrival without anyone having to sell their way into them.
+ *
+ * ## Opening stock is a LEDGER ENTRY, not just a snapshot
+ *
+ * This seeder used to write `stock_snapshots` alone, and the consequence was
+ * that no rig branch could ever sync a sale. MULTIBRANCH-ROADMAP.md's M6 note
+ * states the rule and the reason: Postgres keeps no trigger on that table, so
+ * the till maintains it — `RemoteStock::recompute()` sums Postgres's OWN ledger
+ * after a push. Given a snapshot with no movement behind it, that sum is the
+ * pushed sale alone, it goes negative, `stock_snapshots_non_negative` refuses
+ * it, and the refusal takes the whole cycle with it. The branch then reports
+ * `online` + `conflict` — correctly, and permanently.
+ *
+ * Found by driving the rig in M7 rather than by any test, because every suite
+ * seeds its own opening stock properly. **Anything that puts opening stock into
+ * a business schema owes it a ledger row.**
  */
 function seedCatalog(string $root, string $pathA, string $pathB): void
 {
@@ -119,6 +134,36 @@ function seedCatalog(string $root, string $pathA, string $pathB): void
             'insert into stock_snapshots (id, branch_id, variant_id, quantity, created_at, updated_at)
              values (?, ?, ?, ?, now(), now())'
         );
+        $insertLedger = $pdo->prepare(
+            'insert into inventory_ledger
+                (id, branch_id, variant_id, quantity, resulting_snapshot, type, sale_type,
+                 reference_id, reference_type, notes, performed_by, created_at)
+             values (?, ?, ?, ?, ?, \'stock_adjustment\', null, null, \'manual_adjustment\', ?, ?, now())'
+        );
+
+        // The Owner the provisioner seeded — the ledger's performed_by is a real
+        // FK, and this schema has exactly one user at this point.
+        $owner = $pdo->query("select id from users where role = 'owner' limit 1")->fetchColumn();
+
+        if ($owner === false) {
+            throw new RuntimeException('No Owner in the schema; provision it before seeding.');
+        }
+
+        // The movement that PRODUCED the opening stock, without which the
+        // snapshot is a figure with no history and the first pushed sale takes
+        // the branch's whole sync down. See the docblock above.
+        $openStock = static function (string $branch, string $variantId, int $quantity) use ($insertStock, $insertLedger, $owner): void {
+            $insertStock->execute([uuid(), $branch, $variantId, $quantity]);
+
+            // A zero opening balance is the absence of a movement, not a
+            // movement of nothing — CEB's out-of-stock variant gets a snapshot
+            // of 0 and no ledger row, and the two still sum to the same thing.
+            if ($quantity !== 0) {
+                $insertLedger->execute([
+                    uuid(), $branch, $variantId, $quantity, $quantity, 'Opening stock (manual rig)', $owner,
+                ]);
+            }
+        };
 
         foreach ($catalog as [$category, $item, $unit, $variant, $sku, $price, $cost, $threshold, $stockA, $stockB]) {
             if (! isset($categories[$category])) {
@@ -139,8 +184,8 @@ function seedCatalog(string $root, string $pathA, string $pathB): void
                 $variantId, $items[$item], $variant, strtoupper($sku), $price, $cost, $threshold,
             ]);
 
-            $insertStock->execute([uuid(), $branchA, $variantId, $stockA]);
-            $insertStock->execute([uuid(), $branchB, $variantId, $stockB]);
+            $openStock($branchA, $variantId, $stockA);
+            $openStock($branchB, $variantId, $stockB);
         }
 
         $pdo->commit();

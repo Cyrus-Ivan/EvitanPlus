@@ -190,8 +190,8 @@ A table that exists in the **local mirror and nowhere else** — it has no Postg
 is exempt from the parity guard. The list is Laravel's own infrastructure (`sessions`,
 `cache`, `cache_locks`, `jobs`, `job_batches`, `failed_jobs`, `migrations`, and `sqlite_sequence`,
 which SQLite materialises for the AUTOINCREMENT on `migrations`) plus M5's `instance` and
-`instance_secret` and M6's `sync_outbox` and `sync_status`. M7's `sync_cursor` and M8's
-narrowed `inventory_update_queue` join it.
+`instance_secret`, M6's `sync_outbox` and `sync_status`, and M7's `sync_cursor`. M8's narrowed
+`inventory_update_queue` joins it.
 *Anchor:* `SchemaParityTest::SQLITE_LOCAL_ONLY` (added in M4).
 ✗ **Not** "mirrored" — and the distinction is the whole reason this set exists rather than the
 tables being folded into `MIRRORED`. A local-only table is deliberately a *different, narrower*
@@ -249,13 +249,23 @@ every ledger insert. `check (quantity >= 0)`.
 ### Stock baseline
 The **figure pulled from Postgres** during a sync cycle. It reflects online entries and
 already-pushed local movements — never the till's *unsynced* ones.
+*Anchor:* `App\Support\Sync\StockReconciler` reads it from Postgres's `stock_snapshots` on its
+own `sync_cursor` row (M7).
 
 ### Reconciled stock
 `stock baseline − local unsynced out-movements`. The number the till actually sells against.
 Self-healing: once the local movements push, the next baseline already contains them and the
 unsynced set is empty.
+*Anchor:* `StockReconciler::reconcile()`, which writes local `stock_snapshots` and nothing else.
 ✗ **Not** a conflict resolution. Stock is the one shared quantity, and it reconciles
 **additively**; there is no last-write-wins anywhere in this system.
+✗ **Not** implemented as the subtraction this entry names it by. It is `baseline + Σ(signed
+unsynced quantities)` — identical arithmetic, but the local ledger is signed (a sale negative, a
+return positive, a defect zero), so subtracting *absolute* values gets returns backwards and
+hands the branch stock it never regained.
+✗ **Not** a ledger movement. Reconciling appends no `inventory_ledger` row: nothing happened, it
+is the same stock counted against a better source. Writing it through `StockLedger` would invent
+inventory history and double-count against the pulled adjustment rows.
 
 ### Inventory update queue
 `inventory_update_queue` — pending, branch-targeted stock adjustments **awaiting the branch's
@@ -317,19 +327,73 @@ on one device until M6.5.
 
 ### Pull
 Fetching **deltas** of pulled tables by `updated_at`, plus the recomputed stock baseline.
+*Anchor:* `App\Support\Sync\Puller` (M7) — `settings`, `users`, `categories`, `items`, `variants`
+and `type = 'stock_adjustment'` ledger rows.
+✗ **Not** a hydrate. See §3.
+✗ **Not** every *pulled* table. `branches` has no local counterpart (identity lives in
+`instance`), and `schema_meta` is pulled by the version gate at the top of every cycle, which is
+why `Puller` does not read it again.
+
+### Sync cursor
+`sync_cursor` — one row per pulled table recording how far down it this device has read. The
+bookmark that turns "re-read the whole catalog" into "what changed since?".
+*Anchor:* `App\Models\SyncCursor`; the `sync_cursor` table (M7).
+
+Three properties, each load-bearing and none of them obvious:
+
+- **`pulled_through` is Postgres's own rendering of the watermark, stored as a string and never
+  parsed locally.** `timestamptz` carries microseconds and an offset; this app's datetime
+  convention is a naive second-resolution local string. Converting would land the bookmark up to
+  a second away from the row it was read off — re-reading a second of rows every cycle, or
+  stepping over one, silently and permanently.
+- **The comparison is `>=`, never `>`.** Two rows edited in the same instant share a timestamp,
+  and `>` strands the second behind the bookmark the first one set. The cost is re-reading the
+  boundary row each cycle, which the upserts absorb.
+- **The position is the newest row actually READ, never `now()`.** A Postgres row's `updated_at`
+  is stamped when its transaction begins and becomes visible when it commits, so a slow edit
+  carries a timestamp earlier than the moment it appears. Bookmarking the clock would leave such
+  a row behind the mark forever.
+
+✗ **Not** one global watermark. Per table, so a failure pulling `variants` does not discard the
+progress made on `users`, and a table added later starts from zero without re-pulling everything
+else.
 
 ### Heartbeat
 The **upsert of this branch's `branch_status` row** at the end of a cycle. One row per branch —
 current state, not history (`branch_id` is the primary key).
 *Anchor:* `console/database/migrations/2026_07_26_000018_create_branch_status_table.php`.
 
+### Outbox listener
+The client-side trigger that asks for a cycle **when the backlog grows**. Every server response
+carries `unsynced_count` in the shared `sync` prop, read from the outbox, so a sale, return,
+login or audit row produces a response and a cycle fires seconds later.
+*Anchor:* `useSyncTriggers()` in `resources/js/hooks/use-sync.ts` (M7), mounted once in
+`SyncIndicator`.
+✗ **Not** polling. It reacts to a number already on its way to the client; nothing asks the
+server whether there is work.
+✗ **Not** able to see the pull. Branch A editing a price writes nothing at all on Branch B, so
+B's outbox stays empty however much changes upstream. That is the backstop timer's job.
+✗ **Not** unconditional. Suppressed while the last cycle ended `unauthorized`,
+`version_blocked`, `offline`, or `online` with a `conflict` — a backlog only a person can clear
+would otherwise re-fire on every page navigation.
+
 ### Opportunistic sync
 A cycle fired **immediately after a checkout** when online, so Postgres trails by seconds
 rather than a full interval. Still never in the commit path.
+*As built (M7): retired as a distinct mechanism.* M6 implemented it as an explicit `runSync()`
+in `pos.tsx`; the outbox listener above now covers it, and covers returns, logins and audit rows
+that the special case never did. The behaviour it names is unchanged — a cycle within seconds of
+the sale, never awaited — so the term stays useful for describing *when* a cycle happens.
 
 ### Backstop timer
-The long fallback interval (default 15 min) that runs a cycle even if nothing else triggered
-one.
+The fixed interval that runs a cycle even if nothing else triggered one. **5 minutes**,
+hard-coded, the same online and offline.
+*Anchor:* `BACKSTOP_MS` in `resources/js/hooks/use-sync.ts`.
+*As built (M7): the value moved from 15 minutes and the job changed with it.* §11.3 sized this
+timer to stop a till being "stuck offline indefinitely". Once the pull exists it is also the
+**only** trigger for an already-online till, because nothing local signals upstream change — so
+it is the freshness bound on shared data, not merely a safety net. One interval with no knob,
+which is §11.3's actual constraint, is untouched.
 
 ### Outbox
 `sync_outbox` — the local FIFO of **rows waiting to push**. Stores *pointers, not payloads*:

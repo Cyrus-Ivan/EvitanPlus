@@ -106,6 +106,7 @@ class SchemaParityTest extends TestCase
         'instance_secret' => 'the branch credential sealed with the per-install APP_KEY; it exists nowhere else (M5)',
         'sync_outbox' => "this device's backlog of rows waiting to push; once pushed there is nothing left to record (M6)",
         'sync_status' => 'why this device is or is not syncing; its counterpart is branch_status, a different, wider table (M6)',
+        'sync_cursor' => 'how far down each pulled table this device has read; a bookmark into Postgres, meaningless anywhere but here (M7)',
         'cache' => "Laravel's own, rebuilt by a re-install",
         'cache_locks' => "Laravel's own, rebuilt by a re-install",
         'jobs' => "Laravel's own, rebuilt by a re-install",

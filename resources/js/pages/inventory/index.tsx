@@ -110,7 +110,10 @@ export default function InventoryIndex({
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="Inventory" />
             <div className="flex min-h-full flex-1 flex-col gap-4 p-4">
-                {!online && <OfflineNotice what="The product catalog" />}
+                {/* Stock joined the catalog here in M7: a manual adjustment is a
+                    statement about the business's figure, not this device's, so
+                    it is an online write like every other edit on this screen. */}
+                {!online && <OfflineNotice what="The product catalog and stock levels" />}
                 <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-2">
                         <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name, SKU, barcode" className="w-64" />

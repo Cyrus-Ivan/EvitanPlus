@@ -9,12 +9,13 @@ use Illuminate\Http\JsonResponse;
 /**
  * The one way a sync cycle starts (M6).
  *
- * Three callers, one route: the POS page fires it after a successful checkout
- * (the opportunistic sync of §11.1), the sync indicator's "Sync now" button
- * fires it on demand, and M7's `online` event and backstop timer will fire the
- * same route rather than adding paths of their own. §11.3 is explicit that the
- * opportunistic sync "detects nothing — it just asks for a cycle at the moment
- * there is something to push".
+ * Every trigger comes here and there are no others: the outbox listener (a row
+ * landed in the backlog), the webview `online` event, the five-minute backstop,
+ * and the indicator's "Sync now" button. §11.3 is explicit that these are
+ * triggers rather than mechanisms — the opportunistic sync "detects nothing, it
+ * just asks for a cycle at the moment there is something to push" — which is why
+ * they share one route and one {@see SyncCycle} rather than growing paths of
+ * their own.
  *
  * ## Why it answers JSON and never fails
  *
@@ -33,6 +34,7 @@ class SyncController extends Controller
         return response()->json([
             'sync' => SyncStatus::snapshot(),
             'pushed' => $result['pushed'],
+            'pulled' => $result['pulled'],
         ]);
     }
 }

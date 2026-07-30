@@ -1,6 +1,6 @@
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { useSync } from '@/hooks/use-sync';
+import { useSync, useSyncTriggers } from '@/hooks/use-sync';
 import { cn } from '@/lib/utils';
 import { type SyncSnapshot } from '@/types';
 import { AlertTriangle, Check, RefreshCw, ShieldAlert, WifiOff } from 'lucide-react';
@@ -91,6 +91,14 @@ function formatLastSync(value: string | null): string {
 
 export function SyncIndicator() {
     const { sync, busy, run } = useSync();
+
+    // The app's single mount point for the sync triggers (M7). It lives here
+    // because the header renders on every authenticated screen, so "the app is
+    // open" and "the triggers are armed" are the same condition — and because
+    // one mount is what stops two components each starting a backstop timer.
+    // Called before the early return below: hooks may not be conditional, and a
+    // device with no sync tables has nothing to trigger anyway.
+    useSyncTriggers();
 
     // Null on an install whose sync tables do not exist yet. Rendering nothing
     // is right: there is no branch to be behind.

@@ -1,6 +1,56 @@
-import { type SharedData } from '@/types';
+import { type SharedData, type SyncSnapshot } from '@/types';
 import { router, usePage } from '@inertiajs/react';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+
+/**
+ * The backstop interval, hard-coded and the same online and offline (§11.3).
+ *
+ * Five minutes, and the number is doing a different job than the spec first
+ * assigned it. §11.3 sized this timer to guarantee an offline till is "never
+ * stuck offline indefinitely"; from M7 it is also the ONLY thing that makes an
+ * already-online till pull, because nothing local signals that another branch
+ * changed a price. So it is the freshness bound on shared data, not just a
+ * safety net — a branch opening in the morning would otherwise trade all day on
+ * yesterday's catalog.
+ *
+ * Still one interval with no knob. §11.3 argues at length against a tuning
+ * surface nobody will ever tune on a product with one maintainer, and that
+ * reasoning is untouched by the value changing.
+ */
+const BACKSTOP_MS = 5 * 60 * 1000;
+
+/**
+ * Trigger bookkeeping, at MODULE scope rather than in a ref — and this is not an
+ * optimisation, it is the difference between the triggers working and firing on
+ * every click.
+ *
+ * This app sets no persistent Inertia layout (no `Page.layout`), so a navigation
+ * swaps the whole tree: the header, and with it {@link SyncIndicator} and every
+ * hook below, UNMOUNTS AND REMOUNTS. Anything kept in a ref resets each time. A
+ * mount-triggered cycle would therefore fire on every page the cashier opens, a
+ * backstop interval would restart before it ever elapsed on a till anyone was
+ * using, and the "already tried this backlog" guard would forget between clicks —
+ * turning a listener that fires on new work into one that fires on navigation.
+ *
+ * Module scope outlives the page components and is reset only by a real reload,
+ * which is exactly the lifetime these three want.
+ */
+let inFlight = false;
+let lastCycleAt = 0;
+let attemptedBacklog: number | null = null;
+
+/**
+ * States in which asking for another cycle cannot help.
+ *
+ * A revoked credential, a build below the schema's floor and a refused payload
+ * are each fixed by a person, not by trying again — and `offline` would burn a
+ * probe on every page navigation for as long as the connection is down. Without
+ * this the outbox listener below would fire on every render for a backlog that
+ * is never going to clear.
+ */
+function stuck(sync: SyncSnapshot): boolean {
+    return sync.state !== 'online' || sync.error_kind === 'conflict';
+}
 
 /**
  * Laravel's XSRF-TOKEN cookie, which it sets on every response. Inertia's own
@@ -28,17 +78,19 @@ function xsrfToken(): string {
  */
 export function useSync() {
     const { sync } = usePage<SharedData>().props;
-    const inFlight = useRef(false);
     const [busy, setBusy] = useState(false);
 
     const run = useCallback(async () => {
-        // The backstop timer (M7) and a checkout can land together; one cycle at
-        // a time is enough, and a second would only contend for the same rows.
-        if (inFlight.current) {
+        // The backstop timer, the outbox listener and a reconnect can all land
+        // together; one cycle at a time is enough, and a second would only
+        // contend for the same rows. Module-scoped, so a navigation landing
+        // mid-cycle cannot start a second one.
+        if (inFlight) {
             return;
         }
 
-        inFlight.current = true;
+        inFlight = true;
+        lastCycleAt = Date.now();
         setBusy(true);
 
         try {
@@ -51,7 +103,7 @@ export function useSync() {
             // The device went offline mid-request. The next cycle will say so;
             // there is nothing to report here and nowhere useful to report it.
         } finally {
-            inFlight.current = false;
+            inFlight = false;
             setBusy(false);
 
             // Only the shared sync prop comes back, so the page the cashier is
@@ -61,4 +113,93 @@ export function useSync() {
     }, []);
 
     return { sync, busy, run };
+}
+
+/**
+ * The four things that ask for a sync cycle (M7, §11.3).
+ *
+ * Mount this in EXACTLY ONE place — {@link SyncIndicator}, which the app header
+ * renders on every authenticated screen. It is a separate hook rather than part
+ * of {@link useSync} for that reason: a second component reading sync state must
+ * not silently start a second timer.
+ *
+ * ## Why a listener on the outbox instead of polling for the backlog
+ *
+ * Every server response already carries `unsynced_count` in the shared `sync`
+ * prop, read straight from the outbox. So the client learns the backlog grew
+ * without anything being built to tell it — a sale, a return, a login or an
+ * audit row produces a response, the count moves, and a cycle fires within
+ * seconds. Polling would ask the same question on a clock and get "nothing to
+ * do" almost every time.
+ *
+ * The listener cannot see the other direction. Branch A editing a price writes
+ * nothing at all on Branch B, so B's outbox stays empty however much changes
+ * upstream — which is why the timer survives, and why its job is now the pull
+ * rather than the push.
+ */
+export function useSyncTriggers() {
+    const { sync, run } = useSync();
+
+    const runRef = useRef(run);
+    runRef.current = run;
+
+    // A cycle only if one is DUE. The time-based triggers go through this and
+    // the event-based ones do not, which is what makes the two kinds behave
+    // correctly under remounting: a till someone is clicking through remounts
+    // constantly and gets at most one cycle per interval, while an idle till
+    // keeps a live timer and gets one on the same cadence. Either way the
+    // machine syncs about every five minutes and never per click.
+    const runIfDue = useCallback(() => {
+        if (Date.now() - lastCycleAt >= BACKSTOP_MS) {
+            void runRef.current();
+        }
+    }, []);
+
+    // 1. On mount, if due. An app launched while already online never receives
+    //    an `online` event, so without this the first cycle waits a full
+    //    interval — and `lastCycleAt` starts at 0, so the genuine first mount
+    //    after a launch always qualifies.
+    useEffect(() => {
+        runIfDue();
+    }, [runIfDue]);
+
+    // 2. The outbox listener — event-based, so NOT throttled: new work should go
+    //    up in seconds, which is the entire point of listening rather than
+    //    polling.
+    useEffect(() => {
+        if (!sync || sync.unsynced_count === 0) {
+            attemptedBacklog = null;
+
+            return;
+        }
+
+        if (stuck(sync) || !navigator.onLine || attemptedBacklog === sync.unsynced_count) {
+            return;
+        }
+
+        // Keyed on the count, at module scope: a backlog that cannot clear costs
+        // one retry per NEW write rather than one per page the cashier opens.
+        attemptedBacklog = sync.unsynced_count;
+
+        void runRef.current();
+    }, [sync]);
+
+    // 3. Reconnect, and 4. the backstop.
+    //
+    //    Reconnect is not throttled — it is the near-instant trigger of §11.3 and
+    //    the whole reason the webview event is listened to at all. Neither
+    //    decides anything: the cycle's own probe confirms reachability, because
+    //    navigator.onLine is optimistic and a captive portal reports online.
+    useEffect(() => {
+        const reconnected = () => void runRef.current();
+
+        window.addEventListener('online', reconnected);
+
+        const timer = window.setInterval(runIfDue, BACKSTOP_MS);
+
+        return () => {
+            window.removeEventListener('online', reconnected);
+            window.clearInterval(timer);
+        };
+    }, [runIfDue]);
 }

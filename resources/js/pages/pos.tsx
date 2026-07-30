@@ -9,7 +9,6 @@ import { Separator } from '@/components/ui/separator';
 import { Textarea } from '@/components/ui/textarea';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { useCurrency } from '@/hooks/use-currency';
-import { useSync } from '@/hooks/use-sync';
 import AppLayout from '@/layouts/app-layout';
 import { cn } from '@/lib/utils';
 import type { BreadcrumbItem, CartLine, DiscountType, Paginated, PaymentType, PosProduct } from '@/types';
@@ -32,7 +31,6 @@ const PAYMENT_LABELS: Record<PaymentType, string> = {
 
 export default function Pos({ products, filters }: { products: Paginated<PosProduct>; filters: Filters }) {
     const { symbol: currencySymbol, format: money } = useCurrency();
-    const { run: runSync } = useSync();
     const [search, setSearch] = useState(filters.search ?? '');
     const [cart, setCart] = useState<CartLine[]>([]);
     const [discountType, setDiscountType] = useState<DiscountType>('amount');
@@ -130,6 +128,15 @@ export default function Pos({ products, filters }: { products: Paginated<PosProd
             },
             {
                 preserveScroll: true,
+                // The opportunistic sync of §11.1 used to be an explicit
+                // runSync() call in here. M7 retired it: this response refreshes
+                // the shared `sync` prop with a grown backlog, and the outbox
+                // listener in useSyncTriggers() fires the cycle off that. Same
+                // behaviour — a cycle within seconds of the sale, never awaited,
+                // never in the commit path — with one mechanism now covering
+                // returns, logins and audit rows too, instead of a general
+                // trigger plus this special case.
+                //
                 // Inertia updates props without remounting the page, so the cart
                 // state is not auto-reset — clear it here on success.
                 onSuccess: () => {
@@ -137,15 +144,6 @@ export default function Pos({ products, filters }: { products: Paginated<PosProd
                     setDiscountInput('');
                     setCashReceived('');
                     setComment('');
-
-                    // Opportunistic sync (§11.1): the sale is already committed,
-                    // so this is a request that Postgres be brought up to date
-                    // NOW rather than at the next interval. Deliberately not
-                    // awaited and deliberately not in the commit path — the
-                    // cashier is handing over change and must not wait on a
-                    // network round trip, and a sync that fails must not
-                    // disturb a sale that succeeded.
-                    void runSync();
                 },
                 // Show the first error regardless of its key — per-line failures
                 // are keyed lines.0.variant_id etc., not a flat `lines`.

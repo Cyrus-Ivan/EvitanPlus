@@ -84,12 +84,13 @@ class SyncCycleTest extends TestCase
 
     public function test_a_successful_cycle_is_recorded_as_online(): void
     {
-        $this->stubCycle(fn () => 3);
+        $this->stubCycle(fn () => ['pushed' => 3, 'pulled' => 7]);
 
         $result = app(SyncCycle::class)->run();
 
         $this->assertSame(SyncStatus::ONLINE, $result['state']);
         $this->assertSame(3, $result['pushed']);
+        $this->assertSame(7, $result['pulled']);
 
         $status = SyncStatus::current();
         $this->assertNotNull($status->last_sync_at);

@@ -4,6 +4,8 @@ namespace Tests\Feature\Sync\Concerns;
 
 use App\Support\Sync\BranchCycle;
 use App\Support\Sync\Puller;
+use App\Support\Sync\QueueProcessor;
+use App\Support\Sync\RemoteStock;
 use App\Support\Sync\RowMapper;
 use App\Support\Sync\StockReconciler;
 use Illuminate\Database\Connection;
@@ -51,6 +53,47 @@ trait FakesTheBusinessDatabase
     private const BRANCH_SCOPED = ['inventory_ledger', 'stock_snapshots'];
 
     /**
+     * The two tables that have NO local counterpart to copy, and so must be
+     * spelled out here.
+     *
+     * They are the same two `SchemaParityTest::POSTGRES_ONLY` names for the app:
+     * `branches` because "the till knows only which branch it is, never the
+     * roster", and `inventory_update_queue` because it is coordination between
+     * the issuing user and a branch rather than branch data. A hand-kept list is
+     * a place to forget, which is why everything else is derived — but a table
+     * the app has never had cannot be derived from a schema that has never
+     * described it.
+     *
+     * @var array<string, string>
+     */
+    private const POSTGRES_ONLY = [
+        'branches' => '"id" varchar, "code" varchar, "name" varchar, "address" varchar,
+                       "disabled_at" datetime, "created_at" datetime, "updated_at" datetime',
+        'inventory_update_queue' => '"id" varchar, "branch_id" varchar, "variant_id" varchar,
+                                     "quantity" integer, "notes" varchar, "status" varchar,
+                                     "rejection_reason" varchar, "ledger_entry_id" varchar,
+                                     "issued_by" varchar, "resolved_at" datetime,
+                                     "created_at" datetime, "updated_at" datetime',
+    ];
+
+    /**
+     * The ONLY constraints carried, and only because SQL requires them.
+     *
+     * `ON CONFLICT (cols)` needs a matching unique index to target, on both
+     * engines — so a stand-in without these would refuse the very statements
+     * {@see RemoteStock} and {@see QueueProcessor}
+     * really run, and the alternative would be testing a rewritten query instead
+     * of the shipped one. Everything else stays constraint-free for the reason
+     * given on {@see createTableSql()}.
+     *
+     * @var array<string, list<string>>
+     */
+    private const UPSERT_KEYS = [
+        'stock_snapshots' => ['"branch_id", "variant_id"'],
+        'inventory_ledger' => ['"id"'],
+    ];
+
+    /**
      * Build the stand-in and return its connection.
      *
      * @param  list<string>  $tables
@@ -72,6 +115,10 @@ trait FakesTheBusinessDatabase
 
         foreach ($tables as $table) {
             $remote->statement($this->createTableSql($table));
+
+            foreach (self::UPSERT_KEYS[$table] ?? [] as $index) {
+                $remote->statement("create unique index \"{$table}_upsert\" on \"{$table}\" ({$index})");
+            }
         }
 
         return $remote;
@@ -88,6 +135,10 @@ trait FakesTheBusinessDatabase
      */
     private function createTableSql(string $table): string
     {
+        if (isset(self::POSTGRES_ONLY[$table])) {
+            return "create table \"{$table}\" (".self::POSTGRES_ONLY[$table].')';
+        }
+
         $columns = [];
 
         foreach (DB::select("pragma table_info(\"{$table}\")") as $column) {

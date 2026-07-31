@@ -85,6 +85,12 @@ final class BranchGrants
      *     stock_snapshots.
      *  3. The ONLINE-AUTHORITATIVE tables (§5.1) — categories, items, variants,
      *     users, settings, import_history — added in M6.5.
+     *  4. inventory_update_queue (§10) — added in M8. Not a fourth category so
+     *     much as the first one that is neither the branch's own history nor
+     *     shared data: a row here is one branch device asking ANOTHER branch to
+     *     move stock, and it is issued by an Owner or Admin sitting at a branch
+     *     device, so the branch role is the only credential in existence that
+     *     could write it.
      *
      * Group 3 is not a relaxation of §5.1; it is what §5.1 always required and
      * nobody had granted. That section says these are "edited only online
@@ -104,12 +110,46 @@ final class BranchGrants
      *
      *  - branches, schema_meta — provisioning and console territory. A branch
      *    may not invent branches or move its own version floor.
-     *  - inventory_update_queue — the branch only RESOLVES rows here (see
-     *    UPDATE_COLUMNS). NOTE: M8 must ADD this table to INSERT and re-run
-     *    reapplyGrants(). Adjustments are issued by an Owner or Admin on any
-     *    branch device targeting any branch, so without the grant the feature
-     *    is unreachable from the screens meant to offer it — today only the
-     *    console's admin connection can create a row.
+     *
+     * ## What group 4 costs, stated plainly
+     *
+     * INSERT on inventory_update_queue KNOWINGLY widens the cross-branch reach.
+     * Grants stop at the schema boundary, so a credential able to queue an
+     * adjustment for its OWN branch can queue one for ANY branch of the same
+     * business — and a queued adjustment that the target accepts becomes a real
+     * ledger entry there. That is the same exposure class §4's annotation
+     * already records for forged branch_id values on history rows, reachable
+     * through one more table; one business still cannot reach another's.
+     *
+     * Bounded three ways: the branch may only ever move the row to `pending`
+     * (resolution is UPDATE_COLUMNS, and the target branch decides), an
+     * adjustment that would drive stock negative is refused by the target rather
+     * than applied, and nothing here can DELETE.
+     *
+     * ## Row-level security is NOT coming, so this matrix must not erode
+     *
+     * RLS between branches inside one business schema is an ACCEPTED RISK,
+     * deliberately not planned — not a deferred item somebody intends to build
+     * (docs/glossary.md §9 carries the reasoning and is normative). In short:
+     * every branch of one business belongs to one Owner and runs on a device
+     * that business controls, so a credential in the wrong hands already means
+     * the till is in the wrong hands; the boundary that carries weight is
+     * business-to-business, and that one is schema-level and enforced.
+     *
+     * The consequence lands here. This matrix is now the ONLY boundary of its
+     * kind, so widening it is a real decision and never a convenience:
+     *
+     *  - enumerated per table, never GRANT ... ON ALL TABLES and never
+     *    ALTER DEFAULT PRIVILEGES, so a table a future migration adds grants
+     *    nothing until someone writes it down here;
+     *  - DELETE on nothing, anywhere — note there is no DELETE constant in this
+     *    class at all, and adding one would mean wiring it into BranchRole too;
+     *  - inventory_update_queue stays COLUMN-level UPDATE on its four columns;
+     *  - any future widening states its reason in that phase's note, the way
+     *    M6.5 and M8 both did.
+     *
+     * BranchRoleGrantsTest::test_the_live_grants_match_the_documented_matrix
+     * keeps live Postgres equal to this file, so nothing widens quietly.
      *
      * @var list<string>
      */
@@ -119,6 +159,7 @@ final class BranchGrants
         'categories',
         'import_history',
         'inventory_ledger',
+        'inventory_update_queue',
         'items',
         'login_history',
         'sale_return_items',

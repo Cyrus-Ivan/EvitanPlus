@@ -101,6 +101,38 @@ export interface Variant {
     updated_at: string;
 }
 
+/**
+ * One branch of this business, read live from the business database (M8).
+ *
+ * Never stored on this device: the till knows which branch it *is* (from
+ * `instance`), not the roster, so anything holding one of these got it from an
+ * online read and should not cache it.
+ */
+export interface Branch {
+    id: string;
+    code: string;
+    name: string;
+    is_this_branch: boolean;
+}
+
+/** A row of `inventory_update_queue`, named and localised server-side (M8). */
+export interface QueuedAdjustment {
+    id: string;
+    // Branch CODE, not id — the roster resolves it before this reaches the client.
+    branch: string;
+    item: string;
+    variant: string | null;
+    // Signed: positive adds stock at that branch, negative removes it.
+    quantity: number;
+    notes: string | null;
+    status: 'pending' | 'accepted' | 'rejected';
+    // Set only on rejection, and written by the branch that turned it down.
+    rejection_reason: string | null;
+    issued_by: string;
+    created_at: string;
+    resolved_at: string | null;
+}
+
 export interface Item {
     id: string;
     name: string;

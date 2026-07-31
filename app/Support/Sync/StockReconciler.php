@@ -112,18 +112,7 @@ class StockReconciler
      */
     private function apply(string $variantId, int $baseline): void
     {
-        // Every unsynced local movement for this variant, signed. The join is
-        // what makes "unsynced" mean the outbox's answer rather than a second
-        // opinion: `synced_at is null` is the one definition of the backlog
-        // anywhere in this system (glossary §5).
-        $unsynced = (int) DB::table('inventory_ledger')
-            ->join('sync_outbox', function (JoinClause $join): void {
-                $join->on('sync_outbox.row_id', '=', 'inventory_ledger.id')
-                    ->where('sync_outbox.table_name', '=', 'inventory_ledger');
-            })
-            ->whereNull('sync_outbox.synced_at')
-            ->where('inventory_ledger.variant_id', $variantId)
-            ->sum('inventory_ledger.quantity');
+        $unsynced = $this->unsyncedMovement($variantId);
 
         // Clamped, because a negative snapshot violates a first-order invariant
         // and this column is what the POS reads to decide what may be sold. It
@@ -154,5 +143,30 @@ class StockReconciler
         DB::table('stock_snapshots')
             ->where('variant_id', $variantId)
             ->update(['quantity' => $reconciled, 'updated_at' => now()]);
+    }
+
+    /**
+     * Every unsynced local movement for one variant, signed.
+     *
+     * The join is what makes "unsynced" mean the outbox's answer rather than a
+     * second opinion: `synced_at is null` is the one definition of the backlog
+     * anywhere in this system (glossary §5).
+     *
+     * Public because {@see QueueProcessor} needs the identical number — an
+     * adjustment issued from another branch has to be validated against
+     * reconciled stock, which is this term plus the upstream baseline. Two
+     * spellings of "unsynced" is precisely the kind of divergence that lets one
+     * of them quietly stop counting returns.
+     */
+    public function unsyncedMovement(string $variantId): int
+    {
+        return (int) DB::table('inventory_ledger')
+            ->join('sync_outbox', function (JoinClause $join): void {
+                $join->on('sync_outbox.row_id', '=', 'inventory_ledger.id')
+                    ->where('sync_outbox.table_name', '=', 'inventory_ledger');
+            })
+            ->whereNull('sync_outbox.synced_at')
+            ->where('inventory_ledger.variant_id', $variantId)
+            ->sum('inventory_ledger.quantity');
     }
 }

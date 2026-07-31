@@ -200,8 +200,9 @@ records, UUID PKs, one Owner, Item Cost Owner-only, negative inventory never all
 > - The `inventory_update_queue` grant is **four columns**, not `status` alone — see §7.
 > - The isolation this bullet promises is **schema-level, not row-level**. Within its own
 >   business schema, a compromised branch credential can insert rows tagged with *another
->   branch's* `branch_id`: a grant cannot see row contents. Row-level security is the fix
->   and is **not built** (§19). Read this invariant as "one business cannot reach another
+>   branch's* `branch_id`: a grant cannot see row contents. Row-level security would be the
+>   mitigation and is **deliberately not planned** — an accepted risk, with the reasoning in
+>   `docs/glossary.md` §9. Read this invariant as "one business cannot reach another
 >   business's data" — it is not "one branch cannot forge another branch's data."
 
 **The Provisioning Console never ships**
@@ -786,18 +787,13 @@ So branch-targeted adjustments are **mediated**:
 > "online admins" and "HQ" used elsewhere in this document and in `BranchGrants.php` mean
 > exactly this actor and are retired in favour of it.
 >
-> **Two consequences M8 must carry, neither of them optional:**
->
-> 1. **`inventory_update_queue` must be added to `BranchGrants::INSERT`.** As built, no branch
->    role can insert into it — only the console's admin connection can, which would make this
->    feature unreachable from the screens that are supposed to offer it. The grant is not there
->    today, so M8 adds it and re-runs `BranchRole::reapplyGrants()` across existing schemas.
-> 2. **This widens the deferred RLS gap (§19), and knowingly.** Grants stop at the schema
->    boundary, so a branch credential that can insert a queue row for *its own* branch can
->    insert one for *any* branch of the same business. That is the same exposure §4's
->    annotation already records for forged `branch_id` values on history rows — one business
->    still cannot reach another's data — but it is now reachable through one more table.
->    Row-level security remains the fix and remains unbuilt.
+> **Both consequences are now carried (M8):** `inventory_update_queue` is in
+> `BranchGrants::INSERT`, delivered to existing schemas with `schema:reapply-grants`; and the
+> cross-branch reach is wider by exactly one table, recorded in `BranchGrants`, in the migration
+> and in `docs/glossary.md` §9, and asserted by a test that issues a row against another branch and
+> expects it to succeed. Grants stop at the schema boundary; one business still cannot reach
+> another's data. Row-level security is **deliberately not planned** — see §9 for why, and for the
+> grant-matrix discipline that stands in its place.
 
 1. An online adjustment for a branch is written to `inventory_update_queue` as **pending**
    (it is **not** yet an authoritative ledger entry).
@@ -812,6 +808,28 @@ So branch-targeted adjustments are **mediated**:
 
 This holds for both currently-offline and currently-online branches (an online branch just
 processes the queue seconds later on the next opportunistic/polled cycle).
+
+> **As built (M8): the queue carries adjustments aimed at ANOTHER branch, and nothing else.**
+> `App\Support\Sync\QueueProcessor` runs as step 2 of a cycle, between the push and the pull.
+> Four things this section did not say and which turn out to be load-bearing:
+>
+> - **An adjustment aimed at THIS device never enters the queue.** It stays the direct online
+>   write M7 made of it. The mediation above exists because the issuer cannot see the target's
+>   unsynced sales — and when the target is the issuing device, it can, so `StockLedger` validates
+>   against reconciled stock and refuses on the spot. Queueing it would add a wait and a reject
+>   path that could never fire.
+> - **Acceptance writes the ledger entry UPSTREAM ONLY.** The entry rides the same cycle's pull
+>   back down and `StockReconciler` sets the local snapshot from the refreshed baseline. Writing
+>   it at both ends would give `type = 'stock_adjustment'` two writers — the rule §5.1 depends on
+>   — and would enqueue the row in the outbox to be handed back to the business that issued it.
+>   This is why step 2 must sit *before* step 3 and not after it.
+> - **The ledger entry's id is the queue row's id.** A cycle that inserted the entry and then lost
+>   its connection leaves a `pending` row whose adjustment is already applied; by the next cycle
+>   the baseline contains it, so re-deciding could *reject* an adjustment that is in the ledger.
+>   Recognising it is one primary-key lookup.
+> - **The queue and the branch roster are read live, never mirrored** — an **online read**
+>   (`docs/glossary.md` §5). Neither has a local counterpart and neither needs one: both screens
+>   are Owner/Admin, and the operation they serve cannot happen offline either.
 
 ---
 
@@ -1362,23 +1380,35 @@ provisioning. It requires internet on first run and:
 
 Added by the build (see the annotations that reference them):
 
-- **Row-level isolation between branches inside one business schema (RLS)** — grants stop at
-  the schema boundary, so a compromised branch credential can insert rows tagged with another
-  branch's `branch_id` (§4, §7). Not a theoretical gap: it is the difference between what §4
-  currently claims and what the system enforces.
+- **`sync_outbox` is never pruned.** `Outbox::markSynced()` sets `synced_at` and leaves the row, so
+  the table grows for the life of the install. Correctness-neutral and slow — entries are pointers,
+  not payloads — but worth a deliberate think rather than a quick fix, because pruning touches
+  `synced_at is null`, which is the single definition of "unsynced" that M7's stock reconciliation
+  and M8's queue decision both compute against (`docs/glossary.md` §5).
+
+**Decided against, not deferred.** One item that used to sit in the list above has been settled:
+
+- **Row-level isolation between branches inside one business schema (RLS)** — grants stop at the
+  schema boundary, so a compromised branch credential can insert rows tagged with another branch's
+  `branch_id`, and since M8 can queue an adjustment against another branch (§4, §7, §10). This is
+  **an accepted risk and is not planned.** Every branch of one business belongs to one Owner and
+  runs on a device that business controls, so anyone holding the credential already has the till;
+  the boundary that matters is business-to-business, which is schema-level and enforced. The
+  reasoning, and the grant-matrix discipline that stands in its place, are in `docs/glossary.md` §9
+  — which is normative and is the copy to trust if this paragraph ever drifts from it.
+
 **Closed by the vocabulary pass.** Three items that had been open — one of them a genuine hole
 in the design rather than a naming problem — were settled and are no longer deferred. Recorded
 here because each carries work into a later phase:
 
 - **Who issues inventory adjustments, and from where** → **an Owner or Admin, on any branch
   device, while online, may target any branch of their business** (§10). The undefined actors
-  "online admins" and "HQ" both meant this. **M8 must add `inventory_update_queue` to
-  `BranchGrants::INSERT`** — no branch role holds it today, which would leave the feature
-  unreachable from the screens meant to offer it — and re-run `reapplyGrants()`. This knowingly
-  widens the RLS gap still listed above.
+  "online admins" and "HQ" both meant this. ✓ **Done in M8:** `inventory_update_queue` is in
+  `BranchGrants::INSERT`, delivered to existing schemas by `schema:reapply-grants`. It widened the
+  cross-branch reach by one table, which is now an accepted risk rather than a gap owed a fix.
 - **`connection_state`'s value set** → **four values on both sides**,
   `online | offline | unauthorized | version_blocked` (§14). No migration needed; M10 may add
-  the check constraint that would make the set enforceable.
+  the check constraint that would make the set enforceable — still outstanding, and M10's.
 - **Whether `import_history` syncs upward** → **no, and CSV import becomes online-only** (§17).
-  The branch role's `SELECT`-without-`INSERT` on that table turns out to be correct. **M6 owes
-  the connectivity gate** on the import screen.
+  The branch role's `SELECT`-without-`INSERT` on that table turns out to be correct. ✓ **Done in
+  M6.5:** the import screen refuses offline, server-side, through `OnlineWrite`.

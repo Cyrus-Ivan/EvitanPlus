@@ -42,8 +42,11 @@ use Throwable;
  *
  * Row-level isolation is NOT attempted: within its own business schema a
  * compromised branch credential could insert rows tagged with another branch's
- * branch_id. RLS is the fix and is out of scope here; stating that plainly
- * beats overclaiming least privilege.
+ * branch_id. Stating that plainly beats overclaiming least privilege — and it
+ * is an ACCEPTED RISK rather than a gap awaiting RLS, because the boundary that
+ * carries weight is business-to-business and that one IS enforced here. See
+ * docs/glossary.md §9, and BranchGrants for why the privilege matrix must stay
+ * as narrow as it is now that nothing else backs it up.
  */
 final class BranchRole
 {

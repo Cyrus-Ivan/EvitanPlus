@@ -12,6 +12,10 @@ const DESTINATIONS: Array<[path: string, title: RegExp]> = [
     ['/inventory', /^Inventory -/],
     ['/inventory/categories', /^Categories -/],
     ['/inventory/stock-history', /^Stock History -/],
+    // Renders with nothing to show on this device — it has no branch credential,
+    // so the online read cannot happen. That IS the case worth smoking: the page
+    // must say so rather than fail.
+    ['/inventory/stock-updates', /^Stock Updates -/],
     ['/login-history', /^Login History -/],
     ['/users', /^User Management -/],
     ['/audit-logs', /^Audit Logs -/],

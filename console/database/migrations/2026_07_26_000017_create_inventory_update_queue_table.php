@@ -30,15 +30,18 @@ use Illuminate\Support\Facades\Schema;
  * WHO inserts these rows: an Owner or Admin, on any branch device, while
  * online, targeting any branch of their business — hence `branch_id` (target)
  * and `issued_by` (user). The words "online admin" and "HQ" used elsewhere both
- * mean this actor.
+ * mean this actor, and both are retired (docs/glossary.md §8).
  *
- * M8 MUST add this table to BranchGrants::INSERT and re-run
- * BranchRole::reapplyGrants(). No branch role holds INSERT on it today, so as
- * built only the console's admin connection can create a row — which would
- * leave the feature unreachable from the screens meant to offer it. Doing so
- * knowingly widens the deferred RLS gap: grants stop at the schema boundary, so
- * a credential able to queue an adjustment for its own branch can queue one for
- * any branch of the same business. See docs/glossary.md §8.
+ * As built (M8): the branch role holds INSERT here — see BranchGrants::INSERT
+ * for what that costs and how it is bounded. Until M8 only the console's admin
+ * connection could create a row, which left the feature unreachable from the
+ * screens meant to offer it.
+ *
+ * WHO writes the ledger entry on acceptance: the TARGET branch's own device,
+ * during step 2 of its sync cycle (App\Support\Sync\QueueProcessor), after its
+ * real movements have been pushed. It writes the entry upstream only and lets
+ * the ordinary pull bring it back down, so `type = 'stock_adjustment'` keeps
+ * exactly one writer.
  */
 return new class extends Migration
 {

@@ -7,6 +7,7 @@ use App\Http\Controllers\BusinessSettingsController;
 use App\Http\Controllers\Inventory\CategoryController;
 use App\Http\Controllers\Inventory\InventoryExportController;
 use App\Http\Controllers\Inventory\InventoryImportController;
+use App\Http\Controllers\Inventory\InventoryQueueController;
 use App\Http\Controllers\Inventory\ItemController;
 use App\Http\Controllers\Inventory\StockAdjustmentController;
 use App\Http\Controllers\Inventory\StockHistoryController;
@@ -96,6 +97,15 @@ Route::middleware(['auth'])->group(function () {
         Route::post('inventory/import', [InventoryImportController::class, 'store'])->name('inventory.import.store');
         Route::get('inventory/import/template', [InventoryImportController::class, 'template'])->name('inventory.import.template');
         Route::get('inventory/export', InventoryExportController::class)->name('inventory.export');
+
+        // Stock adjustments aimed at ANOTHER branch (M8). Online-only in both
+        // directions: everything here lives in Postgres and is deliberately not
+        // mirrored, and the branch that is targeted is what resolves the row on
+        // its own next sync. Literal segments, ahead of the {item} wildcard.
+        Route::get('inventory/stock-updates', [InventoryQueueController::class, 'index'])->name('stock-updates');
+        Route::get('inventory/stock-updates/branches', [InventoryQueueController::class, 'branches'])->name('stock-updates.branches');
+        Route::post('inventory/stock-updates', [InventoryQueueController::class, 'store'])->name('stock-updates.store');
+        Route::post('inventory/stock-updates/{queued}/reissue', [InventoryQueueController::class, 'reissue'])->name('stock-updates.reissue');
 
         Route::get('inventory/{item}/edit', [ItemController::class, 'edit'])->name('items.edit');
         Route::patch('inventory/{item}', [ItemController::class, 'update'])->name('items.update');

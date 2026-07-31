@@ -273,8 +273,15 @@ confirmation**. A queue row is *not* a ledger entry; it becomes one only on acce
 is what keeps stock from going negative behind an offline branch's back.
 *Anchor:* the `inventory_update_queue` table; `check ((status = 'pending') = (resolved_at is
 null))`; `BranchGrants::UPDATE_COLUMNS` (the four columns a resolution touches:
-`status, resolved_at, rejection_reason, ledger_entry_id`).
+`status, resolved_at, rejection_reason, ledger_entry_id`); `App\Support\Sync\QueueProcessor`
+answers it, `App\Http\Controllers\Inventory\InventoryQueueController` issues and displays it (M8).
 ✗ **Not** the outbox. See §5.
+✗ **Not** how an adjustment aimed at THIS branch travels. That is an ordinary online write: the
+queue exists because the issuer cannot see the target's unsynced sales, and a device can always
+see its own.
+✗ **Not** answered by the issuer. The **target** branch resolves its own rows, during step 2 of
+its next cycle, and writes the accepted ledger entry upstream only — the pull brings it back
+down, so `type = 'stock_adjustment'` keeps exactly one writer.
 
 ---
 
@@ -324,6 +331,17 @@ centrally at the moment it is made — queueing one would give those tables a se
 ✗ **Not** "online-only". That phrase (§17) means only *requires a connection*, and treating it
 as equivalent to *reaches Postgres* is the error that left every catalog and staff edit stranded
 on one device until M6.5.
+
+### Online read
+A **live query against the business database serving one screen**, keeping nothing. Two things
+are read this way and neither has a local counterpart: the branch **roster** (`branches`) and the
+**inventory update queue**.
+*Anchor:* `App\Support\Sync\OnlineRead`; `OfflineWriteException::forReading()` (M8).
+✗ **Not** a pull. A pull fills the local mirror so the till can read it offline forever; an
+online read mirrors nothing, which is exactly why these two tables need no migration, no
+`sync_cursor` row and no line in the parity guard.
+✗ **Not** version-gated, unlike an online write. The gate stops a stale build *writing* (§6);
+refusing to render a screen would hide the display of the very problem.
 
 ### Pull
 Fetching **deltas** of pulled tables by `updated_at`, plus the recomputed stock baseline.
@@ -583,12 +601,11 @@ targeting any branch of their business.** They choose the target in the in-app a
 *Anchor:* the `inventory_update_queue` table.
 ✗ **"HQ" and "online admin" are retired.** There is no head-office application, no separate
 console-side actor, and no fourth permission role. Both words meant this one actor.
-⚠ **M8 must add `inventory_update_queue` to `BranchGrants::INSERT`** and re-run
-`BranchRole::reapplyGrants()`. No branch role holds INSERT on it today, so as built only the
-console's admin connection could create a row — leaving the feature unreachable from the screens
-that offer it. This knowingly widens the deferred RLS gap: grants stop at the schema boundary,
-so a credential able to queue an adjustment for its own branch can queue one for any branch of
-the same business.
+✓ **Built (M8).** `inventory_update_queue` is in `BranchGrants::INSERT`, delivered to existing
+businesses with `schema:reapply-grants`, and the target is chosen in the adjust dialog on any
+product. It knowingly widened the deferred RLS gap — grants stop at the schema boundary, so a
+credential able to queue an adjustment for its own branch can queue one for any branch of the
+same business. See §9.
 
 ### `connection_state`
 **Four values, identical on both sides:** `online | offline | unauthorized | version_blocked`.
@@ -613,14 +630,53 @@ imported while offline would create stock movements that could never reach Postg
 diverge permanently and silently. Pushing them instead would give `stock_adjustment` rows **two
 writers**, breaking the single-writer-per-table rule that is the reason no last-write-wins
 exists anywhere in this system.
-⚠ **M6 owes a connectivity gate** on the shipped v1.0.0 import screen, so it refuses cleanly
-offline rather than silently producing unsyncable rows.
+✓ **The connectivity gate this entry owed is built** (M6.5): `InventoryImportController` refuses
+on `ConnectivityProbe::online()`, `import.tsx` renders `OfflineNotice` and disables the form, and
+`CsvInventoryImporter` runs inside an `OnlineWrite` — so an offline import is refused by the
+server, not merely discouraged by the screen.
 
 ---
 
-## 9. Still open
+## 9. Accepted risks and open questions
 
-- **Row-level security between branches inside one business schema.** Grants stop at the schema
-  boundary, so a compromised branch credential can write rows tagged with another branch's
-  `branch_id` — and, once M8 lands, queue adjustments against another branch. One business still
-  cannot reach another's data. Deferred, and tracked in `MULTIBRANCH-BRAINSTORM.md` §19.
+Two different things, kept apart on purpose. An **accepted risk** is settled: somebody decided not
+to build the mitigation, and the reason is written down so the decision is not made again by
+whoever reads this next. An **open question** has no answer yet.
+
+### Accepted: no row-level security between branches inside one business schema
+
+Grants stop at the schema boundary, so a compromised branch credential can write rows tagged with
+another branch's `branch_id`, and since M8 can queue a stock adjustment against another branch.
+This is **not planned**, and that is a decision rather than a backlog item.
+
+**Why it is acceptable.** Every branch of one business belongs to **one Owner**, and a branch
+credential lives on a device that business physically controls. Anyone holding that credential
+already has the till: they can sell, refund, read that branch's entire history and reach the whole
+catalog. Forging another branch's `branch_id` is a marginal escalation on top of already having
+all of that — not a new class of access. The boundary that carries real weight is
+**business-to-business**, and that one is schema-level, enforced by Postgres, and proved by
+`BranchRoleGrantsTest::test_it_cannot_reach_another_business`. It is untouched by any of this.
+
+**Why RLS is not a cheap fix either.** It would mean a policy on every table plus a per-branch
+session variable, and branch devices connect through Supabase's **transaction pooler**, where no
+session state survives a cycle (§5 "sync cycle" — no `SET`, no session GUCs). The mechanism RLS
+normally leans on is the one thing this architecture has already given up.
+
+**Therefore the grant matrix is the only boundary of this kind, and it must not erode.** These are
+rules, not preferences:
+- `BranchGrants` is enumerated **per table** — never `GRANT ... ON ALL TABLES`, never
+  `ALTER DEFAULT PRIVILEGES`, so a table added by a future migration grants nothing by default.
+- **DELETE is granted on nothing, anywhere.** There is no `DELETE` constant in `BranchGrants` at
+  all.
+- `inventory_update_queue` stays **column-level** UPDATE on its four resolution columns.
+- Any future widening states its reason in that phase's note, the way M6.5 and M8 both did.
+
+*Anchor:* `BranchGrants`; `BranchRoleGrantsTest::test_the_live_grants_match_the_documented_matrix`
+keeps live Postgres equal to the matrix, so nothing widens quietly;
+`test_it_can_issue_a_queued_adjustment_for_any_branch_of_its_business` asserts the accepted reach
+rather than describing it.
+
+### Open: nothing currently
+
+Items deferred for scheduling rather than decided against live in
+`MULTIBRANCH-BRAINSTORM.md` §19.

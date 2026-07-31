@@ -27,4 +27,21 @@ class OfflineWriteException extends RuntimeException
             .'carry on working as normal. Reconnect and try again.'
         );
     }
+
+    /**
+     * The same precondition, for a screen that READS data this device does not
+     * mirror (M8): the branch roster, the inventory update queue.
+     *
+     * Same class rather than a second one, because it is the same situation and
+     * the same remedy — the only difference is that nothing was being attempted,
+     * so "try again" would be the wrong ending.
+     */
+    public static function forReading(string $subject): self
+    {
+        return new self(
+            "{$subject} lives in the business database and is not stored on this device, so it can only "
+            .'be viewed while connected. This device is offline right now — selling, returns and receipts '
+            .'carry on working as normal.'
+        );
+    }
 }

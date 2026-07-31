@@ -30,6 +30,20 @@ class SchemaReapplyGrantsTest extends TestCase
 {
     use AssertsBranchGrants, ProvisionsBusiness;
 
+    /**
+     * ProvisionsBusiness is lazy but NOT self-cleaning: its docblock requires
+     * every using class to call this from its own tearDownAfterClass. This class
+     * did not, and the cost was invisible because nothing fails — the suite went
+     * green while leaving one real `biz_*` schema and one branch role behind in
+     * Supabase on every single run. Eight had accumulated before anyone looked.
+     */
+    public static function tearDownAfterClass(): void
+    {
+        self::tearDownProvisionedBusiness();
+
+        parent::tearDownAfterClass();
+    }
+
     public function test_it_restores_a_privilege_that_was_revoked_by_hand(): void
     {
         $schema = $this->schema();

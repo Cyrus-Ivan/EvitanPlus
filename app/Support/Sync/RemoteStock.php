@@ -45,7 +45,7 @@ class RemoteStock
         foreach (array_values(array_unique($variantIds)) as $variantId) {
             $remote->statement(
                 'insert into stock_snapshots (id, branch_id, variant_id, quantity, created_at, updated_at)
-                 select ?, ?, ?, coalesce(sum(quantity), 0), now(), now()
+                 select ?, ?, ?, coalesce(sum(quantity), 0), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                    from inventory_ledger
                   where branch_id = ? and variant_id = ?
                  on conflict (branch_id, variant_id)

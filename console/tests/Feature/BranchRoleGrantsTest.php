@@ -183,10 +183,62 @@ class BranchRoleGrantsTest extends TestCase
     }
 
     /**
-     * The grant M8 depends on, and the reason it is four columns rather than the
-     * one §7 names: `inventory_update_queue_resolved_at` requires resolved_at to
-     * move in the same statement as status, so a status-only grant could never
-     * resolve a queue row at all.
+     * The M8 grant: a branch device ISSUES an adjustment against another branch.
+     *
+     * The credential doing it is an ordinary branch role, because there is no
+     * other kind — an Owner or Admin issues these from the in-app admin screens
+     * on a branch device (docs/glossary.md §8 "Issuing branch"), and the console
+     * is developer-only and never ships. Until M8 nothing but the console's admin
+     * connection could write this table, which made the feature unreachable from
+     * the screens meant to offer it.
+     *
+     * The second half is the exposure that grant buys, asserted rather than
+     * described: the same credential can queue a row against a branch that is NOT
+     * its own, because grants stop at the schema boundary. That is an ACCEPTED
+     * risk — row-level security is deliberately not planned (docs/glossary.md
+     * §9) — so this assertion is the executable record of a decision, not of a
+     * pending fix. A test that pretended otherwise would be worse than none.
+     */
+    public function test_it_can_issue_a_queued_adjustment_for_any_branch_of_its_business(): void
+    {
+        $branch = $this->branch();
+        $variantId = $this->seedQueueFixtureVariant();
+        $userId = $branch->selectOne('select id from users')->id;
+
+        $issue = fn (string $branchId): bool => $branch->table('inventory_update_queue')->insert([
+            'id' => (string) Str::orderedUuid(),
+            'branch_id' => $branchId,
+            'variant_id' => $variantId,
+            'quantity' => -3,
+            'status' => 'pending',
+            'issued_by' => $userId,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->assertAllowed(fn () => $issue($this->provisioned()['branch']['id']));
+
+        // Another branch of the SAME business. Allowed, knowingly: this is the
+        // accepted cross-branch reach, not an accident, and it is bounded — the
+        // row is only ever `pending`, and the target branch is what decides
+        // whether it becomes a ledger entry at all.
+        $other = (string) Str::orderedUuid();
+        SchemaConnection::pin($this->schema())->table('branches')->insert([
+            'id' => $other, 'code' => 'GAP', 'name' => 'Other Branch',
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        $this->assertAllowed(fn () => $issue($other));
+
+        // What it still cannot do to this table.
+        $this->assertRefused(fn () => $branch->table('inventory_update_queue')->delete());
+    }
+
+    /**
+     * The grant M8's resolution depends on, and the reason it is four columns
+     * rather than the one §7 names: `inventory_update_queue_resolved_at` requires
+     * resolved_at to move in the same statement as status, so a status-only grant
+     * could never resolve a queue row at all.
      */
     public function test_it_can_resolve_a_queued_adjustment_but_not_rewrite_one(): void
     {
@@ -406,23 +458,10 @@ class BranchRoleGrantsTest extends TestCase
     {
         $business = SchemaConnection::pin($this->schema());
 
-        $categoryId = (string) Str::orderedUuid();
-        $itemId = (string) Str::orderedUuid();
-        $variantId = (string) Str::orderedUuid();
+        $variantId = $this->seedQueueFixtureVariant();
         $queueId = (string) Str::orderedUuid();
         $now = now();
 
-        $business->table('categories')->insert([
-            'id' => $categoryId, 'name' => 'Queue Fixture', 'created_at' => $now, 'updated_at' => $now,
-        ]);
-        $business->table('items')->insert([
-            'id' => $itemId, 'category_id' => $categoryId, 'name' => 'Queue Fixture Item',
-            'unit' => 'pc', 'created_at' => $now, 'updated_at' => $now,
-        ]);
-        $business->table('variants')->insert([
-            'id' => $variantId, 'item_id' => $itemId, 'sku' => 'QF-0001', 'selling_price' => 10,
-            'created_at' => $now, 'updated_at' => $now,
-        ]);
         $business->table('inventory_update_queue')->insert([
             'id' => $queueId,
             'branch_id' => $this->provisioned()['branch']['id'],
@@ -435,6 +474,36 @@ class BranchRoleGrantsTest extends TestCase
         ]);
 
         return $queueId;
+    }
+
+    /**
+     * A sellable variant to hang queue fixtures off. Names and SKU are unique per
+     * call: the schema outlives each test, so a fixed SKU would collide with the
+     * unique index the second time a test asked for one.
+     */
+    private function seedQueueFixtureVariant(): string
+    {
+        $business = SchemaConnection::pin($this->schema());
+
+        $categoryId = (string) Str::orderedUuid();
+        $itemId = (string) Str::orderedUuid();
+        $variantId = (string) Str::orderedUuid();
+        $suffix = strtoupper(Str::random(6));
+        $now = now();
+
+        $business->table('categories')->insert([
+            'id' => $categoryId, 'name' => "Queue Fixture {$suffix}", 'created_at' => $now, 'updated_at' => $now,
+        ]);
+        $business->table('items')->insert([
+            'id' => $itemId, 'category_id' => $categoryId, 'name' => "Queue Fixture Item {$suffix}",
+            'unit' => 'pc', 'created_at' => $now, 'updated_at' => $now,
+        ]);
+        $business->table('variants')->insert([
+            'id' => $variantId, 'item_id' => $itemId, 'sku' => "QF-{$suffix}", 'selling_price' => 10,
+            'created_at' => $now, 'updated_at' => $now,
+        ]);
+
+        return $variantId;
     }
 
     /** A second, deliberately unmigrated schema — one table is enough to probe. */

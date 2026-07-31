@@ -244,6 +244,20 @@ per table on purpose, so a migration that adds a table leaves every branch role 
 privileges on it until `BranchRole::reapplyGrants()` runs. `schema:migrate` does not do
 that today.
 
+### Re-apply the privilege matrix
+
+```bash
+php console/artisan schema:reapply-grants --business=<uuid>
+```
+
+Needed whenever `BranchGrants` changes, which is not rare: **M6.5** widened it so the
+in-app admin could write shared data at all, and **M8** added `inventory_update_queue` to
+`INSERT` so a branch device could issue a stock adjustment against another branch. A
+business provisioned before either change has roles that predate it, and the symptom is a
+till reporting **"Sync stuck"** — `online` + `conflict` — because `permission denied` is
+SQLSTATE 42501, an access-rule violation rather than a network fault. `GRANT` is
+idempotent, so running this on a current schema is a no-op that says so.
+
 ### Delivering a credential
 
 The JSON lands in `console/storage/app/credentials/` at mode `0600` (git-ignored, pruned
@@ -348,6 +362,7 @@ timing table.
 | `EMAXCONNSESSION` part-way through a run | The admin session pooler is **15 clients** wide and Supavisor frees them lazily. A cancelled run, an open `tinker`, or a psql session holds slots. | Close them and wait a minute. `Tests\TestCase::tearDownAfterClass` purges four connections per class precisely to avoid this. |
 | Leftover `biz_test_*` schemas | A run cancelled before `tearDownAfterClass`. There is no reaper, by choice. | `select schema_name from information_schema.schemata where schema_name like 'biz_test_%';` then drop them. |
 | Leftover `biz_<uuid>` schemas and `branch_*` roles | **A second, less obvious leak.** The provisioning tests do not use the `biz_test_` prefix — `ProvisionsBusiness` runs the real `business:provision`, so its schema is named from a freshly minted UUID and is indistinguishable by name from a real business. A run cancelled mid-provision therefore leaks a schema the `biz_test_%` sweep will never find. | See the sweep in §7 — identify them by their fixture branch codes (`FIX`, `LIFE`) in the audit trail, not by their names. |
+| The same leak from a run that **completed** | **Fixed, and worth knowing it existed.** `ProvisionsBusiness` is not self-cleaning: its docblock requires every using class to call `tearDownProvisionedBusiness()` from its own `tearDownAfterClass`. `SchemaReapplyGrantsTest` never did, so a fully green suite still left one real `biz_*` schema and one branch role in Supabase **on every run** — eight had accumulated before anyone counted. Nothing fails when this happens, which is the whole problem. | Fixed by adding the teardown. If a new class uses that trait, give it a `tearDownAfterClass` or it will do this again silently. |
 | A green run that tested nothing | The bare suite skips silently without credentials. | Always use `composer verify:console`, which passes `--fail-on-skipped`. This exact shape is why the parity guard sat unrun from M1 to M4. |
 
 ---

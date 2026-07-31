@@ -9,6 +9,7 @@ import {
     FileSpreadsheet,
     History,
     Package,
+    PackageCheck,
     PackageSearch,
     ReceiptText,
     ScrollText,
@@ -32,6 +33,9 @@ const mainNavGroups: NavGroup[] = [
             // No dedicated ability backs the import/export routes, so this one
             // gates by role floor; the routes are `role:admin` server-side.
             { title: 'Import / Export', url: '/inventory/import', icon: FileSpreadsheet, minRole: 'admin' },
+            // Stock adjustments sent to OTHER branches, and what those branches
+            // did with them (M8). Same role floor and same reason as above.
+            { title: 'Stock Updates', url: '/inventory/stock-updates', icon: PackageCheck, minRole: 'admin' },
         ],
     },
     {

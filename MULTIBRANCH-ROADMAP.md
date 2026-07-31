@@ -148,7 +148,8 @@ One console command turns owner/business/branch input into a live, connectable s
 > - Owner password is developer-typed (spec-literal §8.1) with `must_change_password = false`.
 >   Not written to the JSON or the audit trail. No RLS: within its own schema a branch
 >   credential could still write rows tagged with another branch's `branch_id` — stated
->   plainly rather than overclaimed, and deferred.
+>   plainly rather than overclaimed. Since settled as an **accepted risk that is not planned**
+>   (`docs/glossary.md` §9), not a deferred item.
 >
 > **Corrected in M3.2** (see M3's note below and `MULTIBRANCH-BRAINSTORM.md` §8): the undo
 > stack did not in fact cover the schema — it was pushed *after* the migration, leaving the
@@ -872,6 +873,33 @@ Near-instant reconnect and correct bidirectional data flow.
 >   The split is not convenience: `timestamptz` precision, `pdo_pgsql` returning booleans as
 >   `'t'`/`'f'`, the timezone conversion and the real grants all pass against a stand-in and fail
 >   in a shop, so a finding belonging to the round trip must never be asserted in the fast half.
+>
+> **Closed afterwards, before M8 started.** M7 shipped with two things open that were recorded
+> nowhere in the repo, which is its own defect — a flagged item held only in an agent's memory is
+> not flagged:
+>
+> - **The four sync triggers had no automated coverage at all**, having been verified once by
+>   driving a browser by hand. That is the code least able to afford it: this app sets no
+>   persistent Inertia layout, so every navigation unmounts and remounts the header, the indicator
+>   and the hook, and a version keeping its bookkeeping in a ref would run a cycle per click
+>   forever. That bug was caught by *reading* the file. `tests/e2e/sync.spec.ts` now pins all four
+>   — mount, navigation-remount, the `online` event, the five-minute backstop — plus the outbox
+>   listener's suppression rule, counting cycles at the **network layer** (`page.on('request')`),
+>   which is what makes the instrumentation traps of the manual runs unreachable. Playwright's
+>   clock API tests the backstop for real rather than asserting an interval is registered. Every
+>   assertion was confirmed to fail against a deliberately broken hook.
+>   What it deliberately cannot cover is the listener's other half — a growing backlog on a
+>   *healthy* branch — which needs `state = 'online'` and therefore a real credential; forcing it
+>   would mean rewriting `props.sync` in flight and testing a fabricated prop. It stays rig-verified,
+>   and the spec says so and says where.
+> - **The one cycle reading that was never explained is explained by elimination.** During the
+>   first (badly instrumented) rig run a cycle appeared ~3m25s after the previous one, inside the
+>   throttle; four properly instrumented runs afterwards showed none. Only two paths are
+>   unthrottled. The device in that run was parked with no new local writes, which rules out the
+>   outbox listener, and the spec above now proves the throttled paths are throttled — leaving a
+>   spurious `online` event from the OS, which Chrome emits on interface churn (VPN, wifi roam).
+>   One extra cycle is the correct response to it, so **no code change**: guarding the reconnect
+>   trigger would trade §11.3's near-instant reconnect for suppressing a cycle that costs nothing.
 
 ## Tasks
 - **Connectivity:** webview `online`/`offline` trigger + confirming **probe** + **one
@@ -888,7 +916,9 @@ Near-instant reconnect and correct bidirectional data flow.
   `reconciled stock = baseline − local unsynced out-movements` (never blind-overwrite).
   *As built: `baseline + Σ(signed unsynced)`, which is the same arithmetic said in signed values
   — see the note above for why the absolute-value reading breaks returns.*
-- Enforce cycle order: **version gate → push → (queue, M8) → pull → heartbeat**.
+- Enforce cycle order: **version gate → push → (queue, M8) → pull → heartbeat**. *As built:
+  `SyncCycle::run()` enforces it. M8 filled the queue step; the heartbeat is the last gap and
+  belongs to M10.*
 - *Not in the task list, and not optional:* **make the manual stock adjustment an online write**,
   or the reconciliation silently reverts every shelf recount. See the first note above.
 
@@ -908,10 +938,87 @@ correct across a sell-offline-then-sync cycle.
 
 ---
 
-# Phase M8 — Inventory update queue
+# Phase M8 — Inventory update queue ✅
 
 ## Goal
 Let online branch-targeted adjustments happen without ever driving stock negative.
+
+> **Done.** An adjustment issued at one branch for another is refused by that branch when its own
+> unsynced sales have already spent the stock, and applied when they have not — proved against two
+> real provisioned branches in `tests/Integration/InventoryQueueTest.php`. `App\Support\Sync\`
+> gained `QueueProcessor` and `OnlineRead`; step 2 of a cycle is no longer a comment.
+> Scoping calls and findings:
+>
+> - **Only ANOTHER branch goes through the queue.** An adjustment aimed at this device stays the
+>   direct online write M7 made of it, because the whole reason the queue exists is that the
+>   issuer cannot see the target's unsynced sales — and when the target is this device, it can.
+>   `StockLedger` already validates against reconciled stock and refuses a negative outcome on the
+>   spot. Routing it through the queue would make a shelf recount wait for a cycle, and would add a
+>   reject path that could never fire. One control, two destinations, and the dialog says which.
+> - **Accepting writes UPSTREAM ONLY, and that is the load-bearing decision.** The accepted entry
+>   is inserted into Postgres, `RemoteStock` recomputes the upstream snapshot, and the entry comes
+>   back down *in the same cycle* through the ordinary pull — which is exactly why step 2 sits
+>   between the push and the pull rather than after both. Writing it locally as well would give
+>   `type = 'stock_adjustment'` two writers, the single-writer rule that keeps last-write-wins out
+>   of this system, and would enqueue the row in the outbox to be handed back to the business that
+>   issued it.
+> - **The ledger entry's id IS the queue row's id**, and this is not tidiness. A cycle that
+>   inserted the entry and then lost its connection leaves a `pending` row whose adjustment has
+>   already been applied — and by the next cycle the baseline *contains* it, so re-deciding could
+>   **reject an adjustment that is already in the ledger**. Recognising it is one primary-key
+>   lookup, the retry collides with itself under `on conflict do nothing`, and `ledger_entry_id`
+>   becomes a link anyone can follow. A rejected row that is re-issued is a new row, so the ids
+>   never contend.
+> - **The resolution must not touch `updated_at`.** `BranchGrants::UPDATE_COLUMNS` is column-level
+>   and names four columns; a fifth in the SET list is `permission denied for table
+>   inventory_update_queue` — which reads as a missing grant and is in fact the matrix being
+>   exactly right. Only a real Postgres can catch this, which is half of why the integration test
+>   exists.
+> - **Validating against reconciled stock is strictly stricter than Postgres's own constraint.**
+>   `available = upstream snapshot + Σ(signed unsynced local)`; the unsynced term is where the
+>   negative movements are, so if reconciled stock survives the adjustment the upstream figure
+>   survives it too. Neither side can go negative, which is the whole claim §10 makes. The terms
+>   are taken from `StockReconciler::unsyncedMovement()` rather than re-written, because two
+>   spellings of "unsynced" is precisely how one of them quietly stops counting returns.
+> - **Order is by age, and it matters more than it looks.** Two subtractions that each fit alone
+>   may not fit together, so which one is turned down has to be decided by `created_at` rather
+>   than by whatever Postgres returned first. Each acceptance recomputes the upstream snapshot, so
+>   a cumulative pass converges without any state carried between rows.
+> - **The rejection reason carries figures, not a category.** It is read on another device,
+>   possibly days later, by someone deciding whether to re-issue and for how much. "Would drive
+>   stock negative" tells them nothing they can act on.
+> - **`branches` and `inventory_update_queue` are read live and mirrored nowhere** — a new verb,
+>   **online read** (`App\Support\Sync\OnlineRead`, glossary §5). `SchemaParityTest::POSTGRES_ONLY`
+>   already said why each has no local counterpart, and giving them one would have meant a
+>   migration, a `sync_cursor` row and a parity entry to serve two Owner/Admin screens that cannot
+>   function offline anyway. It carries no version gate, unlike an online write: the gate stops a
+>   stale build WRITING (§13), and refusing to render a screen would hide the display of the very
+>   problem.
+> - **The roster is fetched when the adjust dialog opens, not passed as a page prop.**
+>   `ConnectivityProbe` never opens Postgres on purpose, and the inventory list is the screen a
+>   cashier lives on — a roster read in its render would occupy a Supavisor client slot on every
+>   page view, re-imposing the pressure `BranchCycle` exists to relieve.
+> - **"Set to count" is suppressed for a remote target.** The only on-hand figure available to the
+>   issuer is a baseline that excludes the target's unsynced sales, so a derived delta would be a
+>   guess presented as a count — and the subtraction it produced would be rejected at the far end
+>   for reasons invisible from here. A signed quantity is also exactly what the `quantity` column
+>   stores.
+> - **No local audit row per resolution.** The record is the queue row itself (`status`,
+>   `resolved_at`, `rejection_reason`, `ledger_entry_id`) plus the ledger entry, both visible to
+>   whoever issued it. Writing one would also make a *cycle* create outbox work, which the outbox
+>   listener answers with another cycle — a new self-triggering path for no new information. The
+>   issuing action is a user action and is audited.
+> - **M7's warning was worth having and found nothing.** Its third open item said to look, before
+>   this phase assumed its write paths were complete, for anything shared between branches whose
+>   writer is selected by a column value rather than by table name. The audit: the queue insert is
+>   a Postgres-only table, the resolution is Postgres-only, and the accepted ledger entry is the
+>   online-authoritative half of `inventory_ledger` written from the online-authoritative side.
+>   Still exactly one column-selected shared writer, and this phase is on the correct side of it.
+> - **One shipped statement changed for a test, and it is worth saying so.** `now()` became
+>   `CURRENT_TIMESTAMP` in `QueueProcessor` and `RemoteStock` — identical in Postgres, standard
+>   SQL, and the difference between the fast tests running the shipped statement and running a
+>   rewritten one. The stand-in also grew two unique indexes, because `ON CONFLICT (cols)` needs
+>   something to target; they are the only constraints it carries and the reason is the same.
 
 > **Settled: an Owner or Admin, on any branch device, while online, may target any branch of
 > their business.** They pick the target branch in the in-app admin screens; the queue row
@@ -925,19 +1032,43 @@ Let online branch-targeted adjustments happen without ever driving stock negativ
 >   `BranchRole::reapplyGrants()` across existing schemas.** No branch role holds INSERT on it
 >   today — only the console's admin connection can create a row — so without this the feature
 >   is unreachable from the screens meant to offer it. Update the comment in `BranchGrants` that
->   currently says "HQ issues the rows" at the same time.
-> - **This widens the deferred RLS gap, knowingly.** A branch credential able to insert a queue
+>   currently says "HQ issues the rows" at the same time. *Done, and delivered to existing
+>   businesses with `schema:reapply-grants`; `BranchRoleGrantsTest` now proves a branch role can
+>   issue a pending row and still cannot delete one.*
+> - **This widens the cross-branch reach, knowingly.** A branch credential able to insert a queue
 >   row for its own branch can insert one for any branch of the same business, since grants stop
 >   at the schema boundary. Same exposure class as forged `branch_id` on history rows (§4's
->   annotation); one more table reaches it. Record it, don't quietly absorb it.
+>   annotation); one more table reaches it. Record it, don't quietly absorb it. *Recorded in
+>   `BranchGrants`, in the migration, and in `docs/glossary.md` §9 — and asserted rather than
+>   described: a test issues a row against another branch and expects it to succeed. It is bounded
+>   three ways: the branch may only ever write `pending`, the TARGET decides whether it becomes a
+>   ledger entry, and DELETE is granted on nothing.*
+>
+>   **Settled afterwards: row-level security is not planned, and this is not a deferred gap.**
+>   Every branch of one business belongs to one Owner and runs on a device that business controls,
+>   so a credential in the wrong hands already means the till is in the wrong hands — forging
+>   another branch's `branch_id` is a marginal escalation on top of that, not a new class of
+>   access. The boundary that carries weight is business-to-business, which is schema-level,
+>   enforced, and separately tested. RLS is also not cheap here: it wants a per-branch session
+>   variable, and branch devices connect through the transaction pooler, where no session state
+>   survives a cycle. The consequence is the part to hold on to — **the enumerated grant matrix is
+>   now the only boundary of this kind, so it must not erode**: per-table grants only, DELETE on
+>   nothing, column-level UPDATE on the queue, and any future widening states its reason in that
+>   phase's note. Full reasoning in `docs/glossary.md` §9, which is normative.
 
 ## Tasks
 - Online adjustments to a branch land in `inventory_update_queue` as **pending** (not yet a
-  ledger entry).
+  ledger entry). *As built: only adjustments aimed at ANOTHER branch. One aimed at this device
+  stays the direct online write of M7 — see the first note above.*
 - On sync, after pushing real movements, process the queue in order: **accept** (create ledger
   entry) when reconciled stock stays `≥ 0`; **reject** a subtractive adjustment that would go
-  `< 0`.
+  `< 0`. *As built: `App\Support\Sync\QueueProcessor`, step 2 of the cycle, writing the accepted
+  entry upstream only and letting the same cycle's pull bring it down.*
 - **Flag rejected adjustments in the in-app admin** (Owner/Admin screens) for review/re-issue.
+  *As built: `/inventory/stock-updates` lists pending, applied and turned-down rows — not
+  rejections alone, or an adjustment sent to a closed branch would be invisible until it
+  resolved. Re-issue creates a NEW pending row; the rejection stands as the record of what
+  happened.*
 - ~~Grant `UPDATE` on `inventory_update_queue.status` to the branch role~~ — **already done in
   M2**, and as four columns (`status, resolved_at, rejection_reason, ledger_entry_id`), because
   a check constraint ties `status` to `resolved_at`. M8 writes the resolution logic against

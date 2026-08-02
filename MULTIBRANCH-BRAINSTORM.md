@@ -660,6 +660,26 @@ pulled by the new branch at hydrate.)
 > `schema:reapply-grants --all`: provisioned-ness is *defined* by having `schema_meta` and a
 > `branches` table, which is precisely what a schema needing migration may lack, so filtering
 > would hide the schemas the command exists to fix.
+>
+> **The discipline is now half-enforced, and the half that is not is the dangerous one.** Three
+> things can go wrong with the pair; only two are decidable by a machine:
+>
+> - *A migration added without raising `SCHEMA_VERSION`.* Checkable, and checked:
+>   `SCHEMA_VERSION` **is** the migration-file count and `SchemaVersionTest` asserts it, so it
+>   cannot drift. (The number therefore reads 19, not 1. It is *recorded* by both sides and
+>   never compared — only min app version is — so the change is cosmetic.)
+> - *A floor above the app this repo can build.* Checkable, and checked against
+>   `config/nativephp.php`'s version default. Every branch would freeze with no build to
+>   install, recoverable only by a code change.
+> - *A **breaking** migration that does not raise `MIN_APP_VERSION`.* **Not checkable by
+>   anything** — "breaking" is a claim about what an older build's code does, and no
+>   introspection of the schema can answer it. This is the failure that corrupts data, and it
+>   stays a human judgement.
+>
+> So the first check is worth far more than its own small consequence: the edit that trips it is
+> the edit where the third decision has to be made, and its failure message is where that
+> question gets asked out loud. Enforcing what can be enforced in order to force the question
+> that cannot is the whole design here, and it should not be mistaken for the pair being safe.
 
 ### 8.5 Monitor
 - Reads `branch_status` across all schemas to show, per branch: app version, schema version,

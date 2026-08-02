@@ -12,6 +12,7 @@ use Provisioning\Support\ProvisioningAudit;
 use Provisioning\Support\RoleName;
 use Provisioning\Support\SchemaConnection;
 use Provisioning\Support\SchemaName;
+use Provisioning\Support\SchemaVersion;
 use RuntimeException;
 use Tests\Concerns\AssertsBranchGrants;
 use Tests\Concerns\ProvisionsBusiness;
@@ -80,7 +81,7 @@ class BranchProvisionTest extends TestCase
 
         // Read back from schema_meta, never assumed (§9 As built) — it is what
         // M5's version gate compares the app against.
-        $this->assertSame(1, $document['versions']['schema_version']);
+        $this->assertSame(SchemaVersion::SCHEMA_VERSION, $document['versions']['schema_version']);
         $this->assertNotEmpty($document['versions']['min_app_version']);
 
         // The one copy of a live database password.

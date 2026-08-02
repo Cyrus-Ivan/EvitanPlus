@@ -10,6 +10,7 @@ use Provisioning\Support\BusinessSettingKeys;
 use Provisioning\Support\CredentialIssuance;
 use Provisioning\Support\ProvisioningAudit;
 use Provisioning\Support\SchemaConnection;
+use Provisioning\Support\SchemaVersion;
 use Provisioning\Support\SupabaseEndpoint;
 use Tests\Concerns\ProvisionsBusiness;
 use Tests\TestCase;
@@ -39,13 +40,17 @@ class BusinessProvisionTest extends TestCase
 
         $business = SchemaConnection::pin($this->schema());
 
+        // Against the constants, never literals: SchemaVersion is the single
+        // declaration, and a test pinning the numbers a second time would fail
+        // on every legitimate bump while proving nothing extra.
         $meta = $business->selectOne('select schema_version, min_app_version from schema_meta');
-        $this->assertSame(1, (int) $meta->schema_version);
-        $this->assertSame('1.0.0', $meta->min_app_version);
+        $this->assertSame(SchemaVersion::SCHEMA_VERSION, (int) $meta->schema_version);
+        $this->assertSame(SchemaVersion::MIN_APP_VERSION, $meta->min_app_version);
 
-        // Every migration, not just enough of them to seed.
+        // Every migration, not just enough of them to seed — and SCHEMA_VERSION
+        // IS that count, which SchemaVersionTest keeps true.
         $applied = (int) $business->selectOne('select count(*) as total from migrations')->total;
-        $this->assertSame(19, $applied);
+        $this->assertSame(SchemaVersion::SCHEMA_VERSION, $applied);
     }
 
     public function test_it_seeds_exactly_one_owner_whose_password_the_app_can_verify(): void
@@ -183,8 +188,8 @@ class BusinessProvisionTest extends TestCase
             ['require', 'verify-ca', 'verify-full'],
             'A branch credential must not ship a downgradeable TLS mode.',
         );
-        $this->assertSame(1, $document['versions']['schema_version']);
-        $this->assertSame('1.0.0', $document['versions']['min_app_version']);
+        $this->assertSame(SchemaVersion::SCHEMA_VERSION, $document['versions']['schema_version']);
+        $this->assertSame(SchemaVersion::MIN_APP_VERSION, $document['versions']['min_app_version']);
 
         // Key-for-key the shipped app's pgsql connection, so M5 can assign it.
         $this->assertSame(

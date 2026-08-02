@@ -9,6 +9,7 @@ use Provisioning\Support\BranchConnection;
 use Provisioning\Support\BranchGrants;
 use Provisioning\Support\SchemaConnection;
 use Provisioning\Support\SchemaName;
+use Provisioning\Support\SchemaVersion;
 use Provisioning\Support\SupabaseEndpoint;
 use Tests\Concerns\AssertsBranchGrants;
 use Tests\Concerns\ProvisionsBusiness;
@@ -132,7 +133,10 @@ class BranchRoleGrantsTest extends TestCase
         $this->assertSame(1, (int) $branch->selectOne('select count(*) as v from users')->v);
         $this->assertSame(6, (int) $branch->selectOne('select count(*) as v from settings')->v);
         $this->assertSame('FIX', $branch->selectOne('select code from branches')->code);
-        $this->assertSame(1, (int) $branch->selectOne('select schema_version as v from schema_meta')->v);
+        $this->assertSame(
+            SchemaVersion::SCHEMA_VERSION,
+            (int) $branch->selectOne('select schema_version as v from schema_meta')->v,
+        );
     }
 
     #[DataProvider('readableTables')]

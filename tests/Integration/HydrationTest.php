@@ -209,7 +209,14 @@ class HydrationTest extends TestCase
         $this->assertSame(self::BRANCH_CODE, $instance->branch_code);
         $this->assertSame(self::$schema, $instance->schema_name);
         $this->assertSame(self::$document['branch']['id'], $instance->branch_id);
-        $this->assertSame(1, $instance->schema_version);
+
+        // Against what the schema actually says, not a literal. The app cannot
+        // import the console's SchemaVersion — §18 forbids a runtime reference
+        // either way — and a hard-coded number here would have to be edited
+        // every time the migration set grows, for a test that is about
+        // HYDRATION. Reading upstream also proves the stronger thing: the number
+        // was copied down, rather than agreeing with a constant by coincidence.
+        $this->assertSame($this->remoteSchemaVersion(), $instance->schema_version);
         $this->assertNotNull($instance->hydrated_at);
         $this->assertTrue(Instance::isHydrated());
 
@@ -355,6 +362,14 @@ class HydrationTest extends TestCase
      * pulled, never pushed (BranchGrants).
      */
     /** A row's `created_at` straight out of Postgres, offset intact. */
+    /** What the provisioned schema declares about itself, read live. */
+    private function remoteSchemaVersion(): int
+    {
+        self::$admin->exec('set search_path to "'.self::$schema.'"');
+
+        return (int) self::$admin->query('select schema_version from schema_meta')->fetchColumn();
+    }
+
     private function remoteCreatedAt(string $table, string $id): \DateTimeImmutable
     {
         self::$admin->exec('set search_path to "'.self::$schema.'"');

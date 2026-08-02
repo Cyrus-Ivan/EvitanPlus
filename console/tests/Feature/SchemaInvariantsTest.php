@@ -6,6 +6,7 @@ use Illuminate\Database\Connection;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Provisioning\Support\SchemaVersion;
 use Tests\TestCase;
 
 /**
@@ -143,8 +144,13 @@ class SchemaInvariantsTest extends TestCase
     {
         $meta = $this->db->selectOne('select schema_version, min_app_version from schema_meta');
 
-        $this->assertSame(1, $meta->schema_version);
-        $this->assertSame('1.0.0', $meta->min_app_version);
+        // Against the constants, not literals. These used to be `1` and
+        // '1.0.0', which made this test an ACCIDENTAL tripwire: a correct bump
+        // of SchemaVersion failed it, with a message about schema invariants
+        // that sends you to the wrong file entirely. The deliberate tripwire is
+        // SchemaVersionTest, and it names what to do.
+        $this->assertSame(SchemaVersion::SCHEMA_VERSION, $meta->schema_version);
+        $this->assertSame(SchemaVersion::MIN_APP_VERSION, $meta->min_app_version);
 
         // A second row would make "the" schema version ambiguous exactly when a
         // branch is deciding whether it may sync.

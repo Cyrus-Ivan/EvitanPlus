@@ -133,7 +133,7 @@ final class BusinessProvisioner
 
         try {
             // Registered BEFORE the schema is created, not after it is migrated.
-            // schema:migrate creates the schema and then applies 19 migrations
+            // schema:migrate creates the schema and then applies every migration
             // that the migrator commits one at a time, so a failure anywhere in
             // that run leaves a half-built schema behind. Pushing the undo
             // afterwards left that whole window uncompensated — and the rollback

@@ -118,7 +118,7 @@ leave it off and it defaults to `<os-user>@<hostname>`.
 | `console:migrate` | The `evitan_console` schema, `provisioning_audit`, `credential_issuance`; re-revokes PUBLIC on every run. | Nothing; safe to re-run. |
 | `schema:migrate` | Creates `biz_<32hex>` if absent, applies pending migrations, stamps `schema_meta` and re-grants branch roles if the schema advanced. Idempotent. | A partially-migrated schema, **unstamped and un-regranted** — both happen only on a clean run. Re-run it. |
 | `schema:version` | Nothing (read-only). | — |
-| `business:provision` | Schema + 19 migrations + Owner/settings/first branch + `branch_<32hex>` role + credentials JSON. **Create-only.** | Nothing — it rolls back in full, including `DROP SCHEMA`, because it created everything in that run. |
+| `business:provision` | Schema + every migration (`SchemaVersion::SCHEMA_VERSION` of them, 19 today) + Owner/settings/first branch + `branch_<32hex>` role + credentials JSON. **Create-only.** | Nothing — it rolls back in full, including `DROP SCHEMA`, because it created everything in that run. |
 | `branch:provision` | A `branches` row + a role + a JSON, in an existing schema. | Nothing — rolls back all three. **Never** the schema. |
 | `branch:list` | Nothing (read-only). | — |
 | `branch:rotate` | A new password on an existing role + a new JSON. With `--recreate`, re-creates a revoked role. | **The new password, and the JSON that is its only copy.** See §4. |
@@ -266,10 +266,21 @@ A run that completes does three things beyond the DDL:
 those are exactly what this command fixes — and confirms first unless `--force`. It does
 not stop at the first failure; the summary names what failed and re-running is safe.
 
-Raising the version pair is a **discipline `SchemaVersion` documents and nothing can check
-for you**: raise `SCHEMA_VERSION` whenever you add a migration, and raise
-`MIN_APP_VERSION` **only** for a breaking one. An additive migration that raises the floor
-needlessly freezes every branch of every business.
+Of the pair, **one is checked and one is your judgement**:
+
+- **`SCHEMA_VERSION` is the migration count**, and `SchemaVersionTest` asserts it. Add a
+  migration and the console suite fails until the number matches — there is nothing to
+  remember, and a version that drifted from the files would describe nothing.
+- **`MIN_APP_VERSION` cannot be checked by anything.** Whether a change breaks an older build
+  is a claim about what that build's code does, and no test can decide it. Raise it **only**
+  for a breaking migration; an additive one that raises the floor needlessly freezes the sync
+  of every branch of every business until each device gets a new build. The tripwire above
+  exists mostly to put the question in front of you at the moment it arises, since the same
+  edit is where this call has to be made.
+
+One thing about the floor *is* checked: it may never exceed the app version this repo builds
+(`config/nativephp.php`, the default §"Building a release" step 1 tells you to bump). A floor
+above the newest possible build freezes every branch with nothing to install.
 
 ### Re-apply the privilege matrix
 

@@ -23,28 +23,61 @@ namespace Provisioning\Support;
  * after every successful run ({@see SchemaStamp}), so these constants are the
  * single declaration and one file is the whole edit.
  *
- * ## The discipline, which nothing can check for you
+ * ## One of these is checked; the other is a judgement only you can make
  *
- * **Raise SCHEMA_VERSION whenever you add a migration.** It is what tells a
- * human — and M10's monitor — which structure a schema is actually in. Nothing
- * compares it; it is recorded on both sides and that is its entire job.
+ * **SCHEMA_VERSION is the migration count**, and `SchemaVersionTest` asserts it.
+ * There is nothing to remember: add a migration and the test fails until this
+ * number matches. That is deliberate — the number's whole job is to let a human
+ * (and M10's monitor) tell which structure a schema is in, and a version that
+ * drifts from the files describes nothing. It is *recorded* on both sides and
+ * never compared; only MIN_APP_VERSION is.
  *
- * **Raise MIN_APP_VERSION only for a BREAKING change**, and set it to the first
- * app version that can talk to the new shape. This is the one the gate compares,
- * and raising it freezes every branch of every business below it on their next
- * cycle — they keep selling, but nothing syncs in either direction until each
- * device gets a new build. An additive migration (a new nullable column, a new
- * table, a new index) must leave it alone, or every routine update needlessly
- * freezes the whole estate.
+ * **MIN_APP_VERSION cannot be checked and is the one to think about.** It means
+ * "the oldest app build that can safely push to and pull from this schema", and
+ * no static check can decide that — whether a change breaks an older build is a
+ * claim about what that build's code does. So the test above exists mostly to
+ * put you *here*, at the moment you are already editing this file:
+ *
+ *   - Raise it ONLY for a breaking change, and only to the first app version
+ *     that can talk to the new shape.
+ *   - An additive migration — a nullable column, a new table, a new index —
+ *     must leave it alone. Raising it needlessly freezes the sync of every
+ *     branch of every business until each device gets a new build; they keep
+ *     selling, but nothing moves in either direction.
+ *   - It must never exceed the version this repo can build
+ *     (`config/nativephp.php`), or every branch freezes with no build to
+ *     install. That one IS checked.
  *
  * Neither value may ever move backwards. SchemaStamp enforces that; this file is
  * where the mistake would be made.
  */
 final class SchemaVersion
 {
-    /** Raise on every migration added to console/database/migrations. */
-    public const SCHEMA_VERSION = 1;
+    /**
+     * The number of migrations a fully-migrated business schema has applied.
+     *
+     * Asserted against {@see migrationCount()}, so this is not a number you
+     * choose — it is one you keep in step, and the test says so when you don't.
+     */
+    public const SCHEMA_VERSION = 19;
 
     /** Raise ONLY for a breaking change. See the class docblock. */
     public const MIN_APP_VERSION = '1.0.0';
+
+    /**
+     * The business migration set on disk.
+     *
+     * `database/migrations` only — `migrations-admin` builds the console's own
+     * schema, which no business schema has ever heard of and which versions
+     * separately.
+     */
+    public static function migrationCount(): int
+    {
+        return count(glob(self::migrationPath().'/*.php') ?: []);
+    }
+
+    public static function migrationPath(): string
+    {
+        return dirname(__DIR__, 2).'/database/migrations';
+    }
 }

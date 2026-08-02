@@ -476,14 +476,25 @@ The **build on a branch device**. A semver string.
 recorded in `branch_status.app_version`.
 
 ### Schema version
-The **integer** state of the Postgres table structure, raised by migrations.
-*Anchor:* `schema_meta.schema_version`; echoed in `branch_status.schema_version` and
+The **integer** state of the Postgres table structure, raised by migrations — concretely, **the
+number of migrations a fully-migrated business schema has applied**. Not a number anyone
+chooses: `SchemaVersionTest` asserts it equals the file count, so it cannot drift from the set
+it describes.
+*Anchor:* `Provisioning\Support\SchemaVersion::SCHEMA_VERSION` and its `migrationCount()`;
+stamped into `schema_meta.schema_version` and echoed in `branch_status.schema_version` and
 `instance.schema_version`.
+✗ **Never compared.** Both sides record it so a human can tell which structure a schema is in.
+The gate compares min app version and nothing else.
 
 ### Min app version
 The **oldest app version the current schema can safely talk to**, a semver string declared by
 the schema. Raised **only** for a breaking migration — an additive one must leave it alone, or
 every routine update needlessly freezes every branch.
+This is the one quantity here that **cannot be checked by anything**: whether a change breaks an
+older build is a claim about what that build's code does. The schema-version tripwire above
+exists largely to force the question at the moment it arises, since the same edit is where this
+decision has to be made. What *is* checked is that it never exceeds the app version this repo
+can build — a floor above the newest possible build freezes every branch with nothing to install.
 *Anchor:* `schema_meta.min_app_version`; carried to the device in the credentials JSON and
 stored as `instance.min_app_version`.
 

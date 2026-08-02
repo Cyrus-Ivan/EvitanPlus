@@ -425,9 +425,14 @@ class SchemaMigrateCommand extends BranchCommand
         return self::SUCCESS;
     }
 
+    /**
+     * The same glob SchemaVersion uses to keep SCHEMA_VERSION honest. Written
+     * twice, it would be two answers to "how big is the migration set" that
+     * could disagree — and one of them decides what every schema records.
+     */
     private function migrationCount(): int
     {
-        return count(glob(database_path('migrations').'/*.php') ?: []);
+        return SchemaVersion::migrationCount();
     }
 
     private function migrationFailed(string $schema, string $reason): int

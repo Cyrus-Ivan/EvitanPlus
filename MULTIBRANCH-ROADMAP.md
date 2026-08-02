@@ -278,8 +278,9 @@ Add branches to an existing business and manage branch credentials.
 > online — with the audit saying `rolled_back`. See `d86255e` for the full list.
 >
 > **`schema:migrate` still does not re-apply branch grants** — M9, and deliberately still
-> deferred. But the menu had promoted it to a first-class action with no caveat, which is
-> worse than the CLI was, so it now warns and confirms.
+> deferred at this point. But the menu had promoted it to a first-class action with no caveat,
+> which is worse than the CLI was, so it now warns and confirms. *(Closed in M9: the command
+> re-grants every schema it advances, and the menu's caveat is now about the version floor.)*
 
 ## Tasks
 - **Provision branch**: insert a `branches` row (unique branch code) + create its role + emit
@@ -1080,7 +1081,7 @@ reconnect, stock stays `≥ 0`, and the in-app admin shows the flag.
 
 ---
 
-# Phase M9 — Version gate & migrate-on-update
+# Phase M9 — Version gate & migrate-on-update ✅
 
 ## Goal
 Safe rollout of schema changes across independently-updated branches.
@@ -1103,6 +1104,35 @@ Safe rollout of schema changes across independently-updated branches.
 - **Call `BranchRole::reapplyGrants()` for every schema advanced.** M2 grants per table on
   purpose (see its note), so a migration that adds a table leaves every branch role without
   privileges on it until grants are re-applied.
+
+> **As built.** The gate itself shipped in M6 and needed nothing here: `App\Support\Sync\VersionGate`
+> already read `schema_meta` live as step 0 of every cycle, `version_blocked` was already one of
+> the four `sync_status` states, and the header indicator already read **"Update required"**
+> while the till kept selling. What was missing was the other end — **nothing could raise the
+> numbers the gate reads.** `schema_meta` was written once by migration 000001, so a twentieth
+> migration would have left every business declaring version 1 with a floor of 1.0.0 forever.
+> The pair moved into `Provisioning\Support\SchemaVersion` and `schema:migrate` now **stamps**
+> it (`SchemaStamp`) after every clean run, refusing to move either value backwards.
+> `MULTIBRANCH-BRAINSTORM.md` §8.4 "As built (M9)" carries the three rules in full.
+>
+> **Console surfacing is schema-level, and that is the honest limit.** `schema:migrate` prints
+> the version transition and, when the floor rises, says which builds it has just frozen. It
+> cannot say *which tills* are on those builds: a device's app version reaches Postgres only
+> through `branch_status`, and nothing writes that until M10's heartbeat. In-app, the tooltip
+> now repeats the exception's own sentence, which names both versions — the first question at a
+> frozen till is "which build do I need", and the device already knew.
+>
+> **The re-grant fires on an ADVANCE, not on every run** — a schema where at least one pending
+> migration actually ran (`docs/glossary.md` §7). It dispatches the existing
+> `schema:reapply-grants` rather than calling `BranchRole::reapplyGrants()` directly, which buys
+> the per-role reporting, the revoked-role skip and one audit row per role for free. A schema
+> this run *created* is skipped: `business:provision` makes the role afterwards, so there is
+> nothing to re-grant and saying so would be noise inside a provision.
+>
+> **Tested by rolling a fixture schema back one migration** — drop `branch_status`, delete its
+> ledger row — rather than by shipping a twentieth migration M9 has no other reason to want.
+> `SchemaMigrateAdvanceTest` also runs a *bare* `migrate` over the same fixture and asserts the
+> role comes back holding nothing, so the hazard is proven rather than assumed.
 
 ## Milestone
 Migrating a schema ahead of an old app freezes only that branch's sync (not its selling);

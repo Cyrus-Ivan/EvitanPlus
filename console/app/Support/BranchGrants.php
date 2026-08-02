@@ -40,8 +40,10 @@ namespace Provisioning\Support;
  * `GRANT ... ON ALL TABLES IN SCHEMA`, and ALTER DEFAULT PRIVILEGES is
  * deliberately NOT used: both would silently extend the branch's reach to any
  * table a future migration adds, which is the opposite of what a
- * least-privilege matrix is for. The cost is that M9's migrate-on-update must
- * call BranchRole::reapplyGrants() for every schema it touches.
+ * least-privilege matrix is for. The cost is that a migration adding a table
+ * leaves every existing branch role holding nothing on it — which is why M9's
+ * `schema:migrate` re-applies this matrix to every schema it ADVANCES, and why
+ * `schema:reapply-grants` exists for the times the matrix itself changes.
  */
 final class BranchGrants
 {

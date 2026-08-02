@@ -53,9 +53,10 @@ Three things worth knowing about how it behaves:
   §3, applied before you choose rather than as a refusal afterwards.
 - **Nothing is ever cleared from the screen.** A credentials JSON path is printed once
   and nowhere else, so navigating away from a report never takes the report with it.
-- **One action carries a caveat its own command does not.** *Upgrade this schema* runs
-  `schema:migrate`, which does **not** re-apply branch grants — see §3. The menu warns
-  and asks before running it; that is the only place the warning exists.
+- **One action asks before it runs.** *Upgrade this schema* runs `schema:migrate`, which
+  can raise the minimum app version and so freeze the sync of every branch below it —
+  see §3. The menu states that and asks before running it. (It used to warn that
+  upgrading did not re-grant branch roles; M9 folded the re-grant into the command.)
 
 Two read-only commands have no menu entry because they *became* the menu: `branch:list`
 is the branch picker and `schema:version` is the business screen's header.
@@ -115,7 +116,7 @@ leave it off and it defaults to `<os-user>@<hostname>`.
 | --- | --- | --- |
 | `console:ping` | Nothing. The DDL probe is rolled back. | Nothing. |
 | `console:migrate` | The `evitan_console` schema, `provisioning_audit`, `credential_issuance`; re-revokes PUBLIC on every run. | Nothing; safe to re-run. |
-| `schema:migrate` | Creates `biz_<32hex>` if absent and applies pending migrations. Idempotent. | A partially-migrated schema. Re-run it. |
+| `schema:migrate` | Creates `biz_<32hex>` if absent, applies pending migrations, stamps `schema_meta` and re-grants branch roles if the schema advanced. Idempotent. | A partially-migrated schema, **unstamped and un-regranted** — both happen only on a clean run. Re-run it. |
 | `schema:version` | Nothing (read-only). | — |
 | `business:provision` | Schema + 19 migrations + Owner/settings/first branch + `branch_<32hex>` role + credentials JSON. **Create-only.** | Nothing — it rolls back in full, including `DROP SCHEMA`, because it created everything in that run. |
 | `branch:provision` | A `branches` row + a role + a JSON, in an existing schema. | Nothing — rolls back all three. **Never** the schema. |
@@ -130,8 +131,9 @@ leave it off and it defaults to `<os-user>@<hostname>`.
 `branch:revoke` confirm before acting; `--force` skips the prompt (and non-interactive
 invocations skip it automatically). `--out=` overrides where a credentials JSON is
 written. `--pretend` on `schema:migrate` / `console:migrate` prints the SQL instead of
-running it, and changes nothing at all — against a schema that does not exist yet it
-reports what would be created rather than creating it to find out.
+running it, and changes nothing at all — no version stamp, no re-grant, and against a
+schema that does not exist yet it reports what would be created rather than creating it
+to find out.
 
 Branch codes are uppercase letters, digits and dashes, starting alphanumeric, max 16
 characters. They are not cosmetic: the code prefixes every receipt serial the branch
@@ -237,12 +239,37 @@ it — so a rotation can never silently become a re-creation.
 
 ```bash
 php console/artisan schema:migrate --business=<uuid>
+php console/artisan schema:migrate --all            # every biz_* schema in the project
 ```
 
-Applies only what the schema has not seen. **Note for M9 onward:** grants are enumerated
-per table on purpose, so a migration that adds a table leaves every branch role without
-privileges on it until `BranchRole::reapplyGrants()` runs. `schema:migrate` does not do
-that today.
+Applies only what the schema has not seen, so re-running it is safe and usually a no-op.
+A run that completes does three things beyond the DDL:
+
+1. **Stamps the version.** `schema_meta` is set to the pair declared in
+   `Provisioning\Support\SchemaVersion` — the single place those two numbers live. It is
+   only written when it changed, so `applied_at` keeps meaning "when this schema reached
+   this version". It will **never move either value backwards**: a schema recording a
+   version above this checkout's was migrated by a newer console, and stamping it down
+   would un-freeze branches a breaking migration deliberately froze. Update the checkout.
+2. **Re-applies branch grants, but only if the schema *advanced***  — that is, if at least
+   one pending migration actually ran. Grants are enumerated per table on purpose, so a
+   migration that adds a table leaves every branch role holding nothing on it; the till's
+   symptom is **"Sync stuck"**, not a permissions error anyone would recognise. A re-run
+   that applied nothing skips this and says so.
+3. **Reports the version transition**, and warns when the *minimum app version* rose:
+   every branch on a build below it stops syncing in both directions until that device is
+   updated. Those tills keep selling and lose nothing. Which tills are actually behind is
+   not visible from here — only `branch_status` carries a device's app version, and that
+   is M10's monitor.
+
+`--all` targets **every `biz_*` schema**, including half-built ones — deliberately, since
+those are exactly what this command fixes — and confirms first unless `--force`. It does
+not stop at the first failure; the summary names what failed and re-running is safe.
+
+Raising the version pair is a **discipline `SchemaVersion` documents and nothing can check
+for you**: raise `SCHEMA_VERSION` whenever you add a migration, and raise
+`MIN_APP_VERSION` **only** for a breaking one. An additive migration that raises the floor
+needlessly freezes every branch of every business.
 
 ### Re-apply the privilege matrix
 
@@ -250,13 +277,18 @@ that today.
 php console/artisan schema:reapply-grants --business=<uuid>
 ```
 
-Needed whenever `BranchGrants` changes, which is not rare: **M6.5** widened it so the
-in-app admin could write shared data at all, and **M8** added `inventory_update_queue` to
-`INSERT` so a branch device could issue a stock adjustment against another branch. A
+Needed whenever `BranchGrants` itself changes, which is not rare: **M6.5** widened it so
+the in-app admin could write shared data at all, and **M8** added `inventory_update_queue`
+to `INSERT` so a branch device could issue a stock adjustment against another branch. A
 business provisioned before either change has roles that predate it, and the symptom is a
 till reporting **"Sync stuck"** — `online` + `conflict` — because `permission denied` is
 SQLSTATE 42501, an access-rule violation rather than a network fault. `GRANT` is
 idempotent, so running this on a current schema is a no-op that says so.
+
+The *other* reason a role falls behind — a migration adding a table — no longer needs this
+command: since **M9**, `schema:migrate` re-grants every schema it advances. This stays for
+matrix changes, for a schema someone migrated with a bare `migrate`, and as the recovery
+`schema:migrate` names when its own re-grant step fails.
 
 ### Delivering a credential
 

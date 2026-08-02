@@ -264,9 +264,14 @@ class BusinessProvisionTest extends TestCase
 
     public function test_it_records_one_successful_audit_entry(): void
     {
+        // Filtered by action since M9: business:provision calls schema:migrate,
+        // which now writes its own `schema.migrate` row for the same schema.
+        // An unfiltered ->first() has no ORDER BY, so Postgres was free to hand
+        // back either — and did.
         $entry = SchemaConnection::pinConsole()
             ->table('provisioning_audit')
             ->where('schema_name', $this->schema())
+            ->where('action', BusinessProvisioner::ACTION)
             ->first();
 
         $this->assertNotNull($entry, 'The provision was not audited.');

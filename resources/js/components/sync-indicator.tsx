@@ -39,10 +39,15 @@ function present(sync: SyncSnapshot): Presentation {
                 tone: 'text-destructive',
             };
         case 'version_blocked':
+            // The error carries BOTH version numbers — it is
+            // VersionBlockedException's message — and "which version do I need?"
+            // is the first thing anyone asks at a frozen till. Without it the
+            // person has to phone the developer to learn a number the device
+            // already knows.
             return {
                 icon: AlertTriangle,
                 label: 'Update required',
-                detail: `The business database has moved ahead of this app, so syncing is paused in both directions until this device is updated. ${waiting}. Selling is unaffected.`,
+                detail: `The business database has moved ahead of this app, so syncing is paused in both directions until this device is updated. ${waiting}. Selling is unaffected.${sync.error ? ` ${sync.error}` : ''}`,
                 tone: 'text-amber-600 dark:text-amber-500',
             };
         case 'online':

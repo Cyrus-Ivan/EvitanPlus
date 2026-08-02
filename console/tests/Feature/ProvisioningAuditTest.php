@@ -144,9 +144,16 @@ class ProvisioningAuditTest extends TestCase
         $this->assertFileDoesNotExist($path, 'Rollback left a credentials file behind.');
 
         // And the attempt is on the record, naming what it was trying to build.
+        //
+        // Filtered by action since M9: the inner schema:migrate writes its own
+        // `schema.migrate` row for this schema, and it SUCCEEDED — the migration
+        // really did run before the induced failure, and the DROP SCHEMA that
+        // followed is what the row below records. Both rows are true; only one
+        // of them is what this test is about.
         $entry = SchemaConnection::pinConsole()
             ->table('provisioning_audit')
             ->where('schema_name', $schema)
+            ->where('action', BusinessProvisioner::ACTION)
             ->first();
 
         $this->assertNotNull($entry, 'A failed provision must still be audited.');

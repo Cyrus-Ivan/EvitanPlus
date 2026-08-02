@@ -3,6 +3,7 @@
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Provisioning\Support\SchemaVersion;
 
 /**
  * The version gate's storage (MULTIBRANCH-BRAINSTORM.md §13).
@@ -15,18 +16,15 @@ use Illuminate\Support\Facades\Schema;
  *
  * Single row by construction: a second row would make "the" schema version
  * ambiguous exactly when a branch is deciding whether it may sync.
+ *
+ * The seeded pair comes from SchemaVersion, not from constants here. This
+ * migration runs once per schema and never again, so numbers written here could
+ * be set but never raised — see that class for why that was a silent trap and
+ * for the additive-vs-breaking discipline. `schema:migrate` re-stamps the row
+ * from the same constants after every successful run (M9).
  */
 return new class extends Migration
 {
-    /**
-     * Raise ONLY for a breaking change. Additive, backward-compatible
-     * migrations must leave min_app_version alone, or every routine update
-     * needlessly freezes every branch (§13).
-     */
-    private const SCHEMA_VERSION = 1;
-
-    private const MIN_APP_VERSION = '1.0.0';
-
     public function up(): void
     {
         Schema::create('schema_meta', function ($table) {
@@ -40,8 +38,8 @@ return new class extends Migration
 
         DB::table('schema_meta')->insert([
             'id' => 1,
-            'schema_version' => self::SCHEMA_VERSION,
-            'min_app_version' => self::MIN_APP_VERSION,
+            'schema_version' => SchemaVersion::SCHEMA_VERSION,
+            'min_app_version' => SchemaVersion::MIN_APP_VERSION,
         ]);
     }
 

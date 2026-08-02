@@ -503,6 +503,20 @@ issuance still carries the old numbers there.
 carries "the app's schema version", which named neither of the two values actually compared.
 The schema version is *recorded* by both sides; it is not what the gate tests.
 
+### Version stamp
+The **act** of writing the declared pair — schema version and min app version — into a
+schema's `schema_meta`. The three entries above are quantities; this is the only thing in the
+project that ever *moves* two of them after a schema is created.
+*Anchor:* `Provisioning\Support\SchemaStamp::apply()`, reading
+`Provisioning\Support\SchemaVersion`'s two constants; performed by `schema:migrate` after a
+clean run (M9).
+Two rules travel with the word: a stamp is written **only when the pair changed** (so
+`applied_at` means "when this schema reached this version"), and it **never moves either value
+backwards** (a schema ahead of the console running against it was migrated by a newer checkout,
+and lowering it would un-freeze branches a breaking migration deliberately froze).
+✗ **Not** a migration. Nothing about the table structure changes; a stamp only records what
+structure the schema is now in.
+
 ---
 
 ## 7. Console lifecycle verbs and credentials
@@ -526,6 +540,18 @@ undo safe, since it can only ever remove what this run just created.
 `branch:provision` — adds a branch to an **existing** business: one `branches` row, one role,
 one credentials JSON. No new schema, no re-migration.
 ✗ The **schema is never in this undo stack**. It already holds other branches' sales history.
+
+### Advance (a schema)
+A `schema:migrate` run in which **at least one pending migration actually ran**, as against a
+run that applied nothing. The word carries weight because the two outcomes are treated
+differently: only an **advanced** schema gets its branch grant matrix re-applied, since only an
+advanced schema can have gained a table those roles hold no privilege on
+(`Provisioning\Support\BranchGrants` enumerates per table for exactly that reason).
+*Anchor:* `SchemaMigrateCommand::migrateOne()`, which decides it by counting the `migrations`
+ledger before and after (M9).
+✗ **Not** a synonym for "migrated". `schema:migrate` is idempotent and most runs are no-ops;
+calling those "migrated" is true and useless, and re-granting on each one would train an
+operator to stop reading the output.
 
 ### Rotate / re-create
 `branch:rotate`, with `--recreate` for the missing-role case. One act under two starting

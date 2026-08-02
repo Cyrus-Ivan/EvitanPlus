@@ -310,22 +310,21 @@ class ConsoleRunCommand extends Command
             }
 
             $options['add'] = 'Add a branch';
-            $options['upgrade'] = 'Upgrade this schema to the latest migrations (does not re-grant branch roles)';
+            $options['upgrade'] = 'Upgrade this schema to the latest migrations';
             $options['regrant'] = 'Re-apply branch grants to every role in this schema';
             $options['back'] = 'Back';
 
-            // Stated where the action is taken, not only in the runbook. Grants
-            // are enumerated per table (BranchGrants), so a migration adding one
-            // leaves every existing branch role without privileges on it until
-            // BranchRole::reapplyGrants runs — and schema:migrate still does not
-            // run it (M9).
-            //
-            // What changed in M6.5: there is now a one-command fix. The recovery
-            // used to be a rotate PER BRANCH, which obliges a fresh AppImage and
-            // a new JSON to every till — an enormous price for a GRANT, and the
-            // reason this caveat used to end in a shrug.
-            $upgradeCaveat = 'Upgrading does not re-apply branch grants. '
-                ."Run 'Re-apply branch grants' afterwards — it changes no password and needs no new JSON.";
+            // Stated where the action is taken, not only in the runbook. This
+            // caveat used to read "upgrading does not re-apply branch grants" —
+            // true from M1 to M8, and the reason a migration that added a table
+            // could leave every till reporting "Sync stuck" until somebody
+            // remembered a second command. M9 folded the re-grant into
+            // schema:migrate, so what is left to warn about is the version
+            // floor: raising it freezes every branch below it, and this screen
+            // is the last place anyone is thinking about that.
+            $upgradeCaveat = 'Branch grants are re-applied automatically if the schema advances. '
+                .'A migration that raises the minimum app version freezes every branch below it — '
+                .'they keep selling, but nothing syncs until each device is updated.';
 
             $choice = (string) select(
                 label: 'Branches',
@@ -352,10 +351,10 @@ class ConsoleRunCommand extends Command
     }
 
     /**
-     * schema:migrate is the only console action with a consequence its own
-     * command does not mention, so the menu has to. Confirmed rather than
-     * dispatched straight, because it is the one upgrade that can silently cost
-     * every branch its privileges.
+     * Confirmed rather than dispatched straight: a migration can raise the
+     * minimum app version, and that freezes the sync of every branch below it
+     * until each device is updated. Nothing is lost and nothing stops selling,
+     * but it is not an outcome to arrive at by one keystroke.
      */
     private function upgrade(string $schema, string $caveat): void
     {

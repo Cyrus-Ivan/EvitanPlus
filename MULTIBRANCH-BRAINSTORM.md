@@ -478,9 +478,12 @@ migrations.
 > one of them presented as something other than what it was, which is the specific hazard of a
 > tool whose failure modes are all rare and all consequential. See `d86255e` for the full list.
 >
-> One deferral is now visible in the UI and stays deferred: **`schema:migrate` does not
-> re-apply branch grants** (§7, M9). The menu had promoted it to a first-class action with no
-> caveat, which is worse than the CLI was, so it warns and confirms before running it.
+> One deferral was, at that point, visible in the UI and staying deferred: **`schema:migrate`
+> does not re-apply branch grants** (§7, M9). The menu had promoted it to a first-class action
+> with no caveat, which is worse than the CLI was, so it warns and confirms before running it.
+> *(Closed in M9 — see §8.4 "As built (M9)". The command re-grants every schema it **advances**,
+> and the menu's warning is now about the version floor, which is the consequence that outlives
+> the command.)*
 
 ### 8.1 Provision a **business** (creates a new schema)
 Collects, in one flow, before anything is created:
@@ -630,7 +633,33 @@ pulled by the new branch at hydrate.)
 > too. Previewing against a fresh UUID therefore left behind a schema holding nothing but
 > `migrations` — and one reachable by nothing, since create-only refuses it and every branch
 > command refuses it as not-a-business. A preview that creates is not a preview; the flag is
-> read first now. The command still does **not** re-apply branch grants (§7) — that is M9.
+> read first now.
+
+> **As built (M9).** The version pair was **unraisable**. `schema_meta` was written once, by
+> migration 000001, which runs once per schema and never again — so a twentieth migration would
+> have left every provisioned business still declaring schema version 1 with a min-app floor of
+> 1.0.0, and a breaking change could never have frozen the branches it needed to freeze. That
+> failure is silent in the worst way: a gate that never refuses looks exactly like one with
+> nothing to refuse.
+>
+> The pair now lives in **`Provisioning\Support\SchemaVersion`** — one file, two constants,
+> seeded by 000001 and re-**stamped** by `schema:migrate` after every clean run
+> (`SchemaStamp`, `docs/glossary.md` §6). Three rules ride with it:
+>
+> - **Never backwards.** A schema recording a version above the checkout running against it was
+>   migrated by a newer console; stamping it down would un-freeze branches a breaking migration
+>   deliberately froze, causing exactly the corruption the gate exists to prevent. It refuses.
+> - **Only on change.** `applied_at` means "when this schema reached this version", not "when
+>   someone last ran the command", and it is on the business screen for that reason.
+> - **Advanced ≠ migrated.** `schema:migrate` re-applies the branch grant matrix only to a schema
+>   that **advanced** — one where at least one pending migration actually ran (§7 of the
+>   glossary). Only an advanced schema can have gained a table its roles hold nothing on, and
+>   re-granting on every no-op run would train an operator to stop reading the output.
+>
+> `--all` targets every `biz_*` schema rather than only the provisioned ones, unlike
+> `schema:reapply-grants --all`: provisioned-ness is *defined* by having `schema_meta` and a
+> `branches` table, which is precisely what a schema needing migration may lack, so filtering
+> would hide the schemas the command exists to fix.
 
 ### 8.5 Monitor
 - Reads `branch_status` across all schemas to show, per branch: app version, schema version,
@@ -959,11 +988,22 @@ Normatively, from M5 onward:
 None of this weakens §4's offline guarantee. A dropped or refused connection is a failed sync,
 and a failed sync never stops a till selling.
 
-### 11.6 The local sync tables (proposed, M5–M9)
+### 11.6 The local sync tables (proposed M5–M9; **all settled — see the notes below**)
 
 The sections above describe what a cycle *does*. This one names the tables it needs on the
-device, and is a **proposal for M5–M9** — none of it is built. The mirrored tables are not
-listed: they keep their v1.0.0 shape and `database/migrations/` defines them.
+device. It was written as a **proposal for M5–M9** and read "none of it is built"; that sentence
+is now false in both directions, and the As-built notes stacked below it are the record. In
+short:
+
+- **Built:** `instance` and `instance_secret` (M5), `sync_outbox` and `sync_status` (M6),
+  `sync_cursor` (M7).
+- **Decided against, not deferred:** the local `inventory_update_queue`. M8 settled `branches`
+  and the queue as **read live and mirrored nowhere** through `App\Support\Sync\OnlineRead`
+  (`docs/glossary.md` §5, `MULTIBRANCH-ROADMAP.md` M8), so there is no local table and no
+  migration for one, and there is not going to be. Read the ERD below with that removed.
+
+The mirrored tables are not listed here either: they keep their v1.0.0 shape and
+`database/migrations/` defines them.
 
 > **As built (M7): `sync_cursor` exists; only the local `inventory_update_queue` is still a
 > proposal.** In `database/migrations/2026_07_31_000001_create_sync_cursor_table.php`, on

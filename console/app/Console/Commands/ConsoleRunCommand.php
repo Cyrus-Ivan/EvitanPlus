@@ -45,6 +45,10 @@ use function Laravel\Prompts\select;
  * themselves: branch:list is the branch picker, schema:version is the business
  * screen's header. Both still exist for scripting.
  *
+ * `monitor` is read-only too and stays an action, because it answers a question
+ * rather than navigating to one — and it is the only screen that spans every
+ * business, so it hangs off the front door as well as off one business.
+ *
  * ## Nothing ever clears the screen
  *
  * Each render appends. The output of these commands IS the deliverable — the
@@ -100,6 +104,12 @@ class ConsoleRunCommand extends Command
                 // console:migrate creates the trail, and a corrected .env is
                 // usually why someone went looking for console:ping.
                 $this->banner();
+
+                continue;
+            }
+
+            if ($choice === 'monitor') {
+                $this->dispatch('monitor');
 
                 continue;
             }
@@ -237,6 +247,7 @@ class ConsoleRunCommand extends Command
                     $options['schema:'.$business['schema']] = $this->businessLabel($business);
                 }
 
+                $options['monitor'] = 'Monitor every branch';
                 $options['provision'] = 'Provision a new business';
             } catch (Throwable $e) {
                 $this->components->error('Could not list businesses: '.$e->getMessage());
@@ -310,6 +321,7 @@ class ConsoleRunCommand extends Command
             }
 
             $options['add'] = 'Add a branch';
+            $options['monitor'] = "Monitor this business's branches";
             $options['upgrade'] = 'Upgrade this schema to the latest migrations';
             $options['regrant'] = 'Re-apply branch grants to every role in this schema';
             $options['back'] = 'Back';
@@ -336,6 +348,7 @@ class ConsoleRunCommand extends Command
             match (true) {
                 $choice === 'back' => null,
                 $choice === 'add' => $this->dispatch('branch:provision', ['--schema' => $schema]),
+                $choice === 'monitor' => $this->dispatch('monitor', ['--schema' => $schema]),
                 $choice === 'upgrade' => $this->upgrade($schema, $upgradeCaveat),
                 // No confirmation: it changes no password, issues no file and
                 // removes nothing an operator could want back. Re-running it is

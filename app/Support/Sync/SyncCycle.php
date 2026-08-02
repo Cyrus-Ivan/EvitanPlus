@@ -12,15 +12,14 @@ use Throwable;
  * One sync cycle, and the only thing in the app that runs one
  * (MULTIBRANCH-BRAINSTORM.md §11.2, docs/glossary.md §5).
  *
- *     0. version gate  →  1. push  →  2. queue  →  3. pull  →  [4. heartbeat — M10]
+ *     0. version gate  →  1. push  →  2. queue  →  3. pull  →  4. heartbeat
  *
- * The order is load-bearing, which is why the one remaining step is named here as
- * a gap rather than left to be rediscovered: push runs first so the pulled
- * baseline already reflects this branch's own movements; the queue runs after
- * push so an adjustment validates against true reconciled stock, and before the
- * pull so the entry it accepts comes back down in the same cycle; the heartbeat
- * runs last so it describes the cycle that just finished. M6 built steps 0 and 1,
- * M7 step 3, M8 step 2.
+ * The order is load-bearing: push runs first so the pulled baseline already
+ * reflects this branch's own movements; the queue runs after push so an
+ * adjustment validates against true reconciled stock, and before the pull so the
+ * entry it accepts comes back down in the same cycle; the heartbeat runs last so
+ * it describes the cycle that just finished. M6 built steps 0 and 1, M7 step 3,
+ * M8 step 2, M10 step 4.
  *
  * ## Nothing here may stop a sale
  *
@@ -35,8 +34,9 @@ use Throwable;
  * `offline`, `unauthorized` and `version_blocked` are indistinguishable at the
  * counter and need three different responses — wait, call the developer,
  * install a newer build. Collapsing them would leave the person standing there
- * with no way to tell which. M10 copies these same four values into
- * `branch_status` so the console monitor can tell them apart too.
+ * with no way to tell which. {@see Heartbeat} copies the same four values into
+ * `branch_status` so the console monitor can tell them apart too — though only
+ * two of them can ever reach it, for the reason set out there.
  */
 class SyncCycle
 {
@@ -50,6 +50,7 @@ class SyncCycle
         private readonly Puller $puller,
         private readonly StockReconciler $stock,
         private readonly Outbox $outbox,
+        private readonly Heartbeat $heartbeat,
     ) {}
 
     /**
@@ -82,46 +83,53 @@ class SyncCycle
         try {
             /** @var array{pushed: int, resolved: int, pulled: int} $moved */
             $moved = $this->cycle->run($connection, function (Connection $remote) use ($branchId): array {
-                // Step 0. Read live — a schema migrated since the credentials
-                // JSON was issued still carries the old numbers there (§9).
-                $versions = $this->gate->read($remote);
-                $this->gate->assert($versions['min_app_version']);
+                try {
+                    // Step 0. Read live — a schema migrated since the credentials
+                    // JSON was issued still carries the old numbers there (§9).
+                    $versions = $this->gate->read($remote);
+                    $this->gate->assert($versions['min_app_version']);
 
-                $this->rememberVersions($versions);
+                    $this->rememberVersions($versions);
 
-                // Step 1. Before the pull, so the baseline read below already
-                // reflects this branch's own movements and the reconciliation
-                // has less to subtract.
-                $pushed = $this->pusher->push($remote)['rows'];
+                    // Step 1. Before the pull, so the baseline read below already
+                    // reflects this branch's own movements and the reconciliation
+                    // has less to subtract.
+                    $pushed = $this->pusher->push($remote)['rows'];
 
-                // Step 2. Between the push and the pull, and only there: an
-                // adjustment issued elsewhere can be validated against true
-                // reconciled stock once the movements that already happened have
-                // landed, and its accepted ledger entry then rides the pull below
-                // back down in this same cycle.
-                $resolved = $this->queue->process($remote, $branchId);
+                    // Step 2. Between the push and the pull, and only there: an
+                    // adjustment issued elsewhere can be validated against true
+                    // reconciled stock once the movements that already happened have
+                    // landed, and its accepted ledger entry then rides the pull below
+                    // back down in this same cycle.
+                    $resolved = $this->queue->process($remote, $branchId);
 
-                // Step 3. The catalog, staff and settings deltas, then this
-                // branch's stock agreed against the business's figure.
-                $pulled = array_sum($this->puller->pull($remote, $branchId));
-                $pulled += $this->stock->reconcile($remote, $branchId);
+                    // Step 3. The catalog, staff and settings deltas, then this
+                    // branch's stock agreed against the business's figure.
+                    $pulled = array_sum($this->puller->pull($remote, $branchId));
+                    $pulled += $this->stock->reconcile($remote, $branchId);
+                } catch (Throwable $e) {
+                    // Step 4 on the way out, while there still IS a connection —
+                    // and this is the beat that matters most. A `version_blocked`
+                    // branch is precisely the one somebody is looking for after a
+                    // migration raised the floor, and it is invisible to the
+                    // console unless it says so itself.
+                    $this->beat($remote, $branchId, $this->classify($e)[0], $e->getMessage(), synced: false);
+
+                    // The outer catch still decides what the TILL records. One
+                    // failure, classified once, reported to both sides.
+                    throw $e;
+                }
+
+                // Step 4. Last, so it describes the cycle that just finished
+                // rather than the one about to start.
+                $this->beat($remote, $branchId, SyncStatus::ONLINE, null, synced: true);
 
                 return ['pushed' => $pushed, 'resolved' => $resolved, 'pulled' => $pulled];
             });
-        } catch (VersionBlockedException $e) {
-            return $this->record(SyncStatus::VERSION_BLOCKED, SyncStatus::KIND_VERSION, $e->getMessage());
         } catch (Throwable $e) {
-            if ($this->isUnauthorized($e)) {
-                return $this->record(SyncStatus::UNAUTHORIZED, SyncStatus::KIND_AUTH, $e->getMessage());
-            }
+            [$state, $kind] = $this->classify($e);
 
-            // Connected, gated, and then refused: the branch is online and its
-            // backlog is STUCK. Reporting `offline` here would tell the shop to
-            // wait for a connection they already have, and nothing would ever
-            // change.
-            return $this->isConflict($e)
-                ? $this->record(SyncStatus::ONLINE, SyncStatus::KIND_CONFLICT, $e->getMessage())
-                : $this->record(SyncStatus::OFFLINE, SyncStatus::KIND_NETWORK, $e->getMessage());
+            return $this->record($state, $kind, $e->getMessage());
         }
 
         return $this->record(
@@ -169,6 +177,57 @@ class SyncCycle
             'schema_version' => $versions['schema_version'],
             'min_app_version' => $versions['min_app_version'],
         ]);
+    }
+
+    /**
+     * Step 4, and it may never be the reason a cycle failed.
+     *
+     * Swallows everything: a heartbeat is a report ABOUT the cycle, so letting
+     * one throw would either mask the failure it was sent to describe or turn a
+     * finished cycle into a failed one over a row nobody at the till can see.
+     * The cost of losing a beat is one stale row in the monitor, which the age
+     * of `last_seen_at` already makes visible.
+     */
+    private function beat(
+        Connection $remote,
+        string $branchId,
+        string $state,
+        ?string $error,
+        bool $synced,
+    ): void {
+        try {
+            $this->heartbeat->upsert($remote, $branchId, $state, $error, $synced);
+        } catch (Throwable) {
+            // Deliberately nothing. See above.
+        }
+    }
+
+    /**
+     * What went wrong, in the vocabulary both sides share.
+     *
+     * One decision with two readers — the local `sync_status` row and the
+     * heartbeat — because a failure the till calls `unauthorized` and the
+     * console calls `offline` is worse than either answer alone: the two screens
+     * disagree and neither is obviously wrong.
+     *
+     * @return array{0: string, 1: string} state, error kind
+     */
+    private function classify(Throwable $e): array
+    {
+        if ($e instanceof VersionBlockedException) {
+            return [SyncStatus::VERSION_BLOCKED, SyncStatus::KIND_VERSION];
+        }
+
+        if ($this->isUnauthorized($e)) {
+            return [SyncStatus::UNAUTHORIZED, SyncStatus::KIND_AUTH];
+        }
+
+        // Connected, gated, and then refused: the branch is online and its
+        // backlog is STUCK. Reporting `offline` here would tell the shop to wait
+        // for a connection they already have, and nothing would ever change.
+        return $this->isConflict($e)
+            ? [SyncStatus::ONLINE, SyncStatus::KIND_CONFLICT]
+            : [SyncStatus::OFFLINE, SyncStatus::KIND_NETWORK];
     }
 
     /**

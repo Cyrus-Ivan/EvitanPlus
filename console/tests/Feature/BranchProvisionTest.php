@@ -96,7 +96,12 @@ class BranchProvisionTest extends TestCase
         // No new schema and no re-migration: the branch joins the existing one,
         // which is what §8.2 asks for and what makes hydration (M5) work.
         $this->assertSame($before + 1, $this->branchCount());
-        $this->assertSame(19, (int) SchemaConnection::pin($this->schema())
+
+        // The constant rather than a literal: schema version IS the migration
+        // count (SchemaVersion), so a literal here would have to be edited by
+        // every migration that ever lands — and would fail long after the change
+        // that broke it, saying only "20 is not 19".
+        $this->assertSame(SchemaVersion::SCHEMA_VERSION, (int) SchemaConnection::pin($this->schema())
             ->selectOne('select count(*) as v from migrations')->v);
     }
 

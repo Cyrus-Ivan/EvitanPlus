@@ -34,10 +34,10 @@ easiest mistake to make here, and you cannot mistype one you selected from a lis
 menu always targets by exact schema name and branch UUID.
 
 ```
-Provisioning Console          →  the businesses in this project, plus
+Provisioning Console          →  the businesses in this project, plus Monitor every branch /
                                  Provision a new business / Setup & diagnostics / Exit
   └─ a business               →  its branches, with each one's credential state, plus
-                                 Add a branch / Upgrade this schema / Back
+                                 Add a branch / Monitor / Upgrade this schema / Back
        └─ a branch            →  only the actions its role's current state allows
 ```
 
@@ -59,7 +59,9 @@ Three things worth knowing about how it behaves:
   upgrading did not re-grant branch roles; M9 folded the re-grant into the command.)
 
 Two read-only commands have no menu entry because they *became* the menu: `branch:list`
-is the branch picker and `schema:version` is the business screen's header.
+is the branch picker and `schema:version` is the business screen's header. `monitor` is
+read-only too and does have an entry, in both places: it answers a question rather than
+navigating to one, and it is the only screen that spans every business.
 
 `console:run` needs a terminal. Under `--no-interaction`, or with no tty, it refuses and
 points you at §2 rather than hanging on a prompt. It takes `--actor=` and forwards it to
@@ -118,9 +120,10 @@ leave it off and it defaults to `<os-user>@<hostname>`.
 | `console:migrate` | The `evitan_console` schema, `provisioning_audit`, `credential_issuance`; re-revokes PUBLIC on every run. | Nothing; safe to re-run. |
 | `schema:migrate` | Creates `biz_<32hex>` if absent, applies pending migrations, stamps `schema_meta` and re-grants branch roles if the schema advanced. Idempotent. | A partially-migrated schema, **unstamped and un-regranted** — both happen only on a clean run. Re-run it. |
 | `schema:version` | Nothing (read-only). | — |
-| `business:provision` | Schema + every migration (`SchemaVersion::SCHEMA_VERSION` of them, 19 today) + Owner/settings/first branch + `branch_<32hex>` role + credentials JSON. **Create-only.** | Nothing — it rolls back in full, including `DROP SCHEMA`, because it created everything in that run. |
+| `business:provision` | Schema + every migration (`SchemaVersion::SCHEMA_VERSION` of them, 20 today) + Owner/settings/first branch + `branch_<32hex>` role + credentials JSON. **Create-only.** | Nothing — it rolls back in full, including `DROP SCHEMA`, because it created everything in that run. |
 | `branch:provision` | A `branches` row + a role + a JSON, in an existing schema. | Nothing — rolls back all three. **Never** the schema. |
 | `branch:list` | Nothing (read-only). | — |
+| `monitor` | Nothing (read-only). With no target it covers every business. | — |
 | `branch:rotate` | A new password on an existing role + a new JSON. With `--recreate`, re-creates a revoked role. | **The new password, and the JSON that is its only copy.** See §4. |
 | `branch:disable` | Revokes `LOGIN` and terminates the role's backends. | Nothing. |
 | `branch:enable` | Restores `LOGIN`. | Nothing. |
@@ -176,6 +179,36 @@ issued). The Generation column reads `3` for a live credential, `3 (revoked)` wh
 role is gone, `never issued` when it never had one. A freshly provisioned business reads
 `active` / `1`: `business:provision` records the first branch's credential in the same
 ledger the rotate path uses, so generation numbers count every secret a branch has held.
+
+### Check on every branch
+
+```bash
+php console/artisan monitor                      # every business
+php console/artisan monitor --business=<uuid>    # just this one
+```
+
+*In the menu:* **Monitor every branch** on the main menu, or **Monitor this business's
+branches** on a business screen.
+
+Where `branch:list` says what you did to a branch, this says what the branch has been
+doing: app build, schema version, backlog, last sync, last seen, connection state.
+
+**Read the Last seen column first.** A branch writes its own status row, so the two
+states that mean it cannot reach Postgres — `offline` and `unauthorized` — can never be
+written by the branch they describe: a till whose router died on Tuesday still reads
+`online`, because that was true the last time it managed to say anything. The age is the
+signal; it turns red after 15 minutes, which is three missed backstop intervals.
+
+`never` in that column means the branch has never once completed a cycle — a till still
+in its box, or a wizard that was run and abandoned.
+
+`version_blocked` is the one state worth acting on immediately: that branch's build is
+older than the schema's floor, it is still selling, and nothing will move in either
+direction until the device gets a newer AppImage. This is the answer `schema:migrate`
+cannot give you — it knows which builds it froze, not which tills are on them.
+
+A branch whose credential is not `active` is called out beneath the table, because a
+credential you disabled and a dead router produce the same silence.
 
 ### Add a branch
 
@@ -358,7 +391,7 @@ three destroys nothing that existed before.
 | `Pass either --business or --schema, not both.` | Both given; a mismatch would be undetectable. | Supply one. |
 | `[x] is not a UUID; a business schema is derived from the business UUID.` | A branch code or name passed to `--business`. | `--business` takes the **business UUID**; branch codes go to `--branch-code`. |
 | `Schema [biz_…] does not exist. Check the business UUID, or create it with: php console/artisan business:provision` | Wrong UUID, or the business was never provisioned. | — |
-| `The console schema [evitan_console] is not a business schema; migrate it with console:migrate.` | `--schema=evitan_console`. | The business migration set would build 19 wrong tables inside the audit store. Use `console:migrate`. |
+| `The console schema [evitan_console] is not a business schema; migrate it with console:migrate.` | `--schema=evitan_console`. | The business migration set would build twenty wrong tables inside the audit store. Use `console:migrate`. |
 
 ### Provisioning
 

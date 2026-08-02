@@ -666,7 +666,7 @@ pulled by the new branch at hydrate.)
 >
 > - *A migration added without raising `SCHEMA_VERSION`.* Checkable, and checked:
 >   `SCHEMA_VERSION` **is** the migration-file count and `SchemaVersionTest` asserts it, so it
->   cannot drift. (The number therefore reads 19, not 1. It is *recorded* by both sides and
+>   cannot drift. (The number therefore reads 20, not 1. It is *recorded* by both sides and
 >   never compared — only min app version is — so the change is cosmetic.)
 > - *A floor above the app this repo can build.* Checkable, and checked against
 >   `config/nativephp.php`'s version default. Every branch would freeze with no build to
@@ -684,6 +684,14 @@ pulled by the new branch at hydrate.)
 ### 8.5 Monitor
 - Reads `branch_status` across all schemas to show, per branch: app version, schema version,
   last sync time, unsynced count, last seen, connection state. See §14.
+
+> **As built (M10).** `monitor` — no target means every business, `--business`/`--schema`
+> narrows it. Read-only and unaudited, like `branch:list`, and reachable from both the main
+> menu and a business screen. It adds two things the field list above does not imply: a branch
+> with no heartbeat row at all is printed as `never` rather than omitted (a LEFT JOIN onto the
+> roster, and the row most worth seeing), and a branch whose credential is not `active` says so
+> beneath the table — the console disabling a credential and a branch losing its internet are
+> indistinguishable from the heartbeat alone, and they need opposite responses.
 
 ### 8.6 Console self-audit
 - Every provision/migrate/rotate/disable/delete writes a developer-side provisioning audit
@@ -1306,6 +1314,28 @@ deliberately *not* identical: Postgres has extra tables the till never mirrors.)
 > constraint, so this is a widening of the documented vocabulary, not of the schema. M10 should
 > still consider adding the check constraint, which is the only thing that would make the set
 > enforceable rather than conventional.
+
+> **As built (M10).** The heartbeat is `App\Support\Sync\Heartbeat`, step 4 of the cycle, run
+> inside the cycle's own connection on **both** ways out of the closure — after step 3 on
+> success, and from a `catch` before the exception is re-thrown. It swallows its own failures:
+> a report about a cycle may never become the cycle's outcome.
+>
+> **The vocabulary is now the schema's rule** (migration `000020`,
+> `check (connection_state is null or connection_state in (...))`), which raised
+> `SCHEMA_VERSION` to 20 and left `MIN_APP_VERSION` alone. What the earlier note above did not
+> anticipate is that **the branch can only ever write two of the four words**: `offline` and
+> `unauthorized` are both diagnosed by the connection failing to open, and a branch that cannot
+> connect cannot report that it cannot connect. So in the monitor the signal is the AGE of
+> `last_seen_at` and the state word is the explanation — `version_blocked` above all, which is
+> the row `schema:migrate` could never produce. The four values still belong in the column: the
+> two sides speak one language and nothing is lost in translation.
+>
+> `last_seen_at` (reached Postgres) and `last_sync_at` (completed a cycle) are different facts,
+> and a failed beat leaves the latter untouched — "online but stuck since Tuesday" is exactly
+> the state the monitor exists to show. The console side is `monitor`, which LEFT JOINs the
+> branch roster onto these rows so a branch that has never reported prints `never`, and prints
+> the credential state beneath any branch whose credential is not `active`, since a disabled
+> credential and a dead router look identical from here.
 
 ---
 

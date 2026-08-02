@@ -43,8 +43,9 @@ use Throwable;
  * **The frozen-branches warning.** A raised min-app version is the one migration
  * outcome with a consequence at every till of that business, and this is the
  * moment the operator can still think about it. Which tills are actually behind
- * is not knowable here — only `branch_status` carries a device's app version, and
- * nothing writes it until M10's heartbeat.
+ * is not knowable here — only `branch_status` carries a device's app version —
+ * so the warning names the command that does know: `monitor` (M10), which reads
+ * the heartbeat rows the branches themselves write.
  */
 class SchemaMigrateCommand extends BranchCommand
 {
@@ -277,7 +278,7 @@ class SchemaMigrateCommand extends BranchCommand
         $this->components->bulletList([
             "Branches below {$to['min_app_version']} stop syncing until updated.",
             'They keep selling; their backlog goes up when they are.',
-            'Which tills are behind is M10\'s monitor, not visible here.',
+            'Which tills are behind: run monitor.',
         ]);
     }
 

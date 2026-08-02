@@ -222,6 +222,50 @@ class PushTest extends TestCase
         $this->assertSame(37, (int) DB::table('stock_snapshots')->where('variant_id', self::$variantId)->value('quantity'));
     }
 
+    /**
+     * Step 4, against the real table (M10).
+     *
+     * The stand-in cannot prove any of what matters here: that the branch role
+     * is actually granted INSERT and UPDATE on `branch_status`, that
+     * `ON CONFLICT (branch_id)` finds the real primary key, that
+     * `check (unsynced_count >= 0)` and the connection_state check accept what
+     * the till writes, and that `CURRENT_TIMESTAMP` lands in a `timestamptz` as
+     * a real instant. A heartbeat is also the only route by which a device's app
+     * version reaches Postgres at all.
+     */
+    public function test_a_cycle_leaves_a_heartbeat_the_console_can_read(): void
+    {
+        $branchId = self::$document['branch']['id'];
+
+        $this->sell($this->cashier(), 1);
+
+        $result = app(SyncCycle::class)->run();
+
+        $this->assertSame(SyncStatus::ONLINE, $result['state'], (string) $result['error']);
+
+        $rows = $this->remote(
+            'select app_version, schema_version, unsynced_count, connection_state, last_error,
+                    last_sync_at, last_seen_at
+               from branch_status where branch_id = ?',
+            [$branchId],
+        );
+
+        // One row per branch, whatever the cycle count: branch_id is the key.
+        $this->assertCount(1, $rows);
+
+        $this->assertSame(config('nativephp.version'), $rows[0]['app_version']);
+        $this->assertSame(
+            (int) Instance::current()->schema_version,
+            (int) $rows[0]['schema_version'],
+            'The schema version the device recorded at step 0 is what the console reads back.',
+        );
+        $this->assertSame(0, (int) $rows[0]['unsynced_count']);
+        $this->assertSame(SyncStatus::ONLINE, $rows[0]['connection_state']);
+        $this->assertNull($rows[0]['last_error']);
+        $this->assertNotNull($rows[0]['last_sync_at']);
+        $this->assertNotNull($rows[0]['last_seen_at']);
+    }
+
     public function test_a_colliding_serial_raises_instead_of_being_swallowed(): void
     {
         $branchId = self::$document['branch']['id'];

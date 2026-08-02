@@ -59,7 +59,7 @@ final class SchemaVersion
      * Asserted against {@see migrationCount()}, so this is not a number you
      * choose — it is one you keep in step, and the test says so when you don't.
      */
-    public const SCHEMA_VERSION = 19;
+    public const SCHEMA_VERSION = 20;
 
     /** Raise ONLY for a breaking change. See the class docblock. */
     public const MIN_APP_VERSION = '1.0.0';

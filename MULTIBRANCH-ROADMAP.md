@@ -76,7 +76,8 @@ verified to contain **no** console code or admin credentials.
 ## Goal
 Define the authoritative per-business schema and the migration engine that builds it.
 
-> **Done.** 19 Postgres migrations under `console/database/migrations/` build the schema;
+> **Done.** The Postgres migrations under `console/database/migrations/` build the schema —
+> 19 when this phase closed, 20 since M10 constrained `branch_status.connection_state`;
 > `schema:migrate` / `schema:version` create and report it. Two scoping calls were made
 > against the task list below: there is **no `prices` table** (prices live on `variants` and
 > are snapshotted onto `transaction_items`, exactly as the app models them), and returns and
@@ -1140,7 +1141,7 @@ updating the app realigns versions and flushes the backlog.
 
 ---
 
-# Phase M10 — Monitoring: branch_status & console monitor
+# Phase M10 — Monitoring: branch_status & console monitor ✅
 
 ## Goal
 Central visibility into every branch of every business.
@@ -1166,6 +1167,43 @@ Central visibility into every branch of every business.
 >
 > Note this is the **monitor**, not `branch:list` (M3): that command reports what the console
 > did, this reports what a branch is doing.
+
+> **As built.** Step 4 is `App\Support\Sync\Heartbeat`, called from inside the cycle's own
+> closure — there is no connection left once `BranchCycle::run()` returns, and opening a second
+> one would re-impose exactly the Supavisor client-slot pressure that connecting per cycle
+> exists to avoid. It runs on the way out of BOTH exits: after step 3 on success, and in a
+> `catch` before the exception is re-thrown. That second call is the one the phase is really
+> for — a branch frozen by the version gate is invisible to the console unless it says so
+> itself, which is precisely where M9 had to stop.
+>
+> **Only two of the four states can ever be written, and that is not a defect.** `offline` and
+> `unauthorized` are diagnosed by the connection FAILING TO OPEN, so the branch they describe
+> cannot file the report. What answers "is anything wrong" is therefore the AGE of
+> `last_seen_at`, which is the one column `monitor` colours; the state word explains a branch
+> that is still reporting. The four-value vocabulary still belongs in the column — it keeps
+> both sides speaking one language, and `version_blocked` really does arrive.
+>
+> **`last_seen_at` and `last_sync_at` are deliberately different facts** — reached Postgres
+> versus completed a cycle. A failed beat leaves `last_sync_at` out of its `do update set`
+> list entirely, so "online but stuck since Tuesday" stays readable. Fusing them would erase
+> the only branch worth calling about.
+>
+> **A heartbeat may never be the reason a cycle failed**: the call is wrapped and swallows
+> everything, the same rule one level in from "nothing here may stop a sale". The cost of a
+> lost beat is one stale row, which the age already makes visible.
+>
+> **The check constraint shipped** as console migration `000020`, raising `SCHEMA_VERSION` to
+> 20 and leaving `MIN_APP_VERSION` at 1.0.0 (additive: no shipped build writes that column at
+> all). It is also the first real exercise of M9's stamp-and-re-grant machinery, which until
+> now had only ever run against a rolled-back fixture.
+>
+> **Console side:** `monitor` (no target = every business; `--business`/`--schema` to narrow),
+> read-only and therefore unaudited like `branch:list`, reachable from the main menu and from
+> a business screen. It reads through `BranchStatusDirectory`, which LEFT JOINs the roster onto
+> `branch_status` so a branch that has never phoned home prints `never` rather than vanishing —
+> the most important row on the screen. It also prints each branch's credential state when it
+> is not `active`: a credential the console disabled and a dead router produce identically
+> silent tills, and only the two halves together tell them apart.
 
 ## Milestone
 The console lists every branch of every business with live version and sync health.

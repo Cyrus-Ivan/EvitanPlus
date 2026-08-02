@@ -32,8 +32,8 @@ return new class extends Migration
             // Same four values as the till's local sync_status, so the
             // heartbeat is a straight copy: "disabled credential" and "no
             // internet" must not collapse to one row in the console monitor,
-            // since they need opposite responses. Not yet a check constraint —
-            // M10 writes this column first and should add one then.
+            // since they need opposite responses. Constrained to those four
+            // words by migration 000020, once M10 had something writing them.
             $table->string('connection_state')->nullable();
             // Last failure surfaced to both the till and the monitor
             // (auth / version / network).

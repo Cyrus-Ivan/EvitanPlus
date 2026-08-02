@@ -377,9 +377,38 @@ progress made on `users`, and a table added later starts from zero without re-pu
 else.
 
 ### Heartbeat
-The **upsert of this branch's `branch_status` row** at the end of a cycle. One row per branch —
-current state, not history (`branch_id` is the primary key).
-*Anchor:* `console/database/migrations/2026_07_26_000018_create_branch_status_table.php`.
+The **upsert of this branch's `branch_status` row** at the end of a cycle — step 4. One row per
+branch — current state, not history (`branch_id` is the primary key).
+*Anchor:* `App\Support\Sync\Heartbeat` (M10); the table is
+`console/database/migrations/2026_07_26_000018_create_branch_status_table.php`.
+✗ **Not** a connection of its own. It runs inside the cycle's connection, on both ways out of
+it: after the pull on success, and from a `catch` before the exception is re-thrown.
+✗ **Not** able to report every state it can carry. `offline` and `unauthorized` are diagnosed
+by the connection failing to open, so the branch they describe never gets to write them —
+which is why **last seen** and not `connection_state` is what the monitor colours.
+✗ **Not** allowed to fail loudly. It swallows its own errors: a report about a cycle may never
+become that cycle's outcome.
+
+### Last seen
+`branch_status.last_seen_at` — the last moment a branch **reached Postgres at all**, written on
+every heartbeat including the failing ones.
+
+### Last sync
+`branch_status.last_sync_at` (and `sync_status.last_sync_at` locally) — the last moment a cycle
+**ran all the way through**. A failed beat leaves it standing, so the gap between the two is
+how long a reachable branch has been stuck.
+✗ **Not** interchangeable with [Last seen]. Fusing them erases the one branch worth calling
+about: the one that is online, talking, and getting nothing done.
+
+### Monitor
+The console screen showing **what every branch is doing** — app version, schema version,
+backlog, last sync, last seen, connection state — aggregated from `branch_status` across every
+business schema.
+*Anchor:* `monitor` (`Provisioning\Console\Commands\MonitorCommand`, M10), reading
+`Provisioning\Support\BranchStatusDirectory`.
+✗ **Not** `branch:list`, which reports what the console DID to a branch's credential. The two
+answer different halves of "why has this till gone quiet", which is why the monitor prints the
+credential state of any branch that is not `active`.
 
 ### Outbox listener
 The client-side trigger that asks for a cycle **when the backlog grows**. Every server response
@@ -460,9 +489,10 @@ stops applying at midnight, when the daily prefix moves on.
 (`auth | version | network`), `last_sync_at`, `blocked_since`. Written at the end of every
 cycle.
 *Anchor:* `App\Models\SyncStatus`; `App\Support\Sync\SyncCycle::run()`.
-✗ **Not** `branch_status`, which is the Postgres row the M10 heartbeat upserts. Same four
+✗ **Not** `branch_status`, which is the Postgres row the [Heartbeat] upserts. Same four
 `connection_state` values on purpose, so the heartbeat is a straight copy rather than a lossy
-one.
+one — though only `online` and `version_blocked` ever survive the trip, since the other two
+mean the connection never opened.
 
 ---
 

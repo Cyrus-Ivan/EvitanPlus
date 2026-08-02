@@ -56,12 +56,13 @@ trait FakesTheBusinessDatabase
      * The two tables that have NO local counterpart to copy, and so must be
      * spelled out here.
      *
-     * They are the same two `SchemaParityTest::POSTGRES_ONLY` names for the app:
-     * `branches` because "the till knows only which branch it is, never the
-     * roster", and `inventory_update_queue` because it is coordination between
-     * the issuing user and a branch rather than branch data. A hand-kept list is
-     * a place to forget, which is why everything else is derived — but a table
-     * the app has never had cannot be derived from a schema that has never
+     * They are `SchemaParityTest::POSTGRES_ONLY` names for the app: `branches`
+     * because "the till knows only which branch it is, never the roster",
+     * `inventory_update_queue` because it is coordination between the issuing
+     * user and a branch rather than branch data, and `branch_status` because a
+     * branch reports upward and never reads its own report back. A hand-kept
+     * list is a place to forget, which is why everything else is derived — but a
+     * table the app has never had cannot be derived from a schema that has never
      * described it.
      *
      * @var array<string, string>
@@ -69,6 +70,10 @@ trait FakesTheBusinessDatabase
     private const POSTGRES_ONLY = [
         'branches' => '"id" varchar, "code" varchar, "name" varchar, "address" varchar,
                        "disabled_at" datetime, "created_at" datetime, "updated_at" datetime',
+        'branch_status' => '"branch_id" varchar, "app_version" varchar, "schema_version" integer,
+                            "last_sync_at" datetime, "unsynced_count" integer, "last_seen_at" datetime,
+                            "connection_state" varchar, "last_error" text,
+                            "created_at" datetime, "updated_at" datetime',
         'inventory_update_queue' => '"id" varchar, "branch_id" varchar, "variant_id" varchar,
                                      "quantity" integer, "notes" varchar, "status" varchar,
                                      "rejection_reason" varchar, "ledger_entry_id" varchar,
@@ -91,6 +96,7 @@ trait FakesTheBusinessDatabase
     private const UPSERT_KEYS = [
         'stock_snapshots' => ['"branch_id", "variant_id"'],
         'inventory_ledger' => ['"id"'],
+        'branch_status' => ['"branch_id"'],
     ];
 
     /**

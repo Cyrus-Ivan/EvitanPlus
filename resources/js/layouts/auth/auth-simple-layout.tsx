@@ -23,13 +23,14 @@ interface AuthLayoutProps {
  * header are mutually exclusive, so exactly one indicator is ever mounted.
  *
  * {@link BranchIdentity} is here for a plainer reason — a device you cannot log
- * into is exactly when you need to know which branch it is.
+ * into is exactly when you need to know which branch it is. This is its only
+ * home outside the sidebar footer, and the only place it is right-aligned.
  */
 export default function AuthSimpleLayout({ children, title, description }: AuthLayoutProps) {
     return (
         <div className="bg-background relative flex min-h-svh flex-col items-center justify-center gap-6 p-6 md:p-10">
             <div className="absolute top-4 right-4 flex items-center gap-3">
-                <BranchIdentity />
+                <BranchIdentity className="text-right" />
                 <SyncIndicator />
             </div>
 

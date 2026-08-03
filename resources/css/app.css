@@ -166,4 +166,32 @@
     body {
         @apply bg-background text-foreground;
     }
+
+    /* Tailwind v4's preflight deliberately dropped the pointer cursor from
+       buttons, on the reasoning that native buttons do not have one. On a till
+       that is the wrong call: the whole interface is buttons — product tiles,
+       payment types, the checkout — and an arrow over all of them makes a
+       screen someone taps hundreds of times a day read as inert.
+
+       Anchors already get a pointer from the browser. Disabled controls are
+       excluded on purpose: an out-of-stock tile stays visible and must not
+       invite the click it will refuse (`:disabled` for real buttons,
+       `aria-disabled` for the Radix items that only look disabled).
+
+       This rule cannot reach the shadcn menu and select items: they ship
+       `cursor-default` in their own class strings, and a utility beats @layer
+       base whatever the selector. Those are fixed where they are written, in
+       `components/ui/dropdown-menu.tsx` and `components/ui/select.tsx`. */
+    button:not(:disabled),
+    [role='button']:not([aria-disabled='true']),
+    [role='menuitem']:not([aria-disabled='true']),
+    [role='menuitemcheckbox']:not([aria-disabled='true']),
+    [role='menuitemradio']:not([aria-disabled='true']),
+    [role='option']:not([aria-disabled='true']),
+    [role='tab']:not([aria-disabled='true']),
+    [role='switch']:not(:disabled),
+    label[for],
+    summary {
+        cursor: pointer;
+    }
 }

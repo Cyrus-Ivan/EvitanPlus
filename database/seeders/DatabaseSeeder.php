@@ -38,10 +38,10 @@ class DatabaseSeeder extends Seeder
             // The demo sales enqueued themselves in the outbox on the way in,
             // which is the enqueue trait working correctly and useless here:
             // the dev identity has no credential, so none of it can ever push.
-            // Clearing it means the sync indicator reads "Synced" on a dev
-            // machine instead of showing a four-figure backlog that will never
-            // move — a number a developer would learn to ignore, which is the
-            // last thing this indicator should teach anyone.
+            // Clearing it means the sync indicator reads a bare "Offline" on a
+            // dev machine instead of a four-figure backlog that will never move
+            // — a number a developer would learn to ignore, which is the last
+            // thing this indicator should teach anyone.
             DB::table('sync_outbox')->truncate();
         }
     }

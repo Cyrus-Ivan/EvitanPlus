@@ -10,16 +10,16 @@ import { useCurrency } from '@/hooks/use-currency';
 import { usePermissions } from '@/hooks/use-permissions';
 import AppLayout from '@/layouts/app-layout';
 import type {
+    BranchScope,
     BreadcrumbItem,
-    ReportBranch,
     ReportBranchRow,
     ReportChartBucket,
     ReportChartBy,
     ReportChartItem,
     ReportPeriod,
     ReportRow,
-    ReportScope,
     ReportTotals,
+    RosterBranch,
     SharedData,
 } from '@/types';
 import { Head, router, usePage } from '@inertiajs/react';
@@ -140,9 +140,9 @@ export default function Reports({
     filters: Filters;
     // M11. `scope` is what was actually reported on — a failed online read comes
     // back as 'local' with consolidatedOnline false, never as the scope asked for.
-    scope: ReportScope;
+    scope: BranchScope;
     chartBy: ReportChartBy;
-    branches: ReportBranch[];
+    branches: RosterBranch[];
     branchRows: ReportBranchRow[] | null;
     // Null when nothing consolidated was asked for; false when it was and the
     // business database could not be reached.

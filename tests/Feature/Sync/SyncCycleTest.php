@@ -268,6 +268,24 @@ class SyncCycleTest extends TestCase
             ->assertJsonPath('sync.state', SyncStatus::OFFLINE);
     }
 
+    /**
+     * M11.5. The cycle's PULL is what brings `users` down, so a device that
+     * cannot sync until somebody logs in cannot be logged into by anyone it has
+     * not already heard of. A staff member created at another branch would be
+     * locked out of this till entirely — on a product whose premise is that any
+     * user may work at any branch.
+     */
+    public function test_a_guest_on_the_login_screen_can_run_a_cycle(): void
+    {
+        $this->stubCycle(fn () => throw new SetupFailedException('still offline'));
+
+        $this->assertGuest();
+
+        $this->postJson(route('sync'))
+            ->assertOk()
+            ->assertJsonPath('sync.state', SyncStatus::OFFLINE);
+    }
+
     public function test_a_broken_sync_never_stops_a_sale(): void
     {
         $this->stubCycle(fn () => throw new SetupFailedException('everything is on fire'));

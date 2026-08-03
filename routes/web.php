@@ -36,6 +36,21 @@ Route::post('setup/browse', [SetupController::class, 'browse'])->name('setup.bro
 // OS print-queue detection for the wizard's printer step.
 Route::get('setup/printers', [PrinterSettingsController::class, 'printers'])->name('setup.printers');
 
+// Run one sync cycle (M6). It answers JSON and never throws — a sync failure
+// must not disturb a completed sale, which is why the POS page can fire it after
+// every checkout.
+//
+// PRE-AUTH from M11.5, and not merely as a convenience. The cycle's PULL is what
+// brings `users` down, so while this sat behind `auth` a staff member created at
+// another branch could not log in on this device until somebody ELSE logged in
+// first and a cycle happened to run — a genuine lock-out on a product whose
+// whole point is that any user may work at any branch. Nothing here needed a
+// user to begin with: SyncCycle::run() takes no arguments and reads its identity
+// from `instance` and the sealed credential, and SyncController never touches
+// the request. RequireInitialSetup still applies, so this is reachable only on a
+// device that already holds a branch credential.
+Route::post('sync', SyncController::class)->name('sync');
+
 Route::middleware(['auth'])->group(function () {
     // Cashier-level: available to every authenticated user.
     // Point of Sale (Phase 8). Cashier-level — every authenticated user may sell.
@@ -54,12 +69,6 @@ Route::middleware(['auth'])->group(function () {
     // elevates defect to Admin+ by the submitted type.
     Route::post('sales/{transaction}/returns', [SaleReturnController::class, 'store'])->name('sales.returns.store');
     Route::get('login-history', [LoginHistoryController::class, 'index'])->name('login-history');  // Phase 14
-
-    // Run one sync cycle (M6). Cashier-level on purpose: the POS page fires it
-    // after every checkout, and the "Sync now" button is the control worth
-    // having when talking a store through a problem over the phone. It answers
-    // JSON and never throws — a sync failure must not disturb a completed sale.
-    Route::post('sync', SyncController::class)->name('sync');
 
     // Inventory (Phase 5). Viewing is Cashier-level (read-only); every write is
     // gated to Admin+ below. Item Cost is further restricted to the Owner inside

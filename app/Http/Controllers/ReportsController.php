@@ -7,6 +7,7 @@ use App\Models\Instance;
 use App\Support\Reports\SalesFigures;
 use App\Support\Settings\BusinessSettings;
 use App\Support\Sync\BranchCycle;
+use App\Support\Sync\BranchRoster;
 use App\Support\Sync\OnlineRead;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
@@ -221,7 +222,10 @@ class ReportsController extends Controller
 
         $data = rescue(fn (): array => $this->read->run(
             function (Connection $remote) use ($requested, $chartBy, $period, $from, $to, $canViewCost, $topItems): array {
-                $branches = $this->roster($remote);
+                // Disabled branches included: a disabled branch's past sales are
+                // still the business's, and hiding them would make the
+                // consolidated total disagree with the sum of its rows.
+                $branches = BranchRoster::read($remote);
 
                 // A branch id that is no longer in the roster means a stale link
                 // or a hand-typed one. Report the whole business rather than an
@@ -270,30 +274,6 @@ class ReportsController extends Controller
         }
 
         return $data;
-    }
-
-    /**
-     * The branch roster, keyed by id.
-     *
-     * Unlike `InventoryQueueController::roster()` this does NOT filter out
-     * disabled branches: that screen picks a branch to send work to, and a
-     * disabled one cannot receive it, but a disabled branch's past sales are
-     * still the business's sales. Hiding them would make the consolidated total
-     * disagree with the sum of its rows.
-     *
-     * @return array<string, array{id: string, code: string, name: string}>
-     */
-    private function roster(Connection $remote): array
-    {
-        return $remote->table('branches')
-            ->orderBy('code')
-            ->get(['id', 'code', 'name'])
-            ->mapWithKeys(fn (object $row): array => [(string) $row->id => [
-                'id' => (string) $row->id,
-                'code' => (string) $row->code,
-                'name' => (string) $row->name,
-            ]])
-            ->all();
     }
 
     /**

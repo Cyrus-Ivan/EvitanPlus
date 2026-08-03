@@ -1300,6 +1300,93 @@ with cost hidden from non-Owners throughout.
 
 ---
 
+# Phase M11.5 — Device identity, pre-login sync & cross-branch login history ✅
+
+Numbered like M6.5: a slice that landed between numbered phases because the work it does was
+assumed by three earlier ones rather than scheduled by any of them.
+
+## Goal
+Make the till say which branch it is, let it sync before anyone logs in, and answer "who signed
+in where".
+
+> **Done.** Three gaps, all of them *visibility* rather than mechanism, and **none of them
+> needing a schema, grant or console change** — every column and privilege was already there.
+> That is the phase's most reusable fact: M1 built `login_history.branch_id` and M2 granted
+> SELECT on it, and nothing read either for ten phases.
+
+## Tasks
+- **The `identity` shared prop.** `instance` has held `branch_code`/`branch_name` since M5 and
+  `business_name` has been a pulled setting since M7, yet neither name appeared in a single
+  `.tsx` file. Now shared on every page and rendered beside the sync indicator in the app
+  header — the pair is read together, because a till reports itself by branch and the branch
+  code prefixes every receipt it prints.
+- **Pre-login sync.** `POST /sync` moved out of the `auth` group.
+- **Login history `scope`.** `local` | `all` | branch id on `/login-history`, and a Branch
+  column in both.
+- **`BranchRoster`** extracted from M11's `ReportsController::roster()`, now that two screens
+  need the roster and share its non-obvious decision about disabled branches.
+
+## As built
+
+> **The pre-login gate was a lock-out, not an inconvenience.** The cycle's *pull* is what brings
+> `users` down. While `POST /sync` sat behind `auth`, a device could not learn about a staff
+> member created at another branch until somebody **else** logged in and a cycle happened to
+> run — on a product whose premise (§6) is that any user may work at any branch. Nothing about
+> the cycle had to change to fix it: `SyncCycle::run()` takes no arguments, reads its identity
+> from `instance` and the sealed credential, and `SyncController` never touches the request.
+> `RequireInitialSetup` still applies, so the route is reachable only on a device that already
+> holds a branch credential.
+
+> **The triggers' "mount in exactly one place" rule was worded wrong, not violated.** The real
+> constraint is one mount *at a time* — two live backstop intervals is the failure. The auth
+> layout and the app header are mutually exclusive by construction, so rendering `SyncIndicator`
+> on the login screen satisfies it, and the e2e trigger counts in `tests/e2e/sync.spec.ts` are
+> unchanged: the first cycle now fires from the login page and the post-login remount is
+> throttled by the same `lastCycleAt`.
+
+> **The local `login_history` has no `branch_id` and deliberately still doesn't.** Every local
+> row is this branch's by construction — the push stamps a branch from `instance` on the way up
+> — so the column is filled from `instance` and is a statement about the *device*. Adding one
+> would have touched the migration, `$fillable`, the factory, the seeder and the parity guard to
+> store a constant, and `RowMapper::outbound()` would have overwritten it at push time anyway.
+
+> **Admin+, not Owner-only, and snapped rather than refused.** Reports restrict the wider scopes
+> to the Owner because they carry cost and profit; login history carries neither, and §6 names
+> both roles. A Cashier asking for `scope=all` gets `local` back rather than a 403 — the local
+> view is theirs by right and sits on the same route, exactly as a crafted `user` parameter
+> leaves them looking at their own events.
+
+> **Two Postgres traps inherited from M11, and one correction to what M11 said about them.**
+> The window bounds must carry their **offset** (a naive Manila bound is read in the session's
+> UTC and lands eight hours out) — that half is real and `test_the_day_filter_is_cut_on_the_
+> business_day_not_the_utc_one` proves it. The **microseconds** half is not: `timestampTz` takes
+> Laravel's default precision of **0**, so every timestamp column in the business schema is
+> `timestamp(0) with time zone` and holds whole seconds. A `.999999` fixture is not merely
+> untested but unrepresentable — Postgres rounds it up into the next day. The sub-second digits
+> stay in the format string for consistency with `SalesFigures::bound()`; they are inert.
+> Timestamps come back as `timestamptz` and are converted to business-local time **in PHP**
+> rather than with `to_char`, which is cheaper than M11's problem because a row list needs no
+> bucket key.
+
+> **Testing splits the same three ways M11's did, and for the same reason.** The feature suite
+> reaches the role scoping, the local branch column and the *fallback* — the only cross-branch
+> path a credential-free device has. Everything real is
+> `tests/Integration/ConsolidatedLoginHistoryTest.php` (`#[Group('supabase')]`) against two
+> really provisioned branches, with sessions either side of local midnight and one at the last
+> second the schema can store.
+
+> **One wording fix outside the phase's scope, made because the phase moved the screen.** The
+> sync indicator said "N sales waiting to sync". The outbox also carries logins, returns and
+> audit rows — and on the *login* screen a backlog of 1 is most likely a login, so the sentence
+> would have been wrong exactly where it is now most read. It says "changes" now, which is the
+> same correction M11 made to the reports banner.
+
+## Milestone
+A till names its business and branch on every screen including the login page, syncs before
+anyone signs in, and an Admin online can see which branch each session happened at.
+
+---
+
 # Phase M12 — Hardening, testing & release verification
 
 ## Goal

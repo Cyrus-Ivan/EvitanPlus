@@ -5,13 +5,22 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import AppLayout from '@/layouts/app-layout';
-import type { BreadcrumbItem, LoginEventType, LoginHistoryEntry, Paginated, User } from '@/types';
+import type { BranchScope, BreadcrumbItem, LoginEventType, LoginHistoryEntry, Paginated, RosterBranch, User } from '@/types';
 import { Head, router } from '@inertiajs/react';
-import { History } from 'lucide-react';
+import { History, WifiOff } from 'lucide-react';
 
 const breadcrumbs: BreadcrumbItem[] = [{ title: 'Login History', href: '/login-history' }];
 
 const ALL = 'all';
+
+// This branch's own sessions, from the local mirror — the default, and what a
+// Cashier always gets. Any other value is read live from the business database.
+const LOCAL = 'local';
+
+// The props a filter or scope change reloads. Listed once because every control
+// funnels through applyFilters(): a prop left out of this list silently freezes
+// while the rest of the screen updates around it.
+const RELOADED = ['entries', 'filters', 'scope', 'branches', 'consolidatedOnline'];
 
 // Human labels + badge tone per event. Clean sign-in/out reads neutral; the
 // abnormal terminations (crash / power loss / forced) read as warnings.
@@ -32,6 +41,25 @@ function formatWhen(value: string | null): string {
     return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
 }
 
+/**
+ * Shown when cross-branch sessions were asked for and the business database
+ * could not be reached, so what is on screen is this branch's own history.
+ *
+ * The risk this guards against is a correct-looking table that covers fewer
+ * branches than its heading claims, so the first line names what is on screen.
+ */
+function OfflineHistoryNotice() {
+    return (
+        <div role="alert" className="flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+            <WifiOff className="mt-0.5 size-4 shrink-0" />
+            <p>
+                <span className="font-medium">These are this branch's sessions only.</span> Other branches' login history lives in the business
+                database and this device is offline, so it could not be included. Reconnect to see login activity across branches.
+            </p>
+        </div>
+    );
+}
+
 interface Filters {
     user: string | null;
     event: string | null;
@@ -45,15 +73,24 @@ export default function LoginHistory({
     users,
     eventTypes,
     filters,
+    scope,
+    branches,
+    consolidatedOnline,
 }: {
     entries: Paginated<LoginHistoryEntry>;
     canViewAll: boolean;
     users: Pick<User, 'id' | 'name' | 'username'>[];
     eventTypes: LoginEventType[];
     filters: Filters;
+    // M11.5. What was actually read — a failed online read comes back as
+    // 'local' with consolidatedOnline false, never as the scope asked for.
+    scope: BranchScope;
+    branches: RosterBranch[];
+    // Null when nothing cross-branch was asked for; false only on a fallback.
+    consolidatedOnline: boolean | null;
 }) {
-    const applyFilters = (next: Partial<Filters>) => {
-        const merged = { ...filters, ...next };
+    const applyFilters = (next: Partial<Filters> & { scope?: string }) => {
+        const merged = { ...filters, scope, ...next };
         router.get(
             route('login-history'),
             {
@@ -61,8 +98,11 @@ export default function LoginHistory({
                 event: merged.event && merged.event !== ALL ? merged.event : undefined,
                 date_from: merged.date_from || undefined,
                 date_to: merged.date_to || undefined,
+                // Carried through every filter change, or narrowing by date
+                // would silently drop the screen back to this branch.
+                scope: merged.scope !== LOCAL ? merged.scope : undefined,
             },
-            { preserveState: true, preserveScroll: true, replace: true, only: ['entries', 'filters'] },
+            { preserveState: true, preserveScroll: true, replace: true, only: RELOADED },
         );
     };
 
@@ -71,6 +111,25 @@ export default function LoginHistory({
             <Head title="Login History" />
             <div className="flex min-h-full flex-1 flex-col gap-4 p-4">
                 <div className="flex flex-wrap items-center gap-2">
+                    {/* Which branches (M11.5). Admin+, and online-only — a
+                        failed read snaps this back to "This branch" and the
+                        notice below says why. */}
+                    {canViewAll && (
+                        <Select value={scope} onValueChange={(value) => applyFilters({ scope: value })}>
+                            <SelectTrigger className="w-56" aria-label="Branches shown">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value={LOCAL}>This branch</SelectItem>
+                                <SelectItem value={ALL}>All branches</SelectItem>
+                                {branches.map((branch) => (
+                                    <SelectItem key={branch.id} value={branch.id}>
+                                        {branch.code} — {branch.name}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    )}
                     {canViewAll && (
                         <Select value={filters.user ?? ALL} onValueChange={(value) => applyFilters({ user: value })}>
                             <SelectTrigger className="w-56">
@@ -119,6 +178,8 @@ export default function LoginHistory({
                     </div>
                 </div>
 
+                {consolidatedOnline === false && <OfflineHistoryNotice />}
+
                 {entries.data.length === 0 ? (
                     <EmptyState
                         icon={History}
@@ -131,6 +192,10 @@ export default function LoginHistory({
                             <TableHeader>
                                 <TableRow>
                                     <TableHead>When</TableHead>
+                                    {/* The branch CODE — the identifier that
+                                        prefixes every receipt this till prints,
+                                        and the one a branch is called by. */}
+                                    <TableHead>Branch</TableHead>
                                     {canViewAll && <TableHead>User</TableHead>}
                                     <TableHead>Event</TableHead>
                                     <TableHead>Notes</TableHead>
@@ -140,6 +205,7 @@ export default function LoginHistory({
                                 {entries.data.map((entry) => (
                                     <TableRow key={entry.id}>
                                         <TableCell className="tabular-nums">{formatWhen(entry.occurred_at ?? entry.created_at)}</TableCell>
+                                        <TableCell className="font-medium">{entry.branch ?? '—'}</TableCell>
                                         {canViewAll && <TableCell>{entry.user?.name ?? entry.user?.username ?? '—'}</TableCell>}
                                         <TableCell>
                                             <Badge variant={EVENT[entry.event_type]?.variant ?? 'outline'}>

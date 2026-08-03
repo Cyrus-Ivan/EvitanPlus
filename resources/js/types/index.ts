@@ -66,6 +66,20 @@ export interface SyncSnapshot {
     error: string | null;
 }
 
+/**
+ * Which business and which branch this device is (M11.5).
+ *
+ * Two sources: `business` is a business-wide setting that every sync pulls
+ * down, `branch`/`code` come from the local `instance` singleton and are
+ * written once at setup. Shared on every page, the login screen included.
+ */
+export interface Identity {
+    business: string | null;
+    branch: string | null;
+    // The branch code that prefixes every receipt serial this till prints.
+    code: string | null;
+}
+
 export interface SharedData {
     name: string;
     auth: Auth;
@@ -74,6 +88,8 @@ export interface SharedData {
     flash: { toast?: FlashToast | null; restart_required?: boolean; credentials_path?: string | null };
     // Null on an install whose sync tables do not exist yet (pre-migration).
     sync: SyncSnapshot | null;
+    // Null on a device that has never been hydrated — it has no branch to name.
+    identity: Identity | null;
     [key: string]: unknown;
 }
 
@@ -158,6 +174,9 @@ export type LoginEventType = 'login' | 'logout' | 'application_crash' | 'forced_
 // A row from the append-only login history (Phase 14, display only).
 export interface LoginHistoryEntry {
     id: string;
+    // Branch CODE (M11.5). In the local scope it is this device's, from
+    // `instance`; in a cross-branch scope the roster resolves it server-side.
+    branch: string | null;
     event_type: LoginEventType;
     occurred_at: string | null;
     created_at: string;
@@ -306,16 +325,22 @@ export interface ReportBranchRow {
 }
 
 // A branch in the roster, read live from the business database.
-export interface ReportBranch {
+/**
+ * One entry of the branch roster, read live from the business database
+ * (`App\Support\Sync\BranchRoster`). Distinct from {@link Branch}, which carries
+ * `is_this_branch` for the screens that must not aim work at themselves.
+ */
+export interface RosterBranch {
     id: string;
     code: string;
     name: string;
 }
 
-// Which branches a report covers: 'local' = this device's own SQLite mirror
+// Which branches a screen covers: 'local' = this device's own SQLite mirror
 // (works offline), 'all' = every branch, or a single branch id. Anything but
-// 'local' is Owner-only and online-only.
-export type ReportScope = 'local' | 'all' | string;
+// 'local' is online-only. Used by reports (Owner-only, M11) and login history
+// (Admin+, M11.5) — one parameter, one meaning, two screens.
+export type BranchScope = 'local' | 'all' | string;
 
 // The chart's series dimension: what sold, or which branch sold it.
 export type ReportChartBy = 'item' | 'branch';

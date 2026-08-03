@@ -165,4 +165,69 @@ class LoginHistoryDisplayTest extends TestCase
                 ->where('filters.date_from', null)
                 ->where('filters.date_to', null));
     }
+
+    /**
+     * M11.5. The local table has no branch_id and never will — every row in it
+     * is this device's by construction, and the push stamps a branch on the way
+     * up. So the column is filled from `instance`, and a device that has one
+     * fills it for every row.
+     */
+    public function test_local_rows_carry_this_devices_branch()
+    {
+        $owner = User::factory()->owner()->create();
+
+        LoginHistory::factory()->count(2)->for($owner)->create();
+
+        $this->actingAs($owner)->get(route('login-history'))
+            ->assertInertia(fn ($page) => $page
+                ->where('scope', 'local')
+                ->where('branches', [])
+                // Null, not false: nothing cross-branch was asked for, so there
+                // is nothing to report as unavailable.
+                ->where('consolidatedOnline', null)
+                ->where('entries.data.0.branch', 'TST')
+                ->where('entries.data.1.branch', 'TST')
+            );
+    }
+
+    /**
+     * A Cashier is snapped back to their own branch rather than refused — the
+     * same route still owes them the local history, exactly as a crafted `user`
+     * parameter leaves them looking at their own events.
+     */
+    public function test_a_cashier_cannot_widen_the_scope_to_other_branches()
+    {
+        $cashier = User::factory()->cashier()->create();
+
+        LoginHistory::factory()->for($cashier)->create();
+
+        $this->actingAs($cashier)->get(route('login-history', ['scope' => 'all']))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->where('scope', 'local')
+                ->where('consolidatedOnline', null)
+            );
+    }
+
+    /**
+     * The fallback, and the only cross-branch path a credential-free test device
+     * can reach: presenting one branch's sessions under an "All branches"
+     * heading is worse than saying the read failed, so the scope comes back
+     * `local` with the flag false and the screen says so.
+     */
+    public function test_an_offline_admin_falls_back_to_this_branch_and_says_so()
+    {
+        $admin = User::factory()->admin()->create();
+
+        LoginHistory::factory()->count(2)->for($admin)->create();
+
+        $this->actingAs($admin)->get(route('login-history', ['scope' => 'all']))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->where('scope', 'local')
+                ->where('consolidatedOnline', false)
+                ->has('entries.data', 2)
+                ->where('entries.data.0.branch', 'TST')
+            );
+    }
 }

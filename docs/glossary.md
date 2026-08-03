@@ -137,6 +137,28 @@ retired; say *branch device* or *business*.
 One customer of Evitan Plus. Owns exactly one business schema, one Owner, and one or more
 branches.
 
+### Device identity (the `identity` shared prop)
+The **business name and branch this device is**, shared with every Inertia page — the login
+screen included — so any screen can name the installation without asking for it. Two sources,
+which is why it is one prop rather than two: `business` is a pulled setting, `branch`/`code`
+come from [`instance`].
+*Anchor:* the `identity` key in `HandleInertiaRequests::share()`;
+`resources/js/components/branch-identity.tsx` (M11.5).
+✗ **Not** the product name. The sidebar wordmark stays *Evitan Plus*; this is the shop's name
+and its branch.
+✗ **Not** a [branch roster] entry. A till knows only which branch it *is*.
+✗ **Null** on a device the wizard has not finished with — it has no branch to name yet.
+
+### Branch roster
+The business's `branches`, read live from the business database by any screen that must name a
+branch other than its own. Includes **disabled** branches by default: a disabled credential
+stops a branch receiving work, it does not unmake what that branch already did.
+*Anchor:* `App\Support\Sync\BranchRoster::read()` (extracted in M11.5 from M11's
+`ReportsController::roster()`).
+✗ **Not** mirrored, ever. See [online read].
+✗ **Not** the same call everywhere: `InventoryQueueController` excludes disabled branches,
+because that screen picks a branch to send an adjustment *to*.
+
 ---
 
 ## 3. Stores and schemas
@@ -319,6 +341,19 @@ when the subject is the connection itself. `MULTIBRANCH-BRAINSTORM.md` §11.2/§
 ✗ **Not** a session. No `SET`, no `LISTEN`, no temp tables, no advisory locks, no transaction
 spanning steps — a branch connects through the **transaction** pooler (`6543`), where no
 session state survives.
+✗ **Not** something a logged-in user is needed for. `SyncCycle::run()` takes no arguments and
+reads its identity from [`instance`] and the sealed credential, so `POST /sync` is reachable by
+a guest from M11.5 — see [pre-login cycle].
+
+### Pre-login cycle
+A cycle run **from the login screen**, by the same triggers and the same route as any other.
+It exists for the pull: `users` comes down with it, so a staff member created at another branch
+can sign in at this till without anyone signing in first.
+*Anchor:* `POST /sync` outside the `auth` group; `SyncIndicator` rendered by
+`resources/js/layouts/auth/auth-simple-layout.tsx` (M11.5).
+✗ **Not** a new mechanism. Nothing about the cycle changed; only what could reach it did.
+✗ **Not** unguarded. `RequireInitialSetup` still applies, so it is reachable only on a device
+that already holds a branch credential.
 
 ### Probe
 The lightweight **connectivity check** that decides whether a cycle should run at all. An
@@ -358,7 +393,7 @@ refusing to render a screen would hide the display of the very problem.
 ### Consolidated report
 The sales report recomputed **across branches** from the business database, rather than from this
 device's mirror. Owner-only and online-only, on the same `/reports` screen as the branch-local
-one, selected by [report scope].
+one, selected by [branch scope].
 *Anchor:* `App\Support\Reports\SalesFigures` handed the Postgres connection (M11).
 ✗ **Not** a different recompute. One class serves both, with the connection as an argument, so
 the two screens cannot disagree about what net sales means.
@@ -367,16 +402,22 @@ the two screens cannot disagree about what net sales means.
 ✗ **Not** exempt from Item Cost being Owner-only. COGS and profit are omitted from the payload
 for a non-Owner here exactly as everywhere else.
 
-### Report scope
-Which branches a report covers: **`local`** (this device's SQLite mirror — the default, works
-offline, the only value an Admin may use), **`all`**, or a **branch id**. Echoed back to the
-screen *after* normalisation, so it always names what was reported on rather than what was asked
-for.
-*Anchor:* the `scope` query parameter on `ReportsController` (M11).
+### Branch scope
+Which branches a screen covers: **`local`** (this device's SQLite mirror — the default, works
+offline), **`all`**, or a **branch id**. Echoed back to the screen *after* normalisation, so it
+always names what was actually read rather than what was asked for.
+*Anchor:* the `scope` query parameter on `ReportsController` (M11) and `LoginHistoryController`
+(M11.5); `BranchScope` in `resources/js/types/index.ts`.
 ✗ **Not** a filter over one dataset. `local` and the other two read different databases.
 ✗ **Not** silently downgraded when the connection is down. The screen falls back to `local` and
-says so (`consolidatedOnline: false`); presenting one branch's figures under an "All branches"
+says so (`consolidatedOnline: false`); presenting one branch's rows under an "All branches"
 heading is the failure this design refuses.
+✗ **Not** one permission. Reports restrict the wider scopes to the **Owner** (they carry cost
+and profit); login history allows **Admin+**, per `MULTIBRANCH-BRAINSTORM.md` §6. A viewer who
+may not widen it is snapped back to `local` on the login-history screen, since the local view is
+theirs by right and sits on the same route.
+> Called **report scope** until M11.5, when a second screen took the same parameter with the
+> same meaning. One word, because a synonym is exactly what §0 forbids.
 
 ### Pull
 Fetching **deltas** of pulled tables by `updated_at`, plus the recomputed stock baseline.
@@ -450,7 +491,9 @@ The client-side trigger that asks for a cycle **when the backlog grows**. Every 
 carries `unsynced_count` in the shared `sync` prop, read from the outbox, so a sale, return,
 login or audit row produces a response and a cycle fires seconds later.
 *Anchor:* `useSyncTriggers()` in `resources/js/hooks/use-sync.ts` (M7), mounted once in
-`SyncIndicator`.
+`SyncIndicator` — which the app header renders on every authenticated screen and the auth layout
+renders on the login screen (M11.5). Those two never coexist, so there is only ever one mount and
+one backstop timer.
 ✗ **Not** polling. It reacts to a number already on its way to the client; nothing asks the
 server whether there is work.
 ✗ **Not** able to see the pull. Branch A editing a price writes nothing at all on Branch B, so

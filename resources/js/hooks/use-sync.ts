@@ -118,10 +118,13 @@ export function useSync() {
 /**
  * The four things that ask for a sync cycle (M7, §11.3).
  *
- * Mount this in EXACTLY ONE place — {@link SyncIndicator}, which the app header
- * renders on every authenticated screen. It is a separate hook rather than part
- * of {@link useSync} for that reason: a second component reading sync state must
- * not silently start a second timer.
+ * Mount this in EXACTLY ONE PLACE AT A TIME — {@link SyncIndicator}, rendered by
+ * the app header on every authenticated screen and by the auth layout on the
+ * login screen (M11.5). Those two are mutually exclusive, so one indicator is
+ * ever mounted; two would mean two live backstop intervals, which is the actual
+ * failure this rule guards against. It is a separate hook rather than part of
+ * {@link useSync} for the same reason: a second component reading sync state
+ * must not silently start a second timer.
  *
  * ## Why a listener on the outbox instead of polling for the backlog
  *

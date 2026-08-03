@@ -28,7 +28,10 @@ type Presentation = {
 
 function present(sync: SyncSnapshot): Presentation {
     const backlog = sync.unsynced_count;
-    const waiting = backlog === 1 ? '1 sale waiting to sync' : `${backlog} sales waiting to sync`;
+    // "changes", not "sales": the outbox carries logins, returns and audit rows
+    // too, so a device that has only been logged into shows a backlog of 1 — and
+    // on the login screen (M11.5) that is the LIKELY case, not the edge one.
+    const waiting = backlog === 1 ? '1 change waiting to sync' : `${backlog} changes waiting to sync`;
 
     switch (sync.state) {
         case 'unauthorized':
@@ -98,9 +101,11 @@ export function SyncIndicator() {
     const { sync, busy, run } = useSync();
 
     // The app's single mount point for the sync triggers (M7). It lives here
-    // because the header renders on every authenticated screen, so "the app is
-    // open" and "the triggers are armed" are the same condition — and because
-    // one mount is what stops two components each starting a backstop timer.
+    // because this component is rendered by the app header on every
+    // authenticated screen and by the auth layout on the login screen (M11.5),
+    // so "the app is open" and "the triggers are armed" are the same condition.
+    // Those two mounts never coexist, which is what stops two components each
+    // starting a backstop timer.
     // Called before the early return below: hooks may not be conditional, and a
     // device with no sync tables has nothing to trigger anyway.
     useSyncTriggers();

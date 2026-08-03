@@ -1,9 +1,9 @@
+import { BranchScopeSelect } from '@/components/branch-scope-select';
 import EmptyState from '@/components/empty-state';
 import SalesBarChart from '@/components/reports/sales-bar-chart';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { useCurrency } from '@/hooks/use-currency';
@@ -29,19 +29,12 @@ const breadcrumbs: BreadcrumbItem[] = [{ title: 'Reports', href: '/reports' }];
 
 // The props the period/scope controls reload. Listed once because both the date
 // steppers and the toggles ask for exactly the same set.
-const RELOAD_PROPS = [
-    'period',
-    'rows',
-    'totals',
-    'chartItems',
-    'chart',
-    'filters',
-    'scope',
-    'chartBy',
-    'branches',
-    'branchRows',
-    'consolidatedOnline',
-];
+//
+// `branches` is deliberately NOT in it. The roster arrives with every full page
+// render now, and asking for it again would make the server re-read it — over
+// the network — on every step of the date. The list is the same one either way,
+// so the copy the client already holds stands.
+const RELOAD_PROPS = ['period', 'rows', 'totals', 'chartItems', 'chart', 'filters', 'scope', 'chartBy', 'branchRows', 'consolidatedOnline'];
 
 interface Filters {
     period: ReportPeriod;
@@ -236,22 +229,7 @@ export default function Reports({
 
                     {/* Which branches (M11). Owner-only, and online-only — the
                         server refuses anything but 'local' for anyone else. */}
-                    {canConsolidate && (
-                        <Select value={scope} onValueChange={switchScope}>
-                            <SelectTrigger className="w-56" aria-label="Branches reported on">
-                                <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value="local">This branch</SelectItem>
-                                <SelectItem value="all">All branches</SelectItem>
-                                {branches.map((branch) => (
-                                    <SelectItem key={branch.id} value={branch.id}>
-                                        {branch.code} — {branch.name}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                    )}
+                    {canConsolidate && <BranchScopeSelect scope={scope} branches={branches} onChange={switchScope} label="Branches reported on" />}
 
                     <Button variant="outline" asChild className="ml-auto">
                         <a href={route('reports.export', { period, date: filters.date, ...(consolidated ? { scope, by: chartBy } : {}) })}>

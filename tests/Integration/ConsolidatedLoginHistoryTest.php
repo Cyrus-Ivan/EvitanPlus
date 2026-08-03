@@ -165,9 +165,10 @@ class ConsolidatedLoginHistoryTest extends TestCase
                 $this->assertSame(3, $byBranch[self::BRANCH_A]);
                 $this->assertSame(2, $byBranch[self::BRANCH_B]);
 
-                // The roster is offered so the screen can narrow to one branch.
+                // The roster is offered so the screen can narrow to one branch —
+                // minus THIS branch, which the picker already offers as `local`.
                 $this->assertSame(
-                    [self::BRANCH_A, self::BRANCH_B],
+                    [self::BRANCH_B],
                     collect($props['branches'])->pluck('code')->sort()->values()->all(),
                 );
             });
@@ -262,10 +263,34 @@ class ConsolidatedLoginHistoryTest extends TestCase
         $this->actingAs($this->owner())
             ->get(route('login-history'))
             ->assertOk()
+            ->assertInertia(function ($page) {
+                $page->where('scope', 'local')
+                    ->where('consolidatedOnline', null)
+                    ->has('entries.data', 0);
+
+                // ...and yet the picker is already filled. The roster is read on
+                // every render for a viewer who may widen the scope, or naming
+                // one branch would mean first asking for all of them. Branch B
+                // only: this branch is the picker's `local` entry, and offering
+                // its id as well would be the same branch twice.
+                $this->assertSame(
+                    [self::BRANCH_B],
+                    collect($page->toArray()['props']['branches'])->pluck('code')->all(),
+                );
+            });
+    }
+
+    public function test_this_branchs_own_id_is_the_local_scope(): void
+    {
+        // Not a consolidated read of branch A — the local mirror, which is the
+        // better answer to the same question and the only one that survives the
+        // connection dropping.
+        $this->actingAs($this->owner())
+            ->get(route('login-history', ['scope' => self::$documentA['branch']['id']]))
+            ->assertOk()
             ->assertInertia(fn ($page) => $page
                 ->where('scope', 'local')
                 ->where('consolidatedOnline', null)
-                ->where('branches', [])
                 ->has('entries.data', 0)
             );
     }

@@ -407,8 +407,15 @@ Which branches a screen covers: **`local`** (this device's SQLite mirror — the
 offline), **`all`**, or a **branch id**. Echoed back to the screen *after* normalisation, so it
 always names what was actually read rather than what was asked for.
 *Anchor:* the `scope` query parameter on `ReportsController` (M11) and `LoginHistoryController`
-(M11.5); `BranchScope` in `resources/js/types/index.ts`.
+(M11.5); `BranchScope` in `resources/js/types/index.ts`; the picker
+`resources/js/components/branch-scope-select.tsx` and
+`App\Http\Controllers\Concerns\OffersBranchScope`, which fills it.
 ✗ **Not** a filter over one dataset. `local` and the other two read different databases.
+✗ **Not** three values plus a fourth for this branch. **This** branch's id *is* `local`: it is
+stripped from the picker's roster and `?scope=<own id>` snaps back to `local`, which answers the
+same question offline and includes rows this device has not pushed yet. The two coincide only
+while the MVP holds one device per branch (§"Till"), which is what makes the id redundant rather
+than a second answer.
 ✗ **Not** silently downgraded when the connection is down. The screen falls back to `local` and
 says so (`consolidatedOnline: false`); presenting one branch's rows under an "All branches"
 heading is the failure this design refuses.

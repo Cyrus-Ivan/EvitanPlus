@@ -3,6 +3,7 @@
 namespace Tests\Feature\LoginHistory;
 
 use App\Enums\LoginEventType;
+use App\Models\Instance;
 use App\Models\LoginHistory;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -181,12 +182,39 @@ class LoginHistoryDisplayTest extends TestCase
         $this->actingAs($owner)->get(route('login-history'))
             ->assertInertia(fn ($page) => $page
                 ->where('scope', 'local')
+                // Empty because no test device holds a credential, not because
+                // the scope is local: the picker's roster is read on every
+                // render now, and this is what a failed read leaves.
                 ->where('branches', [])
                 // Null, not false: nothing cross-branch was asked for, so there
                 // is nothing to report as unavailable.
                 ->where('consolidatedOnline', null)
                 ->where('entries.data.0.branch', 'TST')
                 ->where('entries.data.1.branch', 'TST')
+            );
+    }
+
+    /**
+     * This branch's own id names the same sessions `local` does, and `local`
+     * names them better — it works offline and includes what this device has not
+     * pushed yet. So the picker offers it only as `local`, and a hand-typed or
+     * bookmarked link asking for it lands on the value the control can show.
+     */
+    public function test_this_branchs_own_id_is_the_local_scope()
+    {
+        $owner = User::factory()->owner()->create();
+
+        LoginHistory::factory()->for($owner)->create();
+
+        $this->actingAs($owner)
+            ->get(route('login-history', ['scope' => Instance::current()->branch_id]))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->where('scope', 'local')
+                // Not false: no cross-branch read was attempted, because there
+                // was nothing cross-branch about the request.
+                ->where('consolidatedOnline', null)
+                ->where('entries.data.0.branch', 'TST')
             );
     }
 

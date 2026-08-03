@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Enums\LoginEventType;
 use App\Http\Controllers\Concerns\NormalizesDateFilter;
+use App\Http\Controllers\Concerns\OffersBranchScope;
 use App\Models\Instance;
 use App\Models\LoginHistory;
 use App\Models\User;
@@ -60,7 +61,7 @@ use Inertia\Response;
  */
 class LoginHistoryController extends Controller
 {
-    use NormalizesDateFilter;
+    use NormalizesDateFilter, OffersBranchScope;
 
     /** This branch's own sessions: SQLite, works offline. */
     private const SCOPE_LOCAL = 'local';
@@ -90,6 +91,12 @@ class LoginHistoryController extends Controller
             ? $this->branchLocal($filters)
             : $this->consolidated($scope, $filters);
 
+        // Null means the local path ran and no roster came back with it, so the
+        // picker's list is read on its own. Anything else — including the empty
+        // list a failed consolidated read leaves — already cost one online read
+        // this request and is reused rather than attempted again.
+        $roster = $history['consolidatedOnline'] === null ? null : $history['branches'];
+
         return Inertia::render('login-history', [
             'entries' => $history['entries'],
             'canViewAll' => $canViewAll,
@@ -111,7 +118,9 @@ class LoginHistoryController extends Controller
             // the control always shows what was actually read rather than what
             // was asked for.
             'scope' => $history['scope'],
-            'branches' => $history['branches'],
+            // Every branch but this one: the picker's first entry is already
+            // this branch, as `local` (see OffersBranchScope).
+            'branches' => $this->pickerBranches($this->read, $roster, $canViewAll && Instance::isHydrated()),
             'consolidatedOnline' => $history['consolidatedOnline'],
         ]);
     }
@@ -326,12 +335,20 @@ class LoginHistoryController extends Controller
      * A Cashier, or a device that was never connected to a business database,
      * gets `local` back rather than a 403: the local history is theirs by right
      * and it is on the same route.
+     *
+     * This branch's own id is `local` under another name, and the picker offers
+     * it only under that one — a bookmarked link naming it would otherwise leave
+     * the control showing a value that is not in its list.
      */
     private function normalizeScope(mixed $value, bool $canViewAll): string
     {
         $scope = (string) $value;
 
         if ($scope === '' || $scope === self::SCOPE_LOCAL || ! $canViewAll || ! Instance::isHydrated()) {
+            return self::SCOPE_LOCAL;
+        }
+
+        if ($this->isThisBranch($scope)) {
             return self::SCOPE_LOCAL;
         }
 

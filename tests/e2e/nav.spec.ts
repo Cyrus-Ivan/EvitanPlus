@@ -74,8 +74,9 @@ test('a consolidated report this device cannot fetch falls back and says so', as
 
     // The server snapped the scope back to `local`; the control has to agree.
     // Still reading "All branches" over branch-local numbers is that same
-    // mislabelling in its most convincing form.
-    await expect(page.getByLabel('Branches reported on')).toHaveText('This branch');
+    // mislabelling in its most convincing form. `local` names the branch it
+    // actually is — the dev seed's DEV / Development Branch.
+    await expect(page.getByLabel('Branches reported on')).toHaveText('DEV — Development Branch (this branch)');
 
     // And no per-branch table, because there are no other branches in these figures.
     await expect(page.getByRole('columnheader', { name: 'Branch' })).toBeHidden();

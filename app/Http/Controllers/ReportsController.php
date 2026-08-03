@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Concerns\NormalizesDateFilter;
+use App\Http\Controllers\Concerns\OffersBranchScope;
 use App\Models\Instance;
 use App\Support\Reports\SalesFigures;
 use App\Support\Settings\BusinessSettings;
@@ -67,7 +68,7 @@ use Inertia\Response;
  */
 class ReportsController extends Controller
 {
-    use NormalizesDateFilter;
+    use NormalizesDateFilter, OffersBranchScope;
 
     /** The branch-local report: SQLite, this branch, works offline. */
     private const SCOPE_LOCAL = 'local';
@@ -102,6 +103,12 @@ class ReportsController extends Controller
             ? $this->branchLocal($period, $from, $to, $canViewCost)
             : $this->consolidated($scope, $chartBy, $period, $from, $to, $canViewCost);
 
+        // Null means the local path ran and no roster came back with it, so the
+        // picker's list is read on its own. Anything else — including the empty
+        // list a failed consolidated read leaves — already cost one online read
+        // this request and is reused rather than attempted again.
+        $roster = $report['consolidatedOnline'] === null ? null : $report['branches'];
+
         return Inertia::render('reports', [
             'period' => $period,
             'rows' => $report['rows'],
@@ -115,7 +122,13 @@ class ReportsController extends Controller
             // on rather than what was asked for.
             'scope' => $report['scope'],
             'chartBy' => $report['chartBy'],
-            'branches' => $report['branches'],
+            // Every branch but this one: the picker's first entry is already
+            // this branch, as `local` (see OffersBranchScope).
+            'branches' => $this->pickerBranches(
+                $this->read,
+                $roster,
+                Gate::allows('view-consolidated-reports') && Instance::isHydrated(),
+            ),
             'branchRows' => $report['branchRows'],
             'consolidatedOnline' => $report['consolidatedOnline'],
         ]);
@@ -450,6 +463,14 @@ class ReportsController extends Controller
 
         Gate::authorize('view-consolidated-reports');
         abort_unless(Instance::isHydrated(), 403, 'This device is not connected to a business database.');
+
+        // This branch's own id is `local` under another name, and the picker
+        // offers it only under that one. Snapped AFTER the checks above, so an
+        // Admin naming a branch id still gets the 403 rather than a report that
+        // is not the one they asked for.
+        if ($this->isThisBranch($scope)) {
+            return self::SCOPE_LOCAL;
+        }
 
         return $scope === self::SCOPE_ALL || Str::isUuid($scope) ? $scope : self::SCOPE_ALL;
     }

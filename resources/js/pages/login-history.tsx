@@ -1,3 +1,4 @@
+import { BranchScopeSelect } from '@/components/branch-scope-select';
 import EmptyState from '@/components/empty-state';
 import Pagination from '@/components/pagination';
 import { Badge } from '@/components/ui/badge';
@@ -20,7 +21,12 @@ const LOCAL = 'local';
 // The props a filter or scope change reloads. Listed once because every control
 // funnels through applyFilters(): a prop left out of this list silently freezes
 // while the rest of the screen updates around it.
-const RELOADED = ['entries', 'filters', 'scope', 'branches', 'consolidatedOnline'];
+//
+// `branches` is deliberately NOT in it. The roster arrives with every full page
+// render now, and asking for it again would make the server re-read it — over
+// the network — on every date or user filter change. The list is the same one
+// either way, so the copy the client already holds stands.
+const RELOADED = ['entries', 'filters', 'scope', 'consolidatedOnline'];
 
 // Human labels + badge tone per event. Clean sign-in/out reads neutral; the
 // abnormal terminations (crash / power loss / forced) read as warnings.
@@ -111,24 +117,16 @@ export default function LoginHistory({
             <Head title="Login History" />
             <div className="flex min-h-full flex-1 flex-col gap-4 p-4">
                 <div className="flex flex-wrap items-center gap-2">
-                    {/* Which branches (M11.5). Admin+, and online-only — a
-                        failed read snaps this back to "This branch" and the
-                        notice below says why. */}
+                    {/* Which branches (M11.5). Admin+, and every scope but this
+                        branch's own is online-only — a failed read snaps this
+                        back to this branch and the notice below says why. */}
                     {canViewAll && (
-                        <Select value={scope} onValueChange={(value) => applyFilters({ scope: value })}>
-                            <SelectTrigger className="w-56" aria-label="Branches shown">
-                                <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value={LOCAL}>This branch</SelectItem>
-                                <SelectItem value={ALL}>All branches</SelectItem>
-                                {branches.map((branch) => (
-                                    <SelectItem key={branch.id} value={branch.id}>
-                                        {branch.code} — {branch.name}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
+                        <BranchScopeSelect
+                            scope={scope}
+                            branches={branches}
+                            onChange={(value) => applyFilters({ scope: value })}
+                            label="Branches shown"
+                        />
                     )}
                     {canViewAll && (
                         <Select value={filters.user ?? ALL} onValueChange={(value) => applyFilters({ user: value })}>

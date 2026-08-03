@@ -311,6 +311,17 @@ includes **disabled** branches by default: a disabled credential stops a branch 
 work, it does not unmake what that branch already did. The flag matters for the opposite
 case — picking a branch to send an adjustment *to*.
 
+The roster is read on **every full render** of the two scope-picker screens for a viewer who
+may widen the scope — not only when a wider scope was asked for. It used to ride inside the
+consolidated read, which is cheaper but left the picker empty in the default `local` scope, so
+naming one branch meant first asking for all of them. `App\Http\Controllers\Concerns\OffersBranchScope`
+holds that read, reuses the consolidated one when there was one, and strips **this** branch from
+the list (§"Branch scope" in the glossary). It costs one short online read per visit to
+`/reports` and `/login-history`, and it is rescued to an empty list: a picker that could not be
+filled never fails a screen whose default scope is served entirely from local SQLite. `branches`
+is deliberately absent from both pages' partial-reload prop lists, or every date filter change
+would re-read it over the network.
+
 ---
 
 ## 8. Consolidated reporting

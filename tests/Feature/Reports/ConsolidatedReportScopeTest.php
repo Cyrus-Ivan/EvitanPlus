@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Reports;
 
+use App\Models\Instance;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -34,6 +35,8 @@ class ConsolidatedReportScopeTest extends TestCase
             ->assertInertia(fn ($page) => $page
                 ->where('scope', 'local')
                 ->where('chartBy', 'item')
+                // Empty here because an Admin may not widen the scope at all, so
+                // the picker is not offered one — no read is even attempted.
                 ->where('branches', [])
                 ->where('branchRows', null)
                 // Null, not false: nothing consolidated was asked for, so there
@@ -53,6 +56,34 @@ class ConsolidatedReportScopeTest extends TestCase
             ->get(route('reports', ['scope' => '00000000-0000-0000-0000-00000000e15e']))
             ->assertForbidden();
         $this->actingAs($admin)->get(route('reports.export', ['scope' => 'all']))->assertForbidden();
+
+        // Including this branch's own id. It resolves to `local`, which the
+        // Admin is entitled to — but only AFTER the permission check, so naming
+        // a branch id is never a silent downgrade to figures they did not ask
+        // for.
+        $this->actingAs($admin)
+            ->get(route('reports', ['scope' => Instance::current()->branch_id]))
+            ->assertForbidden();
+    }
+
+    /**
+     * The Owner asking for this branch by id gets the local report: it is the
+     * same branch, read better (offline-capable, and it includes sales this till
+     * has not pushed yet). The picker offers it only as "this branch" for the
+     * same reason.
+     */
+    public function test_this_branchs_own_id_is_the_local_scope(): void
+    {
+        $this->actingAs(User::factory()->owner()->create())
+            ->get(route('reports', ['scope' => Instance::current()->branch_id]))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->where('scope', 'local')
+                ->where('branchRows', null)
+                // Not false: no consolidated read was attempted, because there
+                // was nothing consolidated about the request.
+                ->where('consolidatedOnline', null)
+            );
     }
 
     public function test_a_cashier_may_not_reach_reports_at_all(): void

@@ -512,6 +512,8 @@ class SalesReportTest extends TestCase
                 ['name' => 'Banana', 'quantity' => 2, 'net_sales' => '100.00'],
             ],
             'canViewCost' => false,
+            'scopeLabel' => 'This branch',
+            'branchRows' => null,
         ];
 
         $html = view('reports.pdf', $data)->render();

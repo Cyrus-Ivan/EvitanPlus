@@ -1210,7 +1210,7 @@ The console lists every branch of every business with live version and sync heal
 
 ---
 
-# Phase M11 — Consolidated cross-branch reporting
+# Phase M11 — Consolidated cross-branch reporting ✅
 
 ## Goal
 Owner-facing, online, multi-branch reporting that recomputes totals.
@@ -1220,6 +1220,79 @@ Owner-facing, online, multi-branch reporting that recomputes totals.
   sales − returns − defects (never a stored total).
 - Enforce visibility at the app layer: Owner-facing, **Item Cost Owner-only** even here.
 - Keep **offline** reports branch-local (unchanged).
+
+> **As built.** One screen, not two: `/reports` gained a **`scope`** parameter — `local`
+> (the default, SQLite, offline, and the only value an Admin may use), `all`, or a branch id.
+> A second page would have duplicated the chart, the breakdown table and the PDF to show the
+> same figures over a different connection; a parameter lets the Owner compare the same window
+> from a different angle without leaving the page. The consolidated scope is refused **inside
+> the controller** (`Gate::authorize('view-consolidated-reports')`) rather than by route
+> placement, because the same route still serves the branch-local report an Admin is entitled
+> to — an Admin appending `?scope=all` gets a 403, never a quiet downgrade.
+>
+> **The recompute moved out of the controller and became
+> `App\Support\Reports\SalesFigures`, which takes the connection as an argument.** That is the
+> whole design: one copy of the arithmetic, handed local SQLite or the Postgres connection
+> {@see OnlineRead} opened for the request. Two copies would eventually disagree about what
+> net sales means, and the disagreement would surface as an Owner asking why two screens
+> showing the same day differ by ₱40.
+>
+> **Three things do not port between the two databases, and all three fail silently:**
+> - `strftime` vs `to_char`. The format is **inlined** from a constant map (the period is
+>   already constrained to four keys) while the **timezone is bound**, because it comes from an
+>   Owner-editable settings row.
+> - The window bounds. Postgres reads a naive bound in the *session* timezone (UTC), so a
+>   Manila wall-clock time sent bare lands eight hours out — "a shift that sorts correctly,
+>   imports cleanly, and reports wrong". The bounds carry their offset **and their
+>   microseconds**: `endOfDay()` is `23:59:59.999999`, `timestamptz` keeps them, and
+>   `toIso8601String()` truncates, which would drop the last second of every window. The filter
+>   stays on the RAW column so the `(branch_id, created_at)` indexes are still usable;
+>   only the bucket expression converts.
+> - `numeric` SUMs return exact strings where SQLite returns floats. Both reconcile through the
+>   same integer centavos, unchanged.
+>
+> **A row is a bucket or a branch, decided by one GROUP BY.** The seven aggregates take a
+> dimension, so the per-branch table is the same recompute over `t.branch_id` / `sr.branch_id`
+> rather than a second set of queries — which is why it foots to the totals by construction.
+> A branch that sold nothing prints **zeros**, not nothing: "sold nothing" and "no data" are
+> different answers and only one is actionable. The roster is read **without** filtering
+> `disabled_at`, unlike `InventoryQueueController`'s: a disabled branch cannot receive work,
+> but its past sales are still the business's.
+>
+> **A failed read falls back to the branch-local report and says so** — `consolidatedOnline:
+> false`, scope snapped back to `local`, and a notice whose FIRST line is "These are this
+> branch's figures only." Rendering one branch's numbers under an "All branches" heading is
+> the one outcome worse than an error, and it is what a bare `rescue` to empty data would have
+> produced. The export falls back the same way, and its filename loses the `all-branches-`
+> slug with it.
+>
+> **No version gate**, per `OnlineRead`'s standing reason: the gate stops a stale build
+> *writing*, and refusing to render a read takes away the display of the very problem.
+>
+> **Nothing here needed a schema or a grant change** — the first phase since M6.5 of which that
+> is true. `BranchGrants::SELECT` already enumerated all five reporting tables plus `branches`,
+> so no `schema:reapply-grants`, no `SCHEMA_VERSION` bump. It does mean the consolidated report
+> reads other branches' rows on **app-layer authority alone**; §9's accepted risk (no RLS
+> between branches inside one business schema) is exactly what makes that possible, and this
+> is the first feature to depend on it by design rather than incidentally.
+>
+> **The chart can stack by branch or by item**, toggled, defaulting to `item` in every scope —
+> one rule, so switching scope never changes what the chart means underfoot. Branch series are
+> named from the roster in PHP rather than by joining `branches` into every aggregate.
+>
+> **The staleness caveat is deliberate**: consolidated figures are correct for what reached
+> Postgres, which excludes this till's own unpushed sales. When the shared `sync` prop's
+> backlog is non-zero the screen says how many and that they are not counted — cheaper than an
+> Owner discovering it from a mismatch.
+>
+> **Testing splits three ways, and the split is forced.** No test device holds a sealed
+> credential, so a feature test can only ever exercise the *refusing* path — which is where
+> `tests/Feature/Reports/ConsolidatedReportScopeTest.php` stops, at the permission boundary and
+> the fallback. The SQLite stand-in cannot run `to_char` or `at time zone` at all. So the
+> arithmetic is proved in `tests/Integration/ConsolidatedReportTest.php` against two really
+> provisioned branches, with two sales sitting either side of local midnight for the timezone
+> trap specifically. `SalesReportTest` was left untouched and still passes: that is the proof
+> the offline path did not move.
 
 ## Milestone
 The Owner sees correct combined figures across branches when online, per-branch figures offline,

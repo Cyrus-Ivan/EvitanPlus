@@ -3,56 +3,83 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Concerns\NormalizesDateFilter;
-use App\Models\Transaction;
+use App\Models\Instance;
+use App\Support\Reports\SalesFigures;
 use App\Support\Settings\BusinessSettings;
+use App\Support\Sync\BranchCycle;
+use App\Support\Sync\OnlineRead;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
+use Illuminate\Database\Connection;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response as HttpResponse;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
 
 /**
- * Business reporting (Phase 12). Read-only. Daily / Weekly / Monthly / Yearly
- * sales reports that live on one page, switched by an in-page `period` toggle.
+ * Business reporting (Phase 12; consolidated cross-branch in M11). Read-only.
+ * Daily / Weekly / Monthly / Yearly sales reports that live on one page,
+ * switched by an in-page `period` toggle.
  *
  * Each period reports on a SINGLE selected period (one day / week / month /
  * year), resolved from an anchor `date` into a `[from, to]` window. Within that
  * window the chart bars and table rows drill DOWN one level — a day breaks into
- * hourly buckets, a week/month into daily buckets, a year into monthly buckets
- * (see {@see self::SUB_FORMATS}). The user steps between periods with the
- * prev/next anchors returned in `filters`.
+ * hourly buckets, a week/month into daily buckets, a year into monthly buckets.
+ * The user steps between periods with the prev/next anchors returned in
+ * `filters`.
  *
- * Everything is RECOMPUTED from the append-only source tables — never a stored
- * total (not `transactions.total` as a period sum shortcut, never
- * `sale_returns.total_refund`). Net sales = sales − returns − defects, per
- * `CLAUDE.md` → "Reporting" and docs/returns-refunds-voids-design.md.
+ * Everything is RECOMPUTED from the append-only source tables by
+ * {@see SalesFigures} — never a stored total. Net sales = sales − returns −
+ * defects, per `CLAUDE.md` → "Reporting".
  *
- * Access is Admin+ (route-level `role:admin`). Cost / COGS / profit are
- * Owner-only: the keys are omitted entirely from the payload for non-Owners,
- * mirroring SalesController::show.
+ * ## The `scope` parameter (M11)
+ *
+ * One screen, two databases:
+ *
+ *  - **`local`** (the default, and the only value an Admin may use) — the local
+ *    SQLite mirror, which holds only THIS branch's sales. Works offline, which
+ *    is the whole point: the till reports on itself with no connection at all.
+ *  - **`all`** or a **branch id** — the business database, read live through
+ *    {@see OnlineRead} and mirrored nowhere. Owner-only and online-only.
+ *
+ * Consolidated figures cannot come from the mirror because they are not in it:
+ * `Puller::TABLES` deliberately does not carry `transactions` or `sale_returns`,
+ * so a branch holds no other branch's sales and never will. Cross-branch totals
+ * exist only upstream, which is why this is a read and not a pull.
+ *
+ * When the online read fails, the screen falls back to the branch-local report
+ * and SAYS SO (`consolidatedOnline: false`, scope snapped back to `local`).
+ * Rendering one branch's numbers under an "All branches" heading is the one
+ * outcome that would be worse than an error.
+ *
+ * There is no version gate on the way in. {@see OnlineRead} omits it
+ * deliberately: the gate stops a stale build WRITING, and refusing to render a
+ * read would take away the display of the very problem.
+ *
+ * Access is Admin+ (route-level `role:admin`); the consolidated scope is
+ * Owner-only, authorized here rather than by route placement. Cost / COGS /
+ * profit are Owner-only everywhere including the consolidated view: the keys are
+ * omitted entirely from the payload for non-Owners, mirroring SalesController::show.
  */
 class ReportsController extends Controller
 {
     use NormalizesDateFilter;
 
-    /**
-     * The drill-down (sub-bucket) SQLite strftime format per selected period —
-     * one level finer than the selection itself, so a single period still yields
-     * a legible multi-bar chart: a day → hours, a week/month → days, a year →
-     * months. Also the set of valid period keys ({@see self::normalizePeriod}).
-     */
-    private const SUB_FORMATS = [
-        'daily' => '%Y-%m-%d %H', // hourly
-        'weekly' => '%Y-%m-%d',   // daily
-        'monthly' => '%Y-%m-%d',  // daily
-        'yearly' => '%Y-%m',      // monthly
-    ];
+    /** The branch-local report: SQLite, this branch, works offline. */
+    private const SCOPE_LOCAL = 'local';
 
-    /** The sub-bucket's granularity noun, used as the breakdown table's first column header. */
+    /** The consolidated report: Postgres, every branch. */
+    private const SCOPE_ALL = 'all';
+
+    /**
+     * The set of valid period keys, and the sub-bucket's granularity noun used
+     * as the breakdown table's first column header. The bucket FORMATS live in
+     * {@see SalesFigures}, which is the only thing that has to know how a given
+     * database spells a date.
+     */
     private const SUB_NOUNS = [
         'daily' => 'Hour',
         'weekly' => 'Day',
@@ -60,56 +87,70 @@ class ReportsController extends Controller
         'yearly' => 'Month',
     ];
 
-    /** How many items get their own stacked-chart segment before the rest fold into "Other". */
-    private const CHART_TOP_ITEMS = 8;
-
-    /** Legend/segment key for the aggregated tail of low-revenue items. */
-    private const OTHER_KEY = '__other__';
+    public function __construct(private readonly OnlineRead $read) {}
 
     public function index(Request $request): Response
     {
         $period = $this->normalizePeriod($request->query('period'));
         [$from, $to] = $this->resolveWindow($period, $this->normalizeDate($request->query('date')));
         $canViewCost = Gate::allows('view-item-cost');
+        $scope = $this->normalizeScope($request->query('scope'));
+        $chartBy = $this->normalizeChartBy($request->query('by'));
 
-        $rows = $this->aggregate($period, $from, $to, $canViewCost);
-        $chart = $this->buildChart($period, $from, $to);
+        $report = $scope === self::SCOPE_LOCAL
+            ? $this->branchLocal($period, $from, $to, $canViewCost)
+            : $this->consolidated($scope, $chartBy, $period, $from, $to, $canViewCost);
 
         return Inertia::render('reports', [
             'period' => $period,
-            'rows' => $rows,
-            'totals' => $this->sumTotals($rows, $canViewCost),
-            'chartItems' => $chart['items'],
-            'chart' => $chart['buckets'],
+            'rows' => $report['rows'],
+            'totals' => $report['totals'],
+            'chartItems' => $report['chartItems'],
+            'chart' => $report['chart'],
             'canViewCost' => $canViewCost,
             'filters' => $this->filters($period, $from),
+            // M11. `scope` is echoed back AFTER normalisation and after any
+            // fallback, so the control always shows what was actually reported
+            // on rather than what was asked for.
+            'scope' => $report['scope'],
+            'chartBy' => $report['chartBy'],
+            'branches' => $report['branches'],
+            'branchRows' => $report['branchRows'],
+            'consolidatedOnline' => $report['consolidatedOnline'],
         ]);
     }
 
     /**
      * Render the selected period's report as a downloadable PDF (dompdf, pure
      * PHP — no browser binary, safe for the offline NativePHP build). Reuses the
-     * exact same recompute path as {@see self::index}, so the PDF matches the
-     * on-screen totals. Cost / COGS / profit stay Owner-only: the flag is passed
-     * to the view, which omits those columns entirely for non-Owners.
+     * exact same recompute path as {@see self::index}, scope and all, so the PDF
+     * matches the on-screen totals. Cost / COGS / profit stay Owner-only: the
+     * flag is passed to the view, which omits those columns entirely for
+     * non-Owners.
      *
      * The PDF carries a net-sales bar chart (one diverging bar per sub-bucket,
      * built from HTML divs — dompdf's inline-SVG support is unreliable), the
-     * summary totals, the breakdown table, and a "Top selling items" table for
-     * the whole selected range ({@see self::topItems}, cost-free so safe for all
-     * Admin+ viewers).
+     * summary totals, the breakdown table, a per-branch table when the report is
+     * consolidated, and a "Top selling items" table for the whole selected range
+     * (cost-free, so safe for all Admin+ viewers).
      */
     public function export(Request $request, BusinessSettings $settings): HttpResponse
     {
         $period = $this->normalizePeriod($request->query('period'));
         [$from, $to] = $this->resolveWindow($period, $this->normalizeDate($request->query('date')));
         $canViewCost = Gate::allows('view-item-cost');
+        $scope = $this->normalizeScope($request->query('scope'));
+        $chartBy = $this->normalizeChartBy($request->query('by'));
+
+        $report = $scope === self::SCOPE_LOCAL
+            ? $this->branchLocal($period, $from, $to, $canViewCost, topItems: true)
+            : $this->consolidated($scope, $chartBy, $period, $from, $to, $canViewCost, topItems: true);
 
         $rows = array_map(function (array $row) use ($period): array {
             $row['label'] = $this->formatBucketLabel($period, $row['bucket']);
 
             return $row;
-        }, $this->aggregate($period, $from, $to, $canViewCost));
+        }, $report['rows']);
 
         $pdf = Pdf::loadView('reports.pdf', [
             'business' => $settings->all(),
@@ -118,455 +159,215 @@ class ReportsController extends Controller
             'label' => $this->periodLabel($period, $from),
             'generatedAt' => Carbon::now(),
             'rows' => $rows,
-            'totals' => $this->sumTotals($rows, $canViewCost),
-            'topItems' => $this->topItems($from, $to),
+            'totals' => $report['totals'],
+            'topItems' => $report['topItems'],
             'canViewCost' => $canViewCost,
+            // M11: which branches these figures cover, named in the header, and
+            // broken out in their own table when there is more than one.
+            'scopeLabel' => $this->scopeLabel($report['scope'], $report['branches']),
+            'branchRows' => $report['branchRows'],
         ]);
 
-        $filename = 'sales-report-'.$period.'-'.$from->toDateString().'-'.Carbon::now()->format('Ymd-His').'.pdf';
+        $filename = 'sales-report-'.$this->scopeSlug($report['scope'], $report['branches'])
+            .$period.'-'.$from->toDateString().'-'.Carbon::now()->format('Ymd-His').'.pdf';
 
         return $pdf->download($filename);
     }
 
     /**
-     * Build one ordered (chronological) row per bucket in the range, recomputing
-     * sales, returns and defects from source tables and deriving net (and, for
-     * the Owner, COGS + gross profit). All money is reconciled through integer
-     * centavos so the sums are cent-exact despite SQLite's float SUM().
+     * The branch-local report, recomputed from this device's SQLite mirror.
+     * Unchanged since Phase 12 and deliberately so — it is what the till falls
+     * back to, and what every non-Owner sees.
      *
-     * @return list<array<string, mixed>>
-     */
-    private function aggregate(string $period, Carbon $dateFrom, Carbon $dateTo, bool $canViewCost): array
-    {
-        $format = self::SUB_FORMATS[$period];
-        $from = $dateFrom->copy();
-        $to = $dateTo->copy();
-
-        // Sales & transaction count, bucketed by the sale's own date.
-        $sales = Transaction::query()
-            ->whereBetween('created_at', [$from, $to])
-            ->selectRaw('strftime(?, created_at) as bucket, COUNT(*) as txns, SUM(total) as gross', [$format])
-            ->groupBy('bucket')
-            ->get()
-            ->keyBy('bucket');
-
-        // Returns and defects, bucketed by the EVENT date (sale_returns.created_at)
-        // — an after-sales event reduces the period it happened in.
-        $returns = $this->refundsByBucket('return', $format, $from, $to);
-        $defects = $this->refundsByBucket('defect', $format, $from, $to);
-
-        // COGS + profit are Owner-only. Sold cost is attributed to the sale's date;
-        // the cost of RETURNED goods is credited back (they re-enter stock) on the
-        // return's event date. Defected goods are written off — their cost stays in
-        // COGS. Items with NO recorded cost can't yield a margin, so their net sales
-        // are split out into `uncosted_sales` and excluded from profit entirely
-        // (rather than silently treated as zero-cost, which would inflate profit).
-        $soldCost = $canViewCost ? $this->soldCostByBucket($format, $from, $to) : collect();
-        $returnedCost = $canViewCost ? $this->costByBucket('return', $format, $from, $to) : collect();
-        $uncostedRevenue = $canViewCost ? $this->uncostedRevenueByBucket($format, $from, $to) : collect();
-        $uncostedRefund = $canViewCost ? $this->uncostedRefundByBucket($format, $from, $to) : collect();
-
-        $buckets = collect([$sales, $returns, $defects, $soldCost, $returnedCost, $uncostedRevenue, $uncostedRefund])
-            ->flatMap(fn ($map) => $map->keys())
-            ->unique()
-            ->sort()
-            ->values();
-
-        return $buckets->map(function (string $bucket) use ($sales, $returns, $defects, $soldCost, $returnedCost, $uncostedRevenue, $uncostedRefund, $canViewCost) {
-            $gross = $this->centavos($sales[$bucket]->gross ?? 0);
-            $returnRefund = $this->centavos($returns[$bucket] ?? 0);
-            $defectRefund = $this->centavos($defects[$bucket] ?? 0);
-            $net = $gross - $returnRefund - $defectRefund;
-
-            $row = [
-                'bucket' => $bucket,
-                'transactions' => (int) ($sales[$bucket]->txns ?? 0),
-                'gross_sales' => $this->pesos($gross),
-                'returns' => $this->pesos($returnRefund),
-                'defects' => $this->pesos($defectRefund),
-                'net_sales' => $this->pesos($net),
-            ];
-
-            if ($canViewCost) {
-                // Net sales attributable to un-costed items (their sale revenue,
-                // discount-apportioned, less any of their own refunds). Whatever is
-                // left is the costed portion that profit is computed over.
-                $uncostedNet = $this->centavos($uncostedRevenue[$bucket] ?? 0) - $this->centavos($uncostedRefund[$bucket] ?? 0);
-                $costedNet = $net - $uncostedNet;
-
-                // Net COGS excludes returned goods (credited back); defected goods'
-                // cost is retained (written off, not restored to stock).
-                $cogs = $this->centavos($soldCost[$bucket] ?? 0) - $this->centavos($returnedCost[$bucket] ?? 0);
-
-                $row['cogs'] = $this->pesos($cogs);
-                // Profit covers costed items only; un-costed sales are reported apart.
-                $row['profit'] = $this->pesos($costedNet - $cogs);
-                $row['uncosted_sales'] = $this->pesos($uncostedNet);
-            }
-
-            return $row;
-        })->all();
-    }
-
-    /**
-     * SUM(refund_amount) per bucket for one after-sales type, keyed by the event
-     * date bucket.
-     *
-     * @return Collection<string, float>
-     */
-    private function refundsByBucket(string $type, string $format, Carbon $from, Carbon $to): Collection
-    {
-        return DB::table('sale_return_items as sri')
-            ->join('sale_returns as sr', 'sr.id', '=', 'sri.sale_return_id')
-            ->where('sr.type', $type)
-            ->whereBetween('sr.created_at', [$from, $to])
-            ->selectRaw('strftime(?, sr.created_at) as bucket, SUM(sri.refund_amount) as refund', [$format])
-            ->groupBy('bucket')
-            ->pluck('refund', 'bucket');
-    }
-
-    /**
-     * SUM(cost * quantity) of sold lines per bucket, keyed by the sale's date.
-     *
-     * @return Collection<string, float>
-     */
-    private function soldCostByBucket(string $format, Carbon $from, Carbon $to): Collection
-    {
-        return DB::table('transaction_items as ti')
-            ->join('transactions as t', 't.id', '=', 'ti.transaction_id')
-            ->whereBetween('t.created_at', [$from, $to])
-            ->selectRaw('strftime(?, t.created_at) as bucket, SUM(ti.cost * ti.quantity) as cost', [$format])
-            ->groupBy('bucket')
-            ->pluck('cost', 'bucket');
-    }
-
-    /**
-     * SUM(cost * quantity) of after-sales lines of one type per bucket, keyed by
-     * the event date.
-     *
-     * @return Collection<string, float>
-     */
-    private function costByBucket(string $type, string $format, Carbon $from, Carbon $to): Collection
-    {
-        return DB::table('sale_return_items as sri')
-            ->join('sale_returns as sr', 'sr.id', '=', 'sri.sale_return_id')
-            ->where('sr.type', $type)
-            ->whereBetween('sr.created_at', [$from, $to])
-            ->selectRaw('strftime(?, sr.created_at) as bucket, SUM(sri.cost * sri.quantity) as cost', [$format])
-            ->groupBy('bucket')
-            ->pluck('cost', 'bucket');
-    }
-
-    /**
-     * Sale revenue of un-costed lines (cost IS NULL) per bucket, keyed by the
-     * sale's date. Each line's revenue is its share of the transaction total
-     * (line total ÷ transaction subtotal × transaction total), so any
-     * transaction-level discount is apportioned and the costed + un-costed split
-     * reconciles exactly to net sales.
-     *
-     * @return Collection<string, float>
-     */
-    private function uncostedRevenueByBucket(string $format, Carbon $from, Carbon $to): Collection
-    {
-        $subtotals = DB::table('transaction_items')
-            ->select('transaction_id')
-            ->selectRaw('SUM(total) as subtotal')
-            ->groupBy('transaction_id');
-
-        return DB::table('transaction_items as ti')
-            ->join('transactions as t', 't.id', '=', 'ti.transaction_id')
-            ->joinSub($subtotals, 'sub', 'sub.transaction_id', '=', 'ti.transaction_id')
-            ->whereNull('ti.cost')
-            ->where('sub.subtotal', '>', 0)
-            ->whereBetween('t.created_at', [$from, $to])
-            ->selectRaw('strftime(?, t.created_at) as bucket, SUM(ti.total * t.total / sub.subtotal) as revenue', [$format])
-            ->groupBy('bucket')
-            ->pluck('revenue', 'bucket');
-    }
-
-    /**
-     * SUM(refund_amount) of un-costed after-sales lines (cost IS NULL, both
-     * returns and defects) per bucket, keyed by the event date. Mirrors the
-     * un-costed revenue split on the refund side.
-     *
-     * @return Collection<string, float>
-     */
-    private function uncostedRefundByBucket(string $format, Carbon $from, Carbon $to): Collection
-    {
-        return DB::table('sale_return_items as sri')
-            ->join('sale_returns as sr', 'sr.id', '=', 'sri.sale_return_id')
-            ->whereNull('sri.cost')
-            ->whereBetween('sr.created_at', [$from, $to])
-            ->selectRaw('strftime(?, sr.created_at) as bucket, SUM(sri.refund_amount) as refund', [$format])
-            ->groupBy('bucket')
-            ->pluck('refund', 'bucket');
-    }
-
-    /**
-     * Build the stacked-bar chart payload: per bucket, each item's NET sales
-     * (its discount-apportioned revenue minus its own returns + defects) as a
-     * separate segment. Segments reconcile to the table's net per bucket because
-     * per-item revenue is apportioned exactly like the un-costed split, so the
-     * sum over items of a bucket equals its net_sales.
-     *
-     * Only the top {@see self::CHART_TOP_ITEMS} items by gross revenue keep their
-     * own segment; the rest fold into a single "Other" segment so the chart stays
-     * legible for large catalogs. Net can be negative (an item whose returns in a
-     * bucket exceed its sales), which the frontend renders as a downward segment.
-     *
-     * Item cost is never exposed here (net = revenue − refunds), so this is safe
-     * for every Admin+ viewer regardless of the Owner-only cost gate.
-     *
-     * @return array{items: list<array{key: string, name: string}>, buckets: list<array{bucket: string, values: object}>}
-     */
-    private function buildChart(string $period, Carbon $dateFrom, Carbon $dateTo): array
-    {
-        $format = self::SUB_FORMATS[$period];
-        $from = $dateFrom->copy();
-        $to = $dateTo->copy();
-
-        $revenueRows = $this->itemRevenueByBucket($format, $from, $to);
-        $refundRows = $this->itemRefundByBucket($format, $from, $to);
-
-        $names = [];          // item_id => current name
-        $totalRevenue = [];   // item_id => gross revenue centavos (ranking key)
-        $net = [];            // item_id => [bucket => net centavos]
-        $bucketSet = [];      // bucket => true
-
-        foreach ($revenueRows as $row) {
-            $cents = $this->centavos($row->revenue);
-            $names[$row->item_id] = $row->item_name;
-            $totalRevenue[$row->item_id] = ($totalRevenue[$row->item_id] ?? 0) + $cents;
-            $net[$row->item_id][$row->bucket] = ($net[$row->item_id][$row->bucket] ?? 0) + $cents;
-            $bucketSet[$row->bucket] = true;
-        }
-
-        foreach ($refundRows as $row) {
-            $cents = $this->centavos($row->refund);
-            $names[$row->item_id] = $row->item_name;
-            $totalRevenue[$row->item_id] ??= 0;
-            $net[$row->item_id][$row->bucket] = ($net[$row->item_id][$row->bucket] ?? 0) - $cents;
-            $bucketSet[$row->bucket] = true;
-        }
-
-        if ($net === []) {
-            return ['items' => [], 'buckets' => []];
-        }
-
-        // Rank by gross revenue desc, name asc as a stable tie-break.
-        $ranked = array_keys($totalRevenue);
-        usort($ranked, fn ($a, $b) => ($totalRevenue[$b] <=> $totalRevenue[$a]) ?: strcmp($names[$a], $names[$b]));
-
-        $kept = array_slice($ranked, 0, self::CHART_TOP_ITEMS);
-        $keptSet = array_flip($kept);
-        $hasOther = count($ranked) > count($kept);
-
-        $items = [];
-        foreach ($kept as $id) {
-            $items[] = ['key' => $id, 'name' => $names[$id]];
-        }
-        if ($hasOther) {
-            $items[] = ['key' => self::OTHER_KEY, 'name' => 'Other'];
-        }
-
-        $buckets = array_keys($bucketSet);
-        sort($buckets); // bucket formats are zero-padded, so lexicographic == chronological.
-
-        $chartBuckets = [];
-        foreach ($buckets as $bucket) {
-            $values = [];
-            $otherCents = 0;
-            foreach ($net as $itemId => $byBucket) {
-                $cents = $byBucket[$bucket] ?? 0;
-                if ($cents === 0) {
-                    continue; // omit empties; the frontend treats a missing key as 0.
-                }
-                if (isset($keptSet[$itemId])) {
-                    $values[$itemId] = $this->pesos($cents);
-                } else {
-                    $otherCents += $cents;
-                }
-            }
-            if ($otherCents !== 0) {
-                $values[self::OTHER_KEY] = $this->pesos($otherCents);
-            }
-            // (string) the bucket: PHP coerces a purely-numeric bucket key
-            // (e.g. a bare-year format like "2026") to an int, which would
-            // serialise as a JSON number and break the frontend's string
-            // handling. No current SUB_FORMAT is hyphen-free, but keep the cast
-            // as a guard. Cast values so an empty bucket serialises as {} not [].
-            $chartBuckets[] = ['bucket' => (string) $bucket, 'values' => (object) $values];
-        }
-
-        return ['items' => $items, 'buckets' => $chartBuckets];
-    }
-
-    /**
-     * Per item + bucket, discount-apportioned sale revenue (line total ÷
-     * transaction subtotal × transaction total), keyed by the sale's date, with
-     * the item's current name. Mirrors {@see self::uncostedRevenueByBucket} but
-     * grouped by item.
-     *
-     * @return Collection<int, \stdClass>
-     */
-    private function itemRevenueByBucket(string $format, Carbon $from, Carbon $to): Collection
-    {
-        $subtotals = DB::table('transaction_items')
-            ->select('transaction_id')
-            ->selectRaw('SUM(total) as subtotal')
-            ->groupBy('transaction_id');
-
-        return DB::table('transaction_items as ti')
-            ->join('transactions as t', 't.id', '=', 'ti.transaction_id')
-            ->join('variants as v', 'v.id', '=', 'ti.variant_id')
-            ->join('items as it', 'it.id', '=', 'v.item_id')
-            ->joinSub($subtotals, 'sub', 'sub.transaction_id', '=', 'ti.transaction_id')
-            ->where('sub.subtotal', '>', 0)
-            ->whereBetween('t.created_at', [$from, $to])
-            ->selectRaw('it.id as item_id, it.name as item_name, strftime(?, t.created_at) as bucket, SUM(ti.total * t.total / sub.subtotal) as revenue', [$format])
-            ->groupBy('it.id', 'it.name', 'bucket')
-            ->get();
-    }
-
-    /**
-     * Per item + bucket, refund reversed by after-sales events of BOTH types
-     * (returns and defects each reduce net), keyed by the event date, with the
-     * item's current name.
-     *
-     * @return Collection<int, \stdClass>
-     */
-    private function itemRefundByBucket(string $format, Carbon $from, Carbon $to): Collection
-    {
-        return DB::table('sale_return_items as sri')
-            ->join('sale_returns as sr', 'sr.id', '=', 'sri.sale_return_id')
-            ->join('variants as v', 'v.id', '=', 'sri.variant_id')
-            ->join('items as it', 'it.id', '=', 'v.item_id')
-            ->whereBetween('sr.created_at', [$from, $to])
-            ->selectRaw('it.id as item_id, it.name as item_name, strftime(?, sr.created_at) as bucket, SUM(sri.refund_amount) as refund', [$format])
-            ->groupBy('it.id', 'it.name', 'bucket')
-            ->get();
-    }
-
-    /**
-     * The best-selling items across the WHOLE selected range (not bucketed), for
-     * the PDF's "Top selling items" table. Each item's net sales is its
-     * discount-apportioned revenue (line total ÷ transaction subtotal ×
-     * transaction total) minus its own returns + defects — the same recompute the
-     * chart uses ({@see self::itemRevenueByBucket}, {@see self::itemRefundByBucket}),
-     * only grouped by item instead of item + bucket. Ranked by net sales desc with
-     * a name tie-break, capped at $limit.
-     *
-     * Only items that actually SOLD in the window are listed; an item touched only
-     * by a refund (its sale fell in an earlier period) is omitted. Item cost is
-     * never read here (net = revenue − refunds), so this is safe for every Admin+
-     * viewer regardless of the Owner-only cost gate.
-     *
-     * @return list<array{name: string, quantity: int, net_sales: string}>
-     */
-    private function topItems(Carbon $dateFrom, Carbon $dateTo, int $limit = 10): array
-    {
-        $from = $dateFrom->copy();
-        $to = $dateTo->copy();
-
-        $subtotals = DB::table('transaction_items')
-            ->select('transaction_id')
-            ->selectRaw('SUM(total) as subtotal')
-            ->groupBy('transaction_id');
-
-        // Quantity sold + discount-apportioned revenue per item, keyed by item.
-        $sales = DB::table('transaction_items as ti')
-            ->join('transactions as t', 't.id', '=', 'ti.transaction_id')
-            ->join('variants as v', 'v.id', '=', 'ti.variant_id')
-            ->join('items as it', 'it.id', '=', 'v.item_id')
-            ->joinSub($subtotals, 'sub', 'sub.transaction_id', '=', 'ti.transaction_id')
-            ->where('sub.subtotal', '>', 0)
-            ->whereBetween('t.created_at', [$from, $to])
-            ->selectRaw('it.id as item_id, it.name as item_name, SUM(ti.quantity) as qty, SUM(ti.total * t.total / sub.subtotal) as revenue')
-            ->groupBy('it.id', 'it.name')
-            ->get();
-
-        // Refunds (returns + defects both reduce net) per item, keyed by item.
-        $refunds = DB::table('sale_return_items as sri')
-            ->join('sale_returns as sr', 'sr.id', '=', 'sri.sale_return_id')
-            ->join('variants as v', 'v.id', '=', 'sri.variant_id')
-            ->whereBetween('sr.created_at', [$from, $to])
-            ->selectRaw('v.item_id as item_id, SUM(sri.refund_amount) as refund')
-            ->groupBy('v.item_id')
-            ->pluck('refund', 'item_id');
-
-        $names = [];
-        $qty = [];
-        $net = []; // item_id => net sales centavos
-        foreach ($sales as $row) {
-            $names[$row->item_id] = $row->item_name;
-            $qty[$row->item_id] = (int) $row->qty;
-            $net[$row->item_id] = $this->centavos($row->revenue);
-        }
-        foreach ($refunds as $itemId => $refund) {
-            if (isset($net[$itemId])) {
-                $net[$itemId] -= $this->centavos($refund);
-            }
-        }
-
-        // Rank by net sales desc, name asc as a stable tie-break (mirrors buildChart).
-        $ids = array_keys($net);
-        usort($ids, fn ($a, $b) => ($net[$b] <=> $net[$a]) ?: strcmp($names[$a], $names[$b]));
-
-        return array_map(fn ($id) => [
-            'name' => $names[$id],
-            'quantity' => $qty[$id],
-            'net_sales' => $this->pesos($net[$id]),
-        ], array_slice($ids, 0, $limit));
-    }
-
-    /**
-     * Sum the per-bucket rows into period totals for the summary cards. Money is
-     * re-summed through centavos for a cent-exact grand total.
-     *
-     * @param  list<array<string, mixed>>  $rows
      * @return array<string, mixed>
      */
-    private function sumTotals(array $rows, bool $canViewCost): array
+    private function branchLocal(string $period, Carbon $from, Carbon $to, bool $canViewCost, bool $topItems = false): array
     {
-        $totals = [
-            'transactions' => 0,
-            'gross_sales' => 0,
-            'returns' => 0,
-            'defects' => 0,
-            'net_sales' => 0,
-            'cogs' => 0,
-            'profit' => 0,
-            'uncosted_sales' => 0,
-        ];
+        $figures = new SalesFigures(DB::connection());
+        $rows = $figures->rows('bucket', $period, $from, $to, $canViewCost);
+        $chart = $figures->chart('item', $period, $from, $to);
 
+        return [
+            'scope' => self::SCOPE_LOCAL,
+            'chartBy' => 'item',
+            'rows' => $rows,
+            'totals' => $figures->totals($rows, $canViewCost),
+            'chartItems' => $chart['items'],
+            'chart' => $chart['buckets'],
+            'branches' => [],
+            'branchRows' => null,
+            // Null, not false: nothing consolidated was asked for, so there is
+            // nothing to report as unavailable.
+            'consolidatedOnline' => null,
+            'topItems' => $topItems ? $figures->topItems($from, $to) : [],
+        ];
+    }
+
+    /**
+     * The consolidated report, recomputed live from the business database.
+     *
+     * One online read does all of it — the roster, the per-bucket rows, the
+     * per-branch rows and the chart share a single connection, opened and
+     * released by {@see BranchCycle} around this closure. Two
+     * reads would hold two Supavisor client slots for one screen.
+     *
+     * @param  string  $scope  'all', or a branch id.
+     * @param  'item'|'branch'  $chartBy
+     * @return array<string, mixed>
+     */
+    private function consolidated(string $scope, string $chartBy, string $period, Carbon $from, Carbon $to, bool $canViewCost, bool $topItems = false): array
+    {
+        $requested = $scope === self::SCOPE_ALL ? null : $scope;
+
+        $data = rescue(fn (): array => $this->read->run(
+            function (Connection $remote) use ($requested, $chartBy, $period, $from, $to, $canViewCost, $topItems): array {
+                $branches = $this->roster($remote);
+
+                // A branch id that is no longer in the roster means a stale link
+                // or a hand-typed one. Report the whole business rather than an
+                // empty screen, and let the echoed-back scope say what happened.
+                $branchId = $requested !== null && isset($branches[$requested]) ? $requested : null;
+
+                $figures = new SalesFigures($remote, $branchId);
+                $rows = $figures->rows('bucket', $period, $from, $to, $canViewCost);
+                $chart = $figures->chart(
+                    $chartBy,
+                    $period,
+                    $from,
+                    $to,
+                    // Branch series are named from the roster rather than by
+                    // joining `branches` into every aggregate.
+                    array_map(fn (array $branch): string => $branch['code'], $branches),
+                );
+
+                return [
+                    'scope' => $branchId ?? self::SCOPE_ALL,
+                    'chartBy' => $chartBy,
+                    'rows' => $rows,
+                    'totals' => $figures->totals($rows, $canViewCost),
+                    'chartItems' => $chart['items'],
+                    'chart' => $chart['buckets'],
+                    'branches' => array_values($branches),
+                    'branchRows' => $this->describeBranchRows(
+                        $figures->rows('branch', $period, $from, $to, $canViewCost),
+                        $branchId === null ? $branches : [$branchId => $branches[$branchId]],
+                        $canViewCost,
+                    ),
+                    'consolidatedOnline' => true,
+                    'topItems' => $topItems ? $figures->topItems($from, $to) : [],
+                ];
+            },
+            'Consolidated reports',
+        ), null, report: false);
+
+        // Offline (or the credential could not be opened — `rescue` catches
+        // Throwable, which matters because CredentialVault throws
+        // SetupFailedException, not OfflineWriteException). Fall back to the
+        // branch-local report and mark it, so the screen never presents one
+        // branch's figures as the business's.
+        if ($data === null) {
+            return ['consolidatedOnline' => false] + $this->branchLocal($period, $from, $to, $canViewCost, $topItems);
+        }
+
+        return $data;
+    }
+
+    /**
+     * The branch roster, keyed by id.
+     *
+     * Unlike `InventoryQueueController::roster()` this does NOT filter out
+     * disabled branches: that screen picks a branch to send work to, and a
+     * disabled one cannot receive it, but a disabled branch's past sales are
+     * still the business's sales. Hiding them would make the consolidated total
+     * disagree with the sum of its rows.
+     *
+     * @return array<string, array{id: string, code: string, name: string}>
+     */
+    private function roster(Connection $remote): array
+    {
+        return $remote->table('branches')
+            ->orderBy('code')
+            ->get(['id', 'code', 'name'])
+            ->mapWithKeys(fn (object $row): array => [(string) $row->id => [
+                'id' => (string) $row->id,
+                'code' => (string) $row->code,
+                'name' => (string) $row->name,
+            ]])
+            ->all();
+    }
+
+    /**
+     * Name the per-branch rows and zero-fill the branches that sold nothing.
+     *
+     * A branch missing from the table reads as "no data"; a branch showing zero
+     * reads as "sold nothing", and only the second is a fact the Owner can act
+     * on. Ordered by branch code, which is how the roster arrives.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @param  array<string, array{id: string, code: string, name: string}>  $branches
+     * @return list<array<string, mixed>>
+     */
+    private function describeBranchRows(array $rows, array $branches, bool $canViewCost): array
+    {
+        $byBranch = [];
         foreach ($rows as $row) {
-            $totals['transactions'] += $row['transactions'];
-            $totals['gross_sales'] += $this->centavos($row['gross_sales']);
-            $totals['returns'] += $this->centavos($row['returns']);
-            $totals['defects'] += $this->centavos($row['defects']);
-            $totals['net_sales'] += $this->centavos($row['net_sales']);
-            if ($canViewCost) {
-                $totals['cogs'] += $this->centavos($row['cogs']);
-                $totals['profit'] += $this->centavos($row['profit']);
-                $totals['uncosted_sales'] += $this->centavos($row['uncosted_sales']);
-            }
+            $byBranch[$row['branch_id']] = $row;
         }
 
-        $result = [
-            'transactions' => $totals['transactions'],
-            'gross_sales' => $this->pesos($totals['gross_sales']),
-            'returns' => $this->pesos($totals['returns']),
-            'defects' => $this->pesos($totals['defects']),
-            'net_sales' => $this->pesos($totals['net_sales']),
-        ];
+        $zero = [
+            'transactions' => 0,
+            'gross_sales' => '0.00',
+            'returns' => '0.00',
+            'defects' => '0.00',
+            'net_sales' => '0.00',
+        ] + ($canViewCost ? ['cogs' => '0.00', 'profit' => '0.00', 'uncosted_sales' => '0.00'] : []);
 
-        if ($canViewCost) {
-            $result['cogs'] = $this->pesos($totals['cogs']);
-            $result['profit'] = $this->pesos($totals['profit']);
-            $result['uncosted_sales'] = $this->pesos($totals['uncosted_sales']);
+        $described = [];
+        foreach ($branches as $id => $branch) {
+            $described[] = [
+                'branch_id' => $id,
+                'code' => $branch['code'],
+                'name' => $branch['name'],
+            ] + ($byBranch[$id] ?? $zero);
         }
 
-        return $result;
+        return $described;
+    }
+
+    /** A human name for the reported scope, for the PDF header. */
+    private function scopeLabel(string $scope, array $branches): string
+    {
+        if ($scope === self::SCOPE_LOCAL) {
+            // A device that never hydrated has no branch name to print, and a
+            // single-install Evitan POS report never had one either.
+            $instance = Instance::current();
+
+            return $instance === null ? 'This branch' : (string) $instance->branch_name;
+        }
+
+        if ($scope === self::SCOPE_ALL) {
+            return 'All branches';
+        }
+
+        $branch = collect($branches)->firstWhere('id', $scope);
+
+        return $branch === null ? 'One branch' : $branch['code'].' — '.$branch['name'];
+    }
+
+    /** The scope's slug for the export filename, empty for the branch-local report. */
+    private function scopeSlug(string $scope, array $branches): string
+    {
+        if ($scope === self::SCOPE_LOCAL) {
+            return '';
+        }
+
+        if ($scope === self::SCOPE_ALL) {
+            return 'all-branches-';
+        }
+
+        $branch = collect($branches)->firstWhere('id', $scope);
+
+        return $branch === null ? '' : Str::lower($branch['code']).'-';
     }
 
     /**
@@ -626,8 +427,7 @@ class ReportsController extends Controller
     /**
      * Human label for one sub-bucket key (the breakdown table's first column in
      * the PDF), mirroring the frontend's formatBucket. Daily buckets are
-     * '%Y-%m-%d %H' (hour), weekly/monthly '%Y-%m-%d' (day), yearly '%Y-%m'
-     * (month).
+     * 'Y-m-d H' (hour), weekly/monthly 'Y-m-d' (day), yearly 'Y-m' (month).
      */
     private function formatBucketLabel(string $period, string $bucket): string
     {
@@ -645,18 +445,42 @@ class ReportsController extends Controller
     {
         $value = (string) $value;
 
-        return array_key_exists($value, self::SUB_FORMATS) ? $value : 'daily';
+        return array_key_exists($value, self::SUB_NOUNS) ? $value : 'daily';
     }
 
-    /** Money (peso decimal string/number) → integer centavos, drift-free. */
-    private function centavos(string|float|int $value): int
+    /**
+     * Constrain the requested scope, and authorize it.
+     *
+     * Anything other than `local` is the consolidated report, which is
+     * Owner-only — refused HERE rather than by route placement, because the
+     * route also serves the branch-local report an Admin is entitled to. An
+     * Admin appending `?scope=all` gets a 403, never a silent downgrade to
+     * figures that are not the ones they asked for.
+     *
+     * A device that has never hydrated has no business to consolidate: it does
+     * not know which branch it is, and holds no credential to ask with.
+     */
+    private function normalizeScope(mixed $value): string
     {
-        return (int) round((float) $value * 100);
+        $scope = (string) $value;
+
+        if ($scope === '' || $scope === self::SCOPE_LOCAL) {
+            return self::SCOPE_LOCAL;
+        }
+
+        Gate::authorize('view-consolidated-reports');
+        abort_unless(Instance::isHydrated(), 403, 'This device is not connected to a business database.');
+
+        return $scope === self::SCOPE_ALL || Str::isUuid($scope) ? $scope : self::SCOPE_ALL;
     }
 
-    /** Integer centavos → a "0.00" peso string. */
-    private function pesos(int $centavos): string
+    /**
+     * The chart's series dimension. Defaults to `item` in every case, including
+     * the consolidated view: one rule means switching scope never changes what
+     * the chart means underfoot.
+     */
+    private function normalizeChartBy(mixed $value): string
     {
-        return number_format($centavos / 100, 2, '.', '');
+        return (string) $value === 'branch' ? 'branch' : 'item';
     }
 }

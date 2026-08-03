@@ -111,5 +111,9 @@ class AppServiceProvider extends ServiceProvider
         Gate::define('access-settings', fn (User $user): bool => $user->isOwner());
         Gate::define('access-backup', fn (User $user): bool => $user->isOwner());
         Gate::define('view-item-cost', fn (User $user): bool => $user->isOwner());
+        // Cross-branch figures read live from the business database (M11). The
+        // branch-local report on the same screen stays Admin+; only the scope
+        // that reaches other branches is held back to the Owner.
+        Gate::define('view-consolidated-reports', fn (User $user): bool => $user->isOwner());
     }
 }

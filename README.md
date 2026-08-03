@@ -218,6 +218,10 @@ php artisan native:build  # Build the native desktop executable
 php console/artisan console:ping        # Verify both Supabase endpoints (admin + branch)
 php console/artisan console:migrate     # Create the console's provisioning audit schema
 php console/artisan business:provision  # Provision a business + its first branch
+
+composer rig          # Two tills of a throwaway business, 8131 + 8132 (Ctrl-C tears down)
+composer rig:wizard   # As rig, but un-hydrated — drive the setup wizard yourself
+composer rig:clean    # Destroy what a killed rig left behind
 ```
 
 ## Building a release
@@ -286,9 +290,11 @@ has not been hydrated into a branch opens the setup wizard before anything else.
 ## Developer onboarding: standing up a branch
 
 > **Status:** the flow below is **shipped end to end** as of Phase M5 — a device
-> given a credentials JSON and internet becomes a working branch. What is still
-> missing is everything *after* setup: pushing sales up and pulling changes down
-> (M6–M8). Phase status lives in [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md).
+> given a credentials JSON and internet becomes a working branch. Everything
+> *after* setup — pushing sales up, pulling changes down, cross-branch stock,
+> monitoring, consolidated reports — has landed since. Confirm current phase
+> status against [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md) and `git log`
+> rather than this line.
 
 Every branch device is prepared by a developer, in this order:
 
@@ -330,6 +336,78 @@ own encrypted copy. Admin/service credentials never leave `console/.env`. See
 # role. Needs console/.env, so it is NOT part of `composer verify`.
 composer verify:hydrate
 ```
+
+## Two-branch manual rig
+
+The same flow, rehearsed on your own machine. `composer rig` provisions a **real
+throwaway business** with two branches on the live Supabase project, seeds a catalog
+with different stock per branch, hydrates two local SQLite databases, and serves them
+as two tills:
+
+| Branch | URL | Local database |
+|---|---|---|
+| **MNL** (Manila) | `http://127.0.0.1:8131` | `tests/manual/.runtime/branch-a.sqlite` |
+| **CEB** (Cebu) | `http://127.0.0.2:8132` | `tests/manual/.runtime/branch-b.sqlite` |
+
+Sign in on either as **`owner` / `password`** — the same account, because it is one
+business. It runs in the **foreground**, and **Ctrl-C destroys everything it made**:
+both servers, both SQLite files, both credentials JSONs, the Postgres schema and both
+branch roles.
+
+This is a **perception tool, not a gate** — CI never runs it and it asserts nothing.
+Correctness belongs to `composer verify`, `verify:hydrate` and `verify:console`; the rig
+exists so two-branch behaviour — sync, cross-branch stock updates, the consolidated
+report, branch-prefixed receipt serials — can be *looked at* without building an
+AppImage for every look.
+
+Three modes:
+
+```bash
+composer rig          # Both tills hydrated, ready to sell
+composer rig:wizard   # Stops before hydrating: both devices open on /setup, and the
+                      # banner prints the two credentials JSON paths for you to type in
+composer rig:clean    # Destroy what a run killed before its Ctrl-C teardown left behind
+```
+
+`rig:wizard` is the only way to meet the setup wizard as a user does. The banner prints
+the JSON paths **absolute** on purpose: the wizard takes a filesystem path, not an
+upload, and the **Browse** button exists only in the desktop runtime. Leave "delete the
+file after import" unticked and you can retry without re-provisioning.
+
+**Before the first run** you need `npm run build` (the rig serves a production build),
+`(cd console && composer install)`, a `console/.env` carrying `CONSOLE_DB_*`, the
+`pdo_pgsql` extension, no cached config (`php artisan config:clear`), and ports
+8131/8132 free. All of it is checked in **preflight, before the first Supabase call** —
+provisioning costs ~15s and creates real objects, so nothing knowable locally should be
+discovered after it. The cached-config check is the load-bearing one: a cached config
+ignores `DB_DATABASE`, which would quietly point both tills at
+`database/nativephp.sqlite` — your real dev database — and teardown would then delete
+it.
+
+The two tills sit on **two loopback hosts rather than two ports** because the
+`XSRF-TOKEN` cookie name is hardcoded in the framework and cookies are scoped by host,
+not by port: two ports on `127.0.0.1` would overwrite each other's CSRF token and turn
+every form submit into a silent "Your session expired" bounce. All of `127.0.0.0/8` is
+local, so `127.0.0.2` needs no `/etc/hosts` entry.
+
+If a run dies before its teardown can fire, `composer rig:clean` finishes the job. It
+reads `tests/manual/.runtime/state.env` — written incrementally as each artifact is
+created, so it is accurate even after `kill -9` — and destroys exactly what that one run
+made, nothing global. Should the Postgres drop fail it **keeps** the state file and
+prints the SQL to run by hand: a `biz_%` schema is indistinguishable from a real
+customer's, so there is no reaper (`console/README.md` §5), and deleting that file is
+the only way to lose a schema name for good.
+
+Two things to know while using it:
+
+- **Never run `php artisan inventory:reconcile` against a rig database.** It rebuilds
+  stock from the local ledger, and a hydrated till has stock snapshots with no ledger
+  behind them — it would zero every till.
+- **Read results from the SQLite files directly** (`sync_outbox`, `sync_cursor`,
+  `sync_status`). That is where a failed cycle explains itself.
+
+The script's header comment is the authority on *why* it is built this way:
+[`tests/manual/rig.sh`](tests/manual/rig.sh).
 
 ## Architecture & invariants
 

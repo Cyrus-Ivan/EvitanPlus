@@ -20,6 +20,7 @@ class Permissions
         'access-settings',
         'access-backup',
         'view-item-cost',
+        'view-consolidated-reports',
     ];
 
     /**

@@ -56,8 +56,13 @@ HOST_B=127.0.0.2; PORT_B=8132; CODE_B=CEB; NAME_B=Cebu
 DB_A="$RT/branch-a.sqlite"; JSON_A="$RT/branch-a.json"
 DB_B="$RT/branch-b.sqlite"; JSON_B="$RT/branch-b.json"
 
-OWNER_USERNAME=rig-owner
-OWNER_PASSWORD=manual-rig-pass
+# The demo seed's dev login (DemoDataSeeder::seedUsers), so the same muscle
+# memory works whichever way the app was started. The rig's Owner comes from
+# provisioning, not from that seeder — this only matches what it types.
+# `password` is exactly the 8 characters Password::defaults() demands of
+# business:provision; anything shorter is rejected before a schema exists.
+OWNER_USERNAME=owner
+OWNER_PASSWORD=password
 
 # ── State, written incrementally ───────────────────────────────────────────
 # Each artifact is recorded the instant it exists, never in a batch at the end.

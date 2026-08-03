@@ -81,6 +81,18 @@ inventory adjustment is flagged.
 ✗ **Not** the Provisioning Console, and ✗ **not** the Admin permission role. Say "the in-app
 admin screens" for the surface and "an Admin" for the person.
 
+### Rig
+The two-server **development harness** that runs **two tills of one throwaway business** against
+the live Supabase project — `MNL` on `127.0.0.1:8131`, `CEB` on `127.0.0.2:8132` — and destroys
+the business schema, both branch roles and both local SQLite files on Ctrl-C.
+*Anchor:* `tests/manual/rig.sh`; `composer.json` `scripts.rig` / `rig:wizard` / `rig:clean`;
+`tests/manual/.runtime/state.env`.
+✗ **Not** a till, a branch device or an install. One rig serves **two** of each, from two
+`php -S` servers over two SQLite files — which is the whole point of it, and the reason §2's
+four words have to stay apart when writing about it.
+✗ **Not** a test or a gate. It asserts nothing and CI never runs it; correctness is
+`composer verify`, `verify:hydrate` and `verify:console`. The rig is for *looking*.
+
 ---
 
 ## 2. Branches, devices and tills
@@ -333,15 +345,38 @@ as equivalent to *reaches Postgres* is the error that left every catalog and sta
 on one device until M6.5.
 
 ### Online read
-A **live query against the business database serving one screen**, keeping nothing. Two things
-are read this way and neither has a local counterpart: the branch **roster** (`branches`) and the
-**inventory update queue**.
+A **live query against the business database serving one screen**, keeping nothing. Three things
+are read this way and none has a local counterpart: the branch **roster** (`branches`), the
+**inventory update queue**, and the [consolidated report].
 *Anchor:* `App\Support\Sync\OnlineRead`; `OfflineWriteException::forReading()` (M8).
 ✗ **Not** a pull. A pull fills the local mirror so the till can read it offline forever; an
 online read mirrors nothing, which is exactly why these two tables need no migration, no
 `sync_cursor` row and no line in the parity guard.
 ✗ **Not** version-gated, unlike an online write. The gate stops a stale build *writing* (§6);
 refusing to render a screen would hide the display of the very problem.
+
+### Consolidated report
+The sales report recomputed **across branches** from the business database, rather than from this
+device's mirror. Owner-only and online-only, on the same `/reports` screen as the branch-local
+one, selected by [report scope].
+*Anchor:* `App\Support\Reports\SalesFigures` handed the Postgres connection (M11).
+✗ **Not** a different recompute. One class serves both, with the connection as an argument, so
+the two screens cannot disagree about what net sales means.
+✗ **Not** available offline, and not because it was left out: `Puller` carries neither
+`transactions` nor `sale_returns`, so no branch holds another branch's sales and none ever will.
+✗ **Not** exempt from Item Cost being Owner-only. COGS and profit are omitted from the payload
+for a non-Owner here exactly as everywhere else.
+
+### Report scope
+Which branches a report covers: **`local`** (this device's SQLite mirror — the default, works
+offline, the only value an Admin may use), **`all`**, or a **branch id**. Echoed back to the
+screen *after* normalisation, so it always names what was reported on rather than what was asked
+for.
+*Anchor:* the `scope` query parameter on `ReportsController` (M11).
+✗ **Not** a filter over one dataset. `local` and the other two read different databases.
+✗ **Not** silently downgraded when the connection is down. The screen falls back to `local` and
+says so (`consolidatedOnline: false`); presenting one branch's figures under an "All branches"
+heading is the failure this design refuses.
 
 ### Pull
 Fetching **deltas** of pulled tables by `updated_at`, plus the recomputed stock baseline.

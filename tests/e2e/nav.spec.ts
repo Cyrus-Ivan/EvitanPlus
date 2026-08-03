@@ -6,6 +6,10 @@ import { login } from './helpers';
  * boots and renders its own document title through the built manifest — this
  * catches pages that only break outside the dev server. POS, Sales, Reports,
  * and Backup already have deep flows in the other specs.
+ *
+ * It also carries the focused checks that belong to no feature spec: what the
+ * app calls itself, and what a screen shows when its content needs a connection
+ * this device does not have.
  */
 
 const DESTINATIONS: Array<[path: string, title: RegExp]> = [
@@ -16,6 +20,11 @@ const DESTINATIONS: Array<[path: string, title: RegExp]> = [
     // so the online read cannot happen. That IS the case worth smoking: the page
     // must say so rather than fail.
     ['/inventory/stock-updates', /^Stock Updates -/],
+    // The same case from the other direction (M11): this URL asks for figures
+    // from every branch, which the device cannot fetch for want of a credential.
+    // It must still render a correct report of what it CAN see, rather than
+    // erroring or presenting one branch's numbers as the business's.
+    ['/reports?scope=all', /^Reports -/],
     ['/login-history', /^Login History -/],
     ['/users', /^User Management -/],
     ['/audit-logs', /^Audit Logs -/],
@@ -49,4 +58,25 @@ test('the app identifies itself as Evitan Plus', async ({ page }) => {
 
     await expect(productName).toHaveText('Evitan Plus');
     await expect(page).toHaveTitle(/- Evitan Plus$/);
+});
+
+test('a consolidated report this device cannot fetch falls back and says so', async ({ page }) => {
+    // The state a real shop meets whenever its internet drops, and the one the
+    // M11 fallback exists for. This device is hydrated but holds no branch
+    // credential, so the online read cannot happen — the same condition as
+    // /inventory/stock-updates above.
+    await login(page, 'owner');
+    await page.goto('/reports?scope=all');
+
+    // The notice is the assertion that matters. Without it the Owner is reading
+    // one branch's figures believing they are the business's.
+    await expect(page.getByRole('alert')).toContainText("These are this branch's figures only");
+
+    // The server snapped the scope back to `local`; the control has to agree.
+    // Still reading "All branches" over branch-local numbers is that same
+    // mislabelling in its most convincing form.
+    await expect(page.getByLabel('Branches reported on')).toHaveText('This branch');
+
+    // And no per-branch table, because there are no other branches in these figures.
+    await expect(page.getByRole('columnheader', { name: 'Branch' })).toBeHidden();
 });

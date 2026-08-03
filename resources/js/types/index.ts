@@ -1,6 +1,13 @@
 import { LucideIcon } from 'lucide-react';
 
-export type Permission = 'access-reports' | 'access-audit-logs' | 'manage-users' | 'access-settings' | 'access-backup' | 'view-item-cost';
+export type Permission =
+    | 'access-reports'
+    | 'access-audit-logs'
+    | 'manage-users'
+    | 'access-settings'
+    | 'access-backup'
+    | 'view-item-cost'
+    | 'view-consolidated-reports';
 
 export interface Auth {
     // Null for guests (auth screens). Authenticated app pages run behind the
@@ -278,6 +285,40 @@ export interface ReportRow {
     profit?: string;
     uncosted_sales?: string;
 }
+
+// One branch's figures for the whole selected period (M11, consolidated scope
+// only). Same money fields as a ReportRow — the per-branch rows and the
+// per-bucket rows are the same recompute over a different GROUP BY, so they sum
+// to the same totals. A branch that sold nothing is present with zeros, not
+// absent: "sold nothing" and "no data" are different answers.
+export interface ReportBranchRow {
+    branch_id: string;
+    code: string;
+    name: string;
+    transactions: number;
+    gross_sales: string;
+    returns: string;
+    defects: string;
+    net_sales: string;
+    cogs?: string;
+    profit?: string;
+    uncosted_sales?: string;
+}
+
+// A branch in the roster, read live from the business database.
+export interface ReportBranch {
+    id: string;
+    code: string;
+    name: string;
+}
+
+// Which branches a report covers: 'local' = this device's own SQLite mirror
+// (works offline), 'all' = every branch, or a single branch id. Anything but
+// 'local' is Owner-only and online-only.
+export type ReportScope = 'local' | 'all' | string;
+
+// The chart's series dimension: what sold, or which branch sold it.
+export type ReportChartBy = 'item' | 'branch';
 
 // Period-wide totals for the summary cards.
 export interface ReportTotals {

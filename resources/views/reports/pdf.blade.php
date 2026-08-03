@@ -88,6 +88,11 @@
             </div>
         @endif
         <div class="report-title">Sales Report — {{ $label }}</div>
+        {{-- Which branches these figures cover (M11). Always printed: a
+             consolidated total and a single branch's total are the same shape of
+             number, and a printout that has left the screen has nothing else to
+             say which one it is. --}}
+        <div class="report-sub">{{ $scopeLabel }}</div>
         <div class="report-sub">
             Net sales recomputed as gross − returns − defects. Generated {{ $generatedAt->format('M j, Y g:i A') }}.
         </div>
@@ -222,6 +227,45 @@
                     @endif
                 </tr>
             </tfoot>
+        </table>
+    @endif
+
+    {{-- The same period cut by branch instead of by time (M11). Present only on a
+         consolidated report; a branch that sold nothing prints zeros rather than
+         being left out, so the column foots to the totals above. --}}
+    @if ($branchRows !== null && count($branchRows) > 0)
+        <div class="section-title">By branch — {{ $label }}</div>
+        <table class="breakdown">
+            <thead>
+                <tr>
+                    <th class="left">Branch</th>
+                    <th>Txns</th>
+                    <th>Gross</th>
+                    <th>Returns</th>
+                    <th>Defects</th>
+                    <th>Net</th>
+                    @if ($canViewCost)
+                        <th>Uncosted</th>
+                        <th>Profit</th>
+                    @endif
+                </tr>
+            </thead>
+            <tbody>
+                @foreach ($branchRows as $row)
+                    <tr>
+                        <td class="left">{{ $row['code'] }} — {{ $row['name'] }}</td>
+                        <td>{{ $row['transactions'] }}</td>
+                        <td>{{ $peso($row['gross_sales']) }}</td>
+                        <td class="muted">{{ $minus($row['returns']) }}</td>
+                        <td class="muted">{{ $minus($row['defects']) }}</td>
+                        <td>{{ $peso($row['net_sales']) }}</td>
+                        @if ($canViewCost)
+                            <td class="muted">{{ $peso($row['uncosted_sales'] ?? '0') }}</td>
+                            <td>{{ $peso($row['profit'] ?? '0') }}</td>
+                        @endif
+                    </tr>
+                @endforeach
+            </tbody>
         </table>
     @endif
 

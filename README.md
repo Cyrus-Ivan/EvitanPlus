@@ -422,12 +422,21 @@ A few non-negotiable rules shape the entire codebase — violating them is a cor
 
 Deeper documentation lives in the repo:
 
+**How it works, and how to work on it:**
+
+- [`docs/sync-architecture.md`](docs/sync-architecture.md) — the multi-branch machinery **as built**: hydration, the five-step sync cycle, online writes and reads, the inventory queue, the version gate, monitoring, the grant matrix and the risk it accepts
+- [`docs/developer-workflows.md`](docs/developer-workflows.md) — every command a developer runs, what each gate proves, how to inspect a device, and the traps that produce a wrong reading
+- [`docs/glossary.md`](docs/glossary.md) — **normative** on terminology; outranks every other document on what a word means
+
+**Specs and plans:**
+
 - [`BRAINSTORM.md`](BRAINSTORM.md) — full functional specification
 - [`ROADMAP.md`](ROADMAP.md) — phased build plan
 - [`CLAUDE.md`](CLAUDE.md) — invariants and working guidance
-- [`docs/`](docs/) — after-sales and receipt-printing design of record
+- [`docs/`](docs/) — after-sales and receipt-printing designs of record, which outrank the specs where they disagree
 - [`MULTIBRANCH-BRAINSTORM.md`](MULTIBRANCH-BRAINSTORM.md) — Evitan Plus (multi-branch, provisioning, sync) spec of record
 - [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md) — Evitan Plus phased build plan (M0–M12)
+- [`console/README.md`](console/README.md) — the Provisioning Console operator runbook
 
 ## Project status
 

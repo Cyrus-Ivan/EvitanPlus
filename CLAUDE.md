@@ -8,6 +8,8 @@ The Laravel + React (Inertia) + NativePHP + SQLite app is **released — all 19 
 
 `BRAINSTORM.md` is the full functional spec and `ROADMAP.md` is the phased build plan. `docs/returns-refunds-voids-design.md` (after-sales) and `docs/receipt-printing-design.md` (printing) are the designs of record for their areas — where `BRAINSTORM.md`/`ROADMAP.md` disagree with them, the design docs win.
 
+**Start with `docs/sync-architecture.md`** for anything touching multi-branch behaviour: it is the as-built account of the paragraph above — hydration, the five-step cycle, online write/read, the queue, the version gate, monitoring, the grant matrix — with every claim anchored to the class that implements it. `docs/developer-workflows.md` is the companion for running and inspecting it (the three gates, `composer rig`, reading `sync_status`, and the traps that give a wrong reading). Both are descriptions of code, not decisions: where they and the code disagree, the code is right.
+
 ## Vocabulary
 
 `docs/glossary.md` is **normative** for this project's terminology and **outranks every other document** — including this one and the design docs — on what a word means. Read it before writing anything against a spec. It exists because a large share of the multi-branch initiative's "As built" corrections were not design changes but a word meaning one thing in the spec and another in Postgres: a grant named on a column that a check constraint made unusable, a `branch:delete` that deletes no branch, a "credential" that is really two values. Each cost implementation time to rediscover.

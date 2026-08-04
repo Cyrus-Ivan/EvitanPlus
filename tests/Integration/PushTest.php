@@ -373,11 +373,22 @@ class PushTest extends TestCase
 
         $this->assertSame('PSH-0000000317', Instance::current()->transaction_number_floor);
 
+        // The trading it had already done came down with it (M11.6), so the
+        // replacement device can show the branch's own sales rather than an
+        // empty history.
+        $this->assertSame('PSH-0000000317', Transaction::query()->value('transaction_number'));
+
         // …and it continues the branch's sequence rather than restarting at 1,
         // which the insert-only push would have discarded without a word.
         $this->sell($this->cashier(), 1);
 
-        $this->assertSame('PSH-0000000318', Transaction::query()->value('transaction_number'));
+        // Ordered explicitly: the hydrated row above shares this table now, so
+        // an unordered value() would answer with the branch's history instead
+        // of the sale just rung up.
+        $this->assertSame(
+            'PSH-0000000318',
+            Transaction::query()->orderByDesc('transaction_number')->value('transaction_number'),
+        );
         $this->assertSame(SyncStatus::ONLINE, app(SyncCycle::class)->run()['state']);
     }
 

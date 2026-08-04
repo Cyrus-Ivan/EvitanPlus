@@ -4,6 +4,16 @@ Working log for the Phase 18 final review (see `docs/phase-18-plan.md` for the s
 operating rules, and the meaning of each column). One row per finding; IDs are never reused.
 S8 consumes this table in severity order; S9 writes the Phase 19 handoff list at the top.
 
+> **Superseded in part (M11.6).** The **Database Backup** feature this review
+> examined was removed from Evitan Plus. Every finding below that is only about
+> backup or restore — **F-10**, **F-17**, **F-19**'s WAL/backup interaction,
+> **F-11**'s post-restore half, items 4/5/6 and 16, and the backup lines in the
+> security summary — describes code that no longer exists. They are left as
+> written because this is a dated record of what the review found, not a
+> description of the current app; a branch device is now rebuilt through the
+> setup wizard (`docs/sync-architecture.md` §2).
+
+
 **Severity:** Blocker / High / Medium / Low / Accepted-risk. Seed findings outside S1's scope
 keep `TBD (Sx)` until their owning session confirms severity.
 

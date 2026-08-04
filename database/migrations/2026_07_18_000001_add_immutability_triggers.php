@@ -11,8 +11,12 @@ return new class extends Migration
      * fire for bulk builder writes or raw SQL; these BEFORE UPDATE / DELETE
      * triggers are the database-level backstop nothing can bypass.
      *
-     * Backup/restore is a whole-file copy, so the triggers never interfere
-     * with it; DROP TABLE (migrate:fresh) drops them alongside the table.
+     * DROP TABLE (migrate:fresh) drops them alongside the table.
+     *
+     * Binding on anything that writes these tables in bulk: hydration copies a
+     * branch's history into every one of them (M11.6) and must therefore INSERT,
+     * never upsert — an upsert's ON CONFLICT DO UPDATE arm fires the update
+     * trigger and aborts. See Hydrator::INSERT_ONLY.
      *
      * @var list<string>
      */

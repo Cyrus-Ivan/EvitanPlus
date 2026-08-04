@@ -5,6 +5,7 @@ namespace App\Support\Sync;
 use App\Exceptions\SetupFailedException;
 use App\Support\Settings\BusinessSettings;
 use Illuminate\Database\Connection;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
@@ -17,26 +18,46 @@ use RuntimeException;
  * mirror is the only store in the system that may be thrown away — everything in
  * it is either re-derivable from Postgres or already pushed there.
  *
- * ## What it copies, and what it deliberately does not
+ * ## What it copies
  *
- * Catalog (categories, items, variants), ALL users business-wide, the business
- * settings, and this branch's stock snapshot. Every one of those is
- * online-authoritative: the till reads them and never writes them, so copying
- * them down cannot lose a local edit.
+ * Two groups, and the second arrived in M11.6.
  *
- * It does NOT copy history — transactions, ledger, returns, audit, login history.
- * A fresh device has no history of its own and the branch's history stays in
- * Postgres, where consolidated reporting reads it. The consequence is worth
- * stating because it is not obvious: a device replacing an EXISTING branch's
- * hardware starts with empty branch-local reports, and its locally generated
- * serial would restart at 1.
+ * 1. The ONLINE-AUTHORITATIVE baseline: catalog (categories, items, variants),
+ *    ALL users business-wide, the business settings, and this branch's stock
+ *    snapshot. The till reads these and never writes them, so copying them down
+ *    cannot lose a local edit.
+ * 2. This branch's HISTORY: transactions and their items, sale returns and
+ *    their items, the inventory ledger, login history, audit logs and import
+ *    history — everything the branch authored and pushed up.
  *
- * The second half of that was answered in M6 by {@see serialFloors()}: the
- * highest transaction and return numbers Postgres already holds for this branch
- * come down with the baseline and are stored on `instance`, so the generators
- * continue the branch's sequence rather than restarting it. Empty branch-local
- * reports remain true and remain acceptable — the figures are all in Postgres,
- * and M11's consolidated reporting is where a swapped branch's history is read.
+ * Group 2 is new. Until M11.6 hydration deliberately skipped history, because a
+ * device replacing an existing branch's hardware had a second recovery path: the
+ * Owner restored a file backup. Removing that feature made hydration the ONLY
+ * path, and three-quarters of a device is not a recovery — a rebuilt till came up
+ * with the right catalog and stock but an empty /transactions, /audit-logs and
+ * /login-history, no branch-local report figures, and no receipt to reprint.
+ *
+ * ## Why history is insert-only
+ *
+ * Seven of the eight history tables carry BEFORE UPDATE / BEFORE DELETE
+ * immutability triggers (`2026_07_18_000001_add_immutability_triggers`), so
+ * group 2 is written with `insertOrIgnore` rather than the `upsert` group 1
+ * uses: an upsert's ON CONFLICT DO UPDATE arm fires that trigger and aborts the
+ * whole hydrate. A first run has no conflicts and would not notice; a RE-hydrate
+ * would fail on the first row it had already seen, which is exactly the case
+ * this class promises to support. It is also the honest verb — an immutable row
+ * that is already local cannot have anything to update.
+ *
+ * ## What it still does not copy
+ *
+ * Nothing of this branch's, now. Other branches' history stays upstream, where
+ * M11's consolidated reporting reads it, and the local schema has no `branch_id`
+ * to hold it in anyway.
+ *
+ * {@see serialFloors()} is unchanged and still read: with `transactions` copied
+ * the generators would find the branch's high-water mark locally too, but the
+ * floors on `instance` cost nothing and keep them correct however the copy is
+ * scoped later.
  *
  * ## Why the copy is column-driven
  *
@@ -49,8 +70,10 @@ use RuntimeException;
  * Rows are written through the QUERY BUILDER, never models: hydration must not
  * fire the single-Owner guard (there is exactly one Owner in the data, and it is
  * arriving from the authority), the `hashed` password cast (the hashes are
- * already hashes), or UUID generation (the ids are the business's). None of the
- * hydrated tables carry immutability triggers, so nothing else objects.
+ * already hashes), UUID generation (the ids are the business's), or — since
+ * M11.6 put history tables in reach — the Immutable trait and PushedUpward,
+ * which would enqueue the branch's own pulled-back history into the outbox and
+ * push it straight up again.
  */
 class Hydrator
 {
@@ -58,9 +81,50 @@ class Hydrator
      * Copy order matters — FK parents first. `settings` is unrelated to the
      * rest and goes first only because it is the cheapest thing to fail on.
      *
+     * The history half (M11.6) is ordered by the local migrations' own foreign
+     * keys: `sale_return_items` must follow `transaction_items`
+     * (`transaction_item_id`), `inventory_ledger` needs `variants` and `users`
+     * (`performed_by`), and the last three all reference `users`.
+     *
      * @var list<string>
      */
-    private const TABLES = ['settings', 'users', 'categories', 'items', 'variants', 'stock_snapshots'];
+    private const TABLES = [
+        'settings', 'users', 'categories', 'items', 'variants', 'stock_snapshots',
+        'transactions', 'transaction_items', 'sale_returns', 'sale_return_items',
+        'inventory_ledger', 'login_history', 'audit_logs', 'import_history',
+    ];
+
+    /**
+     * Tables whose rows may only ever be INSERTed locally, because SQLite
+     * triggers abort any UPDATE or DELETE of them.
+     *
+     * Kept in step with `2026_07_18_000001_add_immutability_triggers` — plus
+     * `import_history`, which carries no trigger but is append-only by the same
+     * reasoning and gains nothing from an upsert.
+     *
+     * @var list<string>
+     */
+    private const INSERT_ONLY = [
+        'transactions', 'transaction_items', 'sale_returns', 'sale_return_items',
+        'inventory_ledger', 'login_history', 'audit_logs', 'import_history',
+    ];
+
+    /**
+     * The child tables Postgres does NOT give a `branch_id`, and the parent
+     * column that decides which branch each row belongs to.
+     *
+     * A line inherits its branch from its parent, and repeating the fact on the
+     * child would be a second place for it to be wrong — the console migration
+     * for `transaction_items` says so explicitly. Every other branch-scoped
+     * table is detected rather than listed, by
+     * {@see RowMapper::isBranchScoped()}.
+     *
+     * @var array<string, array{column: string, parent: string}>
+     */
+    private const PARENT_SCOPED = [
+        'transaction_items' => ['column' => 'transaction_id', 'parent' => 'transactions'],
+        'sale_return_items' => ['column' => 'sale_return_id', 'parent' => 'sale_returns'],
+    ];
 
     /** Rows per round trip. Large enough to be one query per table in practice. */
     private const CHUNK = 500;
@@ -249,27 +313,59 @@ class Hydrator
 
         $query = $remote->table($table)->select($columns)->orderBy('id');
 
-        // stock_snapshots is the one hydrated table Postgres scopes by branch.
-        // The till holds only its own rows and has no branch_id column to put
-        // the value in — branch_id is stamped back on at PUSH time, from
-        // `instance`, which is the single place it lives locally.
-        if ($table === 'stock_snapshots') {
-            $query->where('branch_id', $branchId);
-        }
+        $this->scopeToBranch($remote, $query, $table, $branchId);
 
         $copied = 0;
+        $insertOnly = in_array($table, self::INSERT_ONLY, true);
 
         foreach ($query->cursor()->chunk(self::CHUNK) as $chunk) {
             $rows = $chunk
                 ->map(fn (object $row): array => $this->normalise((array) $row, $types))
                 ->all();
 
-            DB::table($table)->upsert($rows, ['id']);
+            // See the class docblock: an upsert on an immutable table fires its
+            // BEFORE UPDATE trigger the moment a row is already local, which is
+            // every row of a re-hydrate.
+            $insertOnly
+                ? DB::table($table)->insertOrIgnore($rows)
+                : DB::table($table)->upsert($rows, ['id']);
 
             $copied += count($rows);
         }
 
         return $copied;
+    }
+
+    /**
+     * Restrict $query to the rows belonging to this branch.
+     *
+     * The till holds only its own rows and has no `branch_id` column to put the
+     * value in — it is stamped back on at PUSH time from `instance`, the single
+     * place it lives locally. So the filter has to happen here, on the way down,
+     * or another branch's history lands on this device with nothing to mark it
+     * as anyone else's.
+     *
+     * Three cases, in the order they are tested: a table Postgres does not scope
+     * at all (the catalog, users, settings — business-wide by definition and
+     * copied whole); a child table that inherits its branch from a parent; and
+     * everything else, which carries `branch_id` itself.
+     */
+    private function scopeToBranch(Connection $remote, Builder $query, string $table, string $branchId): void
+    {
+        if (isset(self::PARENT_SCOPED[$table])) {
+            ['column' => $column, 'parent' => $parent] = self::PARENT_SCOPED[$table];
+
+            $query->whereIn($column, fn (Builder $inner) => $inner
+                ->select('id')
+                ->from($parent)
+                ->where('branch_id', $branchId));
+
+            return;
+        }
+
+        if ($this->rows->isBranchScoped($remote, $table)) {
+            $query->where('branch_id', $branchId);
+        }
     }
 
     /**

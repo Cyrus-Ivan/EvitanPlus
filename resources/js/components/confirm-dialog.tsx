@@ -23,7 +23,7 @@ const ConfirmContext = createContext<ConfirmFn | null>(null);
  *   if (await confirm({ title: 'Archive item?', destructive: true })) { ... }
  *
  * Used everywhere a destructive or irreversible action needs a guard (archive,
- * restore, reset password, restore backup, ...).
+ * unarchive, reset password, record a defect, ...).
  */
 export function ConfirmProvider({ children }: { children: ReactNode }) {
     const [open, setOpen] = useState(false);

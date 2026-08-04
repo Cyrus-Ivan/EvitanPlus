@@ -1,8 +1,6 @@
 <?php
 
-use App\Http\Controllers\AppRestartController;
 use App\Http\Controllers\AuditLogController;
-use App\Http\Controllers\BackupController;
 use App\Http\Controllers\BusinessSettingsController;
 use App\Http\Controllers\Inventory\CategoryController;
 use App\Http\Controllers\Inventory\InventoryExportController;
@@ -141,15 +139,6 @@ Route::middleware(['auth'])->group(function () {
         Route::patch('printer-settings', [PrinterSettingsController::class, 'update'])->name('printer-settings.update');
         Route::post('printer-settings/test', [PrinterSettingsController::class, 'test'])->name('printer-settings.test');
         Route::get('printer-settings/printers', [PrinterSettingsController::class, 'printers'])->name('printer-settings.printers');
-        // Database backup & restore (Phase 16).
-        Route::get('backup', [BackupController::class, 'index'])->name('backup');
-        Route::post('backup', [BackupController::class, 'store'])->name('backup.store');
-        Route::post('backup/restore', [BackupController::class, 'restore'])->name('backup.restore');
-        // Back up to / restore from an external drive via native OS dialogs.
-        Route::post('backup/external', [BackupController::class, 'exportExternal'])->name('backup.external');
-        Route::post('backup/restore-external', [BackupController::class, 'restoreExternal'])->name('backup.restore-external');
-        // Relaunch the desktop app after a restore (native runtime only).
-        Route::post('app/restart', AppRestartController::class)->name('app.restart');
     });
 });
 

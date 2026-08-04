@@ -35,7 +35,7 @@ to load `pdo_pgsql`, `pgsql`, `pdo_sqlite`, and `sqlite3`
 both SQLite and live Supabase Postgres from inside the NativePHP shell.
 
 Extensions are NativePHP's stock set **plus `pdo_pgsql, pgsql`**, minus `bz2`
-(nothing here compresses with bzip2 — backups use zlib/`ZipArchive`). The
+(no code path in the app compresses data). The
 runtime additionally carries `calendar, dba, exif, gmp, pcntl, posix, readline,
 xsl`, which are harmless extras from the upstream build profile.
 

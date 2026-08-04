@@ -77,9 +77,6 @@ class HandleInertiaRequests extends Middleware
                 // Bridged to Sonner toasts on the client (see use-flash-toast.ts).
                 // Flash with: ->with('toast', ['type' => 'success', 'message' => '...']).
                 'toast' => $request->session()->get('toast'),
-                // Set after a database restore: the backup page shows a
-                // persistent banner with a Restart button until relaunch.
-                'restart_required' => (bool) $request->session()->get('restart_required'),
                 // The path the setup wizard's native file picker returned, on
                 // its way back into the form field (M5).
                 'credentials_path' => $request->session()->get('picked_credentials_path'),

@@ -214,7 +214,8 @@ branch may change the catalog, users and settings — from the in-app admin, whi
 leave them there. `branches` and `schema_meta` remain genuinely read-only to a branch role.
 
 ### Local-write (of a table)
-A table written **only** on the till, append-only, pushed **insert-only** keyed by UUID:
+A table written **only** on the till, append-only, pushed **insert-only** keyed by UUID —
+and, since M11.6, hydrated back **down** insert-only when a device is rebuilt:
 `transactions`, `transaction_items`, `sale_returns`, `sale_return_items`, `inventory_ledger`
 (sale/return/defect rows), `login_history`, `audit_logs`.
 *Anchor:* `BranchGrants::INSERT`.
@@ -236,14 +237,23 @@ other way.
 
 ### Hydrate
 The setup wizard's **one-time first fill** of a new branch device: catalog, all users,
-settings/identity, and this branch's stock snapshot. Happens once per device, inside a normal
-sync cycle's connection.
-*Anchor:* `App\Support\Sync\Hydrator`; `instance.hydrated_at`;
-`MULTIBRANCH-BRAINSTORM.md` §16.
-✗ **Not** a pull. A pull is the recurring delta; a hydrate is the initial baseline, and a
-device can be re-hydrated from scratch because the local mirror is disposable.
-✗ **Not** history. A hydrate brings down no transactions, ledger or audit rows — which is why a
-device replacing an existing branch's hardware is a different case from a new one.
+settings/identity, this branch's stock snapshot, **and this branch's history** — its
+transactions and their items, sale returns and their items, inventory ledger, login history,
+audit logs and import history. Happens once per device, inside a normal sync cycle's
+connection.
+*Anchor:* `App\Support\Sync\Hydrator` (`TABLES`, `INSERT_ONLY`, `PARENT_SCOPED`);
+`instance.hydrated_at`; `MULTIBRANCH-BRAINSTORM.md` §16.
+✗ **Not** a pull, and **hydrated ⊄ pulled** — the two sets overlap without either containing
+the other. A pull is the recurring delta of online-authoritative tables; a hydrate is the
+one-time baseline, and the history half is hydrated once and then never pulled again, because
+from that moment on the device authors it. A device can be re-hydrated from scratch because
+the local mirror is disposable.
+✗ **Not** other branches' history. Everything in the history half is filtered to this branch —
+directly by `branch_id`, or through a parent for the two line-item tables Postgres does not
+scope. The local schema has no `branch_id` to hold anyone else's rows in.
+The history half arrived in **M11.6**, when removing the backup feature made the wizard the
+only way to rebuild a device. Before it, a replacement device came up with the right catalog
+and stock but no sales, receipts or audit trail.
 
 ---
 
@@ -278,7 +288,7 @@ Which way a ledger row moves is decided by its columns, not by a separate type:
 The current on-hand quantity for one variant at one branch, stored as a row and updated on
 every ledger insert. `check (quantity >= 0)`.
 *Anchor:* `stock_snapshots`; `StockLedger::record()` locks it with `lockForUpdate()`.
-✗ **Not** a backup, and ✗ **not** the stock baseline.
+✗ **Not** the stock baseline.
 
 ### Stock baseline
 The **figure pulled from Postgres** during a sync cycle. It reflects online entries and

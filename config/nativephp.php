@@ -111,8 +111,9 @@ return [
         '*/tests',
         // Project internals that must not ship inside the installer (the
         // built-in excludes only cover database/*.sqlite — tests/e2e/.runtime
-        // holds a seeded database copy, and storage/backups holds real
-        // database backups of the dev machine's data).
+        // holds a seeded database copy). The backup feature was removed in
+        // M11.6, but dev machines still carry real business data in
+        // storage/backups from before then; keep excluding it.
         'storage/backups/*',
         '.phpunit.result.cache',
         'tests',

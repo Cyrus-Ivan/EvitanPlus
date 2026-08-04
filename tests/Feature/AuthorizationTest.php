@@ -53,7 +53,6 @@ class AuthorizationTest extends TestCase
     {
         return [
             'business-settings' => ['business-settings'],
-            'backup' => ['backup'],
         ];
     }
 
@@ -119,7 +118,7 @@ class AuthorizationTest extends TestCase
         }
 
         // Owner-only abilities.
-        foreach (['access-settings', 'access-backup', 'view-item-cost'] as $ability) {
+        foreach (['access-settings', 'view-item-cost'] as $ability) {
             $this->assertTrue(Gate::forUser($owner)->allows($ability));
             $this->assertFalse(Gate::forUser($admin)->allows($ability));
             $this->assertFalse(Gate::forUser($cashier)->allows($ability));

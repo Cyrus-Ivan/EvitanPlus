@@ -1,13 +1,6 @@
 import { LucideIcon } from 'lucide-react';
 
-export type Permission =
-    | 'access-reports'
-    | 'access-audit-logs'
-    | 'manage-users'
-    | 'access-settings'
-    | 'access-backup'
-    | 'view-item-cost'
-    | 'view-consolidated-reports';
+export type Permission = 'access-reports' | 'access-audit-logs' | 'manage-users' | 'access-settings' | 'view-item-cost' | 'view-consolidated-reports';
 
 export interface Auth {
     // Null for guests (auth screens). Authenticated app pages run behind the
@@ -85,7 +78,7 @@ export interface SharedData {
     auth: Auth;
     // Business currency symbol (Business Settings; default ₱).
     currency: string;
-    flash: { toast?: FlashToast | null; restart_required?: boolean; credentials_path?: string | null };
+    flash: { toast?: FlashToast | null; credentials_path?: string | null };
     // Null on an install whose sync tables do not exist yet (pre-migration).
     sync: SyncSnapshot | null;
     // Null on a device that has never been hydrated — it has no branch to name.

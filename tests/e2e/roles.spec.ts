@@ -49,7 +49,7 @@ test('admin: no cost or profit surfaces, Owner pages 403', async ({ page }) => {
     await expect(page.getByRole('columnheader', { name: 'Unit Cost' })).toHaveCount(0);
 
     // Owner-only page → styled 403.
-    await page.goto('/backup');
+    await page.goto('/business-settings');
     await expect(page.getByText('Access denied')).toBeVisible();
 });
 

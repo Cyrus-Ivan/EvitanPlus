@@ -141,8 +141,6 @@ Owner can additionally
 
 * View Item Cost
 * Modify Item Cost
-* Backup Database
-* Restore Database
 * Configure Business Settings
 * Create Admins
 * Archive Admins
@@ -616,20 +614,6 @@ Timezone
 
 ---
 
-# Database Backup
-
-Owner Only
-
-Supports
-
-* Backup SQLite Database
-* Restore SQLite Database
-* Backup to / restore from an external drive (destination picked via a native file dialog)
-
-Before restoring, the application should automatically create a backup of the current database.
-
----
-
 # Audit Logs
 
 Every significant action must be recorded.
@@ -654,8 +638,6 @@ Examples
 * Item Cost Change
 * CSV Import
 * CSV Export
-* Backup
-* Restore
 * Settings Changes
 
 Audit Logs are immutable.

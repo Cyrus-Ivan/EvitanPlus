@@ -30,7 +30,6 @@ class NavigationTest extends TestCase
             'login-history' => ['login-history'],
             'audit-logs' => ['audit-logs'],
             'business-settings' => ['business-settings'],
-            'backup' => ['backup'],
             // Settings pages live under the user menu rather than the sidebar;
             // appearance is closure-rendered, so this is its only coverage.
             'settings-profile' => ['profile.edit'],

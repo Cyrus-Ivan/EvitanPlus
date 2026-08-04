@@ -15,17 +15,12 @@ const breadcrumbs: BreadcrumbItem[] = [{ title: 'Audit Logs', href: '/audit-logs
 const ALL = 'all';
 
 // Badge tone keyed on the action's top-level domain. Destructive actions
-// (archive / restore-over-data / password reset) read as warnings.
+// (archive / password reset / defect write-off) read as warnings.
 function actionTone(action: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-    if (
-        action.endsWith('.archived') ||
-        action === 'user.password_reset' ||
-        action.startsWith('backup.restored') ||
-        action === 'sale.defect.created'
-    ) {
+    if (action.endsWith('.archived') || action === 'user.password_reset' || action === 'sale.defect.created') {
         return 'destructive';
     }
-    if (action.startsWith('settings.') || action.startsWith('backup.')) {
+    if (action.startsWith('settings.')) {
         return 'secondary';
     }
     return 'default';

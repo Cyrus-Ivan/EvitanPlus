@@ -85,6 +85,11 @@ class HydrationTest extends TestCase
 
     private static string $otherBranchId = '';
 
+    /** History ids seeded upstream for THIS branch (M11.6). */
+    private static string $transactionId = '';
+
+    private static string $returnId = '';
+
     public static function tearDownAfterClass(): void
     {
         self::destroyBusiness(self::$admin, self::$schema, self::$role);
@@ -220,11 +225,41 @@ class HydrationTest extends TestCase
         $this->assertNotNull($instance->hydrated_at);
         $this->assertTrue(Instance::isHydrated());
 
-        // History is NOT hydrated: a fresh device has none of its own, and the
-        // branch's history stays where consolidated reporting reads it.
-        foreach (['transactions', 'transaction_items', 'inventory_ledger', 'sale_returns', 'login_history'] as $table) {
-            $this->assertSame(0, DB::table($table)->count(), "[{$table}] must not be hydrated.");
-        }
+        // THIS branch's history comes down (M11.6), and the other branch's does
+        // not. Both halves matter: without the first a replacement device has no
+        // sales, receipts or audit trail; without the second it shows another
+        // branch's trading as its own, with no branch_id column to tell them
+        // apart.
+        $this->assertSame([self::$transactionId], DB::table('transactions')->pluck('id')->all());
+        $this->assertSame(1, DB::table('transaction_items')->count());
+        $this->assertSame([self::$returnId], DB::table('sale_returns')->pluck('id')->all());
+        $this->assertSame(1, DB::table('sale_return_items')->count());
+        $this->assertSame(2, DB::table('inventory_ledger')->count());
+        $this->assertSame(1, DB::table('login_history')->count());
+
+        // The line-item tables have no branch_id upstream — they are scoped
+        // through their parents, which is the half most likely to be written
+        // wrong and to go unnoticed, since an unscoped copy still looks
+        // populated.
+        $this->assertSame(
+            self::$transactionId,
+            DB::table('transaction_items')->value('transaction_id'),
+        );
+        $this->assertSame(
+            self::$returnId,
+            DB::table('sale_return_items')->value('sale_return_id'),
+        );
+
+        // The hydrated sale reads back as the app writes one — the naive local
+        // string and the exact decimal, not a float or an offset.
+        $sale = DB::table('transactions')->sole();
+        $this->assertSame(self::BRANCH_CODE.'-0000000001', $sale->transaction_number);
+        $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', (string) $sale->created_at);
+
+        // Audit: the seeded upstream row for this branch, plus this run's own
+        // setup entry. The other branch's audit row is not among them.
+        $this->assertSame(2, DB::table('audit_logs')->count());
+        $this->assertSame(0, DB::table('audit_logs')->where('description', 'Cebu sold one.')->count());
 
         // One audit entry, actor null — nobody has signed in on this device yet.
         $this->assertDatabaseHas('audit_logs', ['action' => 'system.setup_completed', 'user_id' => null]);
@@ -265,17 +300,47 @@ class HydrationTest extends TestCase
         $this->post(route('setup.store'), $this->payload())->assertSessionHasNoErrors();
 
         $before = DB::table('variants')->where('id', self::$variantId)->sole();
+        $sale = DB::table('transactions')->sole();
 
         // The local mirror is the one store in the system that can be thrown
         // away, so a second run must converge rather than double up or collide.
         Instance::query()->update(['hydrated_at' => null]);
 
+        // This is the run that catches an upsert on a history table: every row
+        // it copies is already local, so ON CONFLICT DO UPDATE would fire the
+        // BEFORE UPDATE immutability trigger and abort the whole wizard. A first
+        // hydrate has no conflicts and would never notice (Hydrator::INSERT_ONLY).
         $this->post(route('setup.store'), $this->payload())->assertSessionHasNoErrors();
 
         $this->assertSame(3, User::withTrashed()->count());
         $this->assertSame(1, DB::table('variants')->count());
         $this->assertSame(1, DB::table('instance')->count());
         $this->assertEquals($before, DB::table('variants')->where('id', self::$variantId)->sole());
+
+        // History converged too — not duplicated, and not rewritten.
+        $this->assertSame(1, DB::table('transactions')->count());
+        $this->assertSame(1, DB::table('transaction_items')->count());
+        $this->assertSame(2, DB::table('inventory_ledger')->count());
+        $this->assertEquals($sale, DB::table('transactions')->sole());
+    }
+
+    public function test_reconcile_after_hydration_is_a_no_op(): void
+    {
+        $this->post(route('setup.store'), $this->payload())->assertSessionHasNoErrors();
+
+        $this->assertSame(42, (int) DB::table('stock_snapshots')->where('variant_id', self::$variantId)->value('quantity'));
+
+        // LaunchProvisioner runs this on EVERY launch, so it is the first thing
+        // that happens to a freshly set-up device. Before M11.6 it zeroed the
+        // shelf: snapshots came down without the ledger behind them, so the
+        // rebuild summed an empty ledger. Now the branch's ledger comes down too
+        // and upstream a snapshot IS its ledger sum (RemoteStock::recompute()),
+        // so the rebuild has to reproduce exactly what it found.
+        $this->artisan('inventory:reconcile')
+            ->expectsOutputToContain('All snapshots already match the ledger.')
+            ->assertSuccessful();
+
+        $this->assertSame(42, (int) DB::table('stock_snapshots')->where('variant_id', self::$variantId)->value('quantity'));
     }
 
     public function test_the_printer_configuration_survives_the_settings_copy(): void
@@ -414,6 +479,74 @@ class HydrationTest extends TestCase
              values ('".$this->uuid()."', 'Hydration Cashier', 'hydration-cashier', '\$2y\$04\$abcdefghijklmnopqrstuv', 'cashier', true, '{$now}', '{$now}')",
             "insert into users (id, name, username, password, role, must_change_password, created_at, updated_at, deleted_at)
              values ('".$this->uuid()."', 'Hydration Leaver', 'hydration-leaver', '\$2y\$04\$abcdefghijklmnopqrstuv', 'cashier', false, '{$now}', '{$now}', '{$now}')",
+        ];
+
+        foreach ($sql as $statement) {
+            self::$admin->exec($statement);
+        }
+
+        $this->seedHistory();
+    }
+
+    /**
+     * Trading history for BOTH branches — the state M11.6 has to bring down for
+     * one of them and leave alone for the other.
+     *
+     * The ledger rows are what make the two branches' snapshots true: upstream a
+     * snapshot IS its ledger sum (RemoteStock::recompute()), so 42 here and 99
+     * there are seeded as movements rather than as bare figures. That is also
+     * what lets {@see test_reconcile_after_hydration_is_a_no_op()} mean
+     * anything.
+     */
+    private function seedHistory(): void
+    {
+        $branchId = self::$document['branch']['id'];
+        $ownerId = (string) self::$admin->query(
+            "select id from users where username = '".self::OWNER_USERNAME."'"
+        )->fetchColumn();
+
+        $now = now()->toDateTimeString();
+
+        self::$transactionId = $this->uuid();
+        self::$returnId = $this->uuid();
+        $itemLineId = $this->uuid();
+        $otherTransactionId = $this->uuid();
+
+        $sql = [
+            // ---- this branch ----
+            "insert into transactions (id, branch_id, transaction_number, payment_type, discount, total, user_id, created_at)
+             values ('".self::$transactionId."', '{$branchId}', '".self::BRANCH_CODE."-0000000001', 'cash', 0, 25.50, '{$ownerId}', '{$now}')",
+            "insert into transaction_items (id, transaction_id, variant_id, quantity, selling_price, cost, discount, total, created_at)
+             values ('{$itemLineId}', '".self::$transactionId."', '".self::$variantId."', 1, 25.50, 10.00, 0, 25.50, '{$now}')",
+
+            // Opening stock (+43) and the sale that took one back off (-1) —
+            // 42, the figure the snapshot above already claims.
+            "insert into inventory_ledger (id, branch_id, variant_id, quantity, resulting_snapshot, type, sale_type, reference_id, reference_type, performed_by, created_at)
+             values ('".$this->uuid()."', '{$branchId}', '".self::$variantId."', 43, 43, 'stock_adjustment', null, null, 'manual', '{$ownerId}', '{$now}')",
+            "insert into inventory_ledger (id, branch_id, variant_id, quantity, resulting_snapshot, type, sale_type, reference_id, reference_type, performed_by, created_at)
+             values ('".$this->uuid()."', '{$branchId}', '".self::$variantId."', -1, 42, 'sale', 'sale', '".self::$transactionId."', 'transaction', '{$ownerId}', '{$now}')",
+
+            "insert into sale_returns (id, branch_id, return_number, transaction_id, type, reason, total_refund, performed_by, created_at)
+             values ('".self::$returnId."', '{$branchId}', '".self::BRANCH_CODE."-R000000001', '".self::$transactionId."', 'defect', 'Damaged in transit', 0.00, '{$ownerId}', '{$now}')",
+            "insert into sale_return_items (id, sale_return_id, transaction_item_id, variant_id, quantity, selling_price, cost, refund_amount, created_at)
+             values ('".$this->uuid()."', '".self::$returnId."', '{$itemLineId}', '".self::$variantId."', 1, 25.50, 10.00, 0.00, '{$now}')",
+
+            "insert into login_history (id, branch_id, user_id, event_type, occurred_at, created_at)
+             values ('".$this->uuid()."', '{$branchId}', '{$ownerId}', 'login', '{$now}', '{$now}')",
+            "insert into audit_logs (id, branch_id, user_id, action, description, created_at)
+             values ('".$this->uuid()."', '{$branchId}', '{$ownerId}', 'sale.created', 'Sold one coffee.', '{$now}')",
+
+            // ---- the other branch, none of which may come down ----
+            "insert into transactions (id, branch_id, transaction_number, payment_type, discount, total, user_id, created_at)
+             values ('{$otherTransactionId}', '".self::$otherBranchId."', 'CEB-0000000001', 'cash', 0, 99.00, '{$ownerId}', '{$now}')",
+            "insert into transaction_items (id, transaction_id, variant_id, quantity, selling_price, cost, discount, total, created_at)
+             values ('".$this->uuid()."', '{$otherTransactionId}', '".self::$variantId."', 1, 99.00, 10.00, 0, 99.00, '{$now}')",
+            "insert into inventory_ledger (id, branch_id, variant_id, quantity, resulting_snapshot, type, sale_type, reference_id, reference_type, performed_by, created_at)
+             values ('".$this->uuid()."', '".self::$otherBranchId."', '".self::$variantId."', 99, 99, 'stock_adjustment', null, null, 'manual', '{$ownerId}', '{$now}')",
+            "insert into login_history (id, branch_id, user_id, event_type, occurred_at, created_at)
+             values ('".$this->uuid()."', '".self::$otherBranchId."', '{$ownerId}', 'login', '{$now}', '{$now}')",
+            "insert into audit_logs (id, branch_id, user_id, action, description, created_at)
+             values ('".$this->uuid()."', '".self::$otherBranchId."', '{$ownerId}', 'sale.created', 'Cebu sold one.', '{$now}')",
         ];
 
         foreach ($sql as $statement) {

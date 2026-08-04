@@ -533,10 +533,6 @@ Price Changes
 
 CSV Imports
 
-Backups
-
-Restores
-
 Settings
 
 Transactions
@@ -551,23 +547,20 @@ Business audit complete.
 
 ---
 
-# Phase 16 — Database Backup ✅
+# Phase 16 — Database Backup ✅ → removed (M11.6)
 
-## Goal
+Shipped in Evitan POS v1.0.0 and removed from Evitan Plus: Owner-only SQLite
+backup and restore, to and from an external drive, with an automatic safety
+backup before every restore.
 
-Protect business data.
+A single offline install had one copy of its data, so it needed one. A branch
+device does not: Postgres holds everything it authors, and a replacement device
+is rebuilt by importing its branch credential into the setup wizard — which
+since M11.6 hydrates the branch's history as well as the business baseline.
+Keeping both would have meant maintaining a second recovery path with its own
+failure modes (see the backup findings struck from `docs/phase-18-findings.md`).
 
-Owner Only
-
-Backup SQLite
-
-Restore SQLite
-
-Automatic backup before restore.
-
-**Milestone**
-
-Recovery complete.
+The phase number is kept so the later phases' numbering still reads.
 
 ---
 
@@ -644,10 +637,6 @@ Reports
 
 Permissions
 
-Backup
-
-Restore
-
 Negative inventory
 
 Archived records
@@ -668,8 +657,7 @@ money fixtures and serial-gaplessness proofs), a Playwright E2E suite (9 specs: 
 chain, role gating, error pages, ops surfaces, smoke), then fix sessions closing all 26
 findings — highlights: DB-level immutability triggers + model guards on all seven append-only
 tables, archived users restored to history rows (`withTrashed`), `APP_TIMEZONE=Asia/Manila`,
-MAX-based self-healing serial generators, restore refuses foreign SQLite files, profile page
-locked down, formula-safe names, `inventory:reconcile` command. Exit gates all green
+MAX-based self-healing serial generators, profile page locked down, formula-safe names, `inventory:reconcile` command. Exit gates all green
 (`php artisan test` · `npx playwright test` · `npm run types` · `npm run lint:check` ·
 `pint --test` · `phpstan`); final security review clean. Findings log + **Phase 19 handoff
 list**: `docs/phase-18-findings.md`.
@@ -711,10 +699,11 @@ and a fresh-`HOME` launch smoke (seeded owner with forced password change, 14
 immutability triggers migrated, WAL live, per-install `APP_KEY` generated,
 login serves 200, no queue worker). Beyond the packaging: once-per-launch
 provisioning (migrate → seed-if-empty → `inventory:reconcile`), per-install
-encryption key, WAL-aware backup/restore on the active connection, database
-session driver re-pinned in the native runtime, forced password change for
-seeded/reset accounts, Settings→About version surface, restore restart flow,
-and `RELEASE-NOTES.md`. Known deferrals live in the release notes (BIR ATP
+encryption key, database session driver re-pinned in the native runtime,
+forced password change for seeded/reset accounts, Settings→About version
+surface, and `RELEASE-NOTES.md`. (This phase also delivered WAL-aware
+backup/restore and the post-restore restart flow; both were removed with the
+backup feature in M11.6.) Known deferrals live in the release notes (BIR ATP
 series config, raw-USB printer transport, physical-printer checklist per
 install). Windows/macOS builds are future work.
 
@@ -787,9 +776,6 @@ Login History
         │
         ▼
 Audit Logs
-        │
-        ▼
-Backup & Restore
         │
         ▼
 UI Polish

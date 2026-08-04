@@ -18,7 +18,6 @@ class Permissions
         'access-audit-logs',
         'manage-users',
         'access-settings',
-        'access-backup',
         'view-item-cost',
         'view-consolidated-reports',
     ];

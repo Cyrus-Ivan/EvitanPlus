@@ -1,5 +1,14 @@
 # Phase 18 — Final Review Plan
 
+
+> **Superseded in part (M11.6).** The **Database Backup** feature this plan
+> scopes was removed from Evitan Plus, so its backup/restore review items — the
+> F-08 pre-copy note, the old-backup serial scenario, "Backup/restore edges",
+> the backup E2E surface and the matching checklist boxes — cover code that no
+> longer exists. Left as written because this is a dated record of how the phase
+> was run, not a description of the current app; a branch device is now rebuilt
+> through the setup wizard (`docs/sync-architecture.md` §2).
+
 Phase 18 is the **final review gate before production**, not just a testing pass. It has five
 jobs: expand test coverage over the invariants, **challenge the spec's assumptions**, review
 **security**, review **accuracy** (money math, report correctness), and review **code quality**

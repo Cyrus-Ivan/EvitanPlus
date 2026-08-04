@@ -16,7 +16,7 @@ The schema stays sync-compatible (UUID primary keys everywhere) so multi-branch 
 - **Receipt printing** — driverless ESC/POS straight to the device (USB / Bluetooth / network socket), 58mm and 80mm, auto-print, cash-drawer kick, and reprint. A printing failure **never** rolls back a completed sale.
 - **Reports** — daily / weekly / monthly / yearly sales on one page with drill-down buckets, a stacked-by-item net-sales chart, and PDF export. Totals are always recomputed from sales minus returns minus defects; COGS and profit are Owner-only.
 - **Roles & permissions** — Owner > Admin > Cashier, enforced at routes, actions, and UI. **Item cost is Owner-only** everywhere, including reports and API responses.
-- **Admin & ops** — user management (create / archive / reset password / change role), login history (login, logout, crash, forced logout, power loss), an immutable audit log of every significant action (Admin+ view, cost redacted for non-Owners), and Owner-only SQLite backup / restore — including to and from an external drive — with an automatic safety backup before every restore.
+- **Admin & ops** — user management (create / archive / reset password / change role), login history (login, logout, crash, forced logout, power loss), an immutable audit log of every significant action (Admin+ view, cost redacted for non-Owners).
 
 ## Tech stack
 
@@ -280,8 +280,7 @@ composer rig:clean    # Destroy what a killed rig left behind
    gate the same invariants in `composer verify`; this step is the
    belt-and-braces check against the real artifact.
 5. Smoke-test the installed app with a scratch `HOME`: the setup wizard
-   (import a branch credentials JSON, optional printer), a sale, a backup, a
-   restore + restart.
+   (import a branch credentials JSON, optional printer), then a sale.
 
 The packaged app provisions itself on every launch (migrate → stock
 reconcile) and generates a per-install `APP_KEY` on first boot; a device that
@@ -440,7 +439,7 @@ Deeper documentation lives in the repo:
 
 ## Project status
 
-**Released — v1.0.0** (see [`RELEASE-NOTES.md`](RELEASE-NOTES.md)). All 19 `ROADMAP.md` phases are complete: the full commerce chain (Setup, DB schema, Auth, Authorization, Settings, Inventory, Ledger, CSV Import/Export, POS, Transactions, Returns/Defects, Printing, Reports), the full admin/ops track (User Management, Login History, Audit Logs, Backup/Restore), UI polish, the Phase 18 final review (400+ backend tests, 10 Playwright E2E specs, DB-level immutability triggers), and release preparation.
+**Released — v1.0.0** (see [`RELEASE-NOTES.md`](RELEASE-NOTES.md)). All 19 `ROADMAP.md` phases are complete: the full commerce chain (Setup, DB schema, Auth, Authorization, Settings, Inventory, Ledger, CSV Import/Export, POS, Transactions, Returns/Defects, Printing, Reports), the full admin/ops track (User Management, Login History, Audit Logs), UI polish, the Phase 18 final review (400+ backend tests, 10 Playwright E2E specs, DB-level immutability triggers), and release preparation.
 
 This summary is approximate — confirm current progress against `git log` and the code.
 

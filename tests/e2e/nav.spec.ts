@@ -4,8 +4,8 @@ import { login } from './helpers';
 /**
  * Phase 18 addendum: nav smoke. Every page the sidebar and user menu link to
  * boots and renders its own document title through the built manifest — this
- * catches pages that only break outside the dev server. POS, Sales, Reports,
- * and Backup already have deep flows in the other specs.
+ * catches pages that only break outside the dev server. POS, Sales and Reports
+ * already have deep flows in the other specs.
  *
  * It also carries the focused checks that belong to no feature spec: what the
  * app calls itself, and what a screen shows when its content needs a connection

@@ -40,7 +40,7 @@ class SyncCursor extends Model
      * The watermark for $table, or null if it has never been pulled.
      *
      * Null means "read everything", which is both the first-cycle case and the
-     * repair path after a restore from a backup older than the business data.
+     * repair path when a device's bookmark has to be rewound.
      */
     public static function positionOf(string $table): ?string
     {

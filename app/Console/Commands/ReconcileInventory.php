@@ -9,8 +9,15 @@ use Illuminate\Console\Command;
 /**
  * Rebuild every stock snapshot from the ledger (the source of truth). The
  * snapshot cannot drift through the app — StockLedger::record() is the single
- * write path — so this exists for what the app cannot control: a restored or
- * hand-edited database file (Phase 18, F-11).
+ * write path — so this exists for what the app cannot control: a hand-edited
+ * database file.
+ *
+ * Safe on a hydrated till since M11.6, and it was not before. Hydration used to
+ * bring snapshots down without the ledger behind them, so a rebuild summed an
+ * empty ledger and zeroed every variant — which LaunchProvisioner runs on every
+ * launch. Now the branch's ledger comes down with them, and upstream a snapshot
+ * IS its ledger sum by construction (see RemoteStock::recompute()), so this is a
+ * no-op on a freshly hydrated device rather than a wipe.
  */
 class ReconcileInventory extends Command
 {

@@ -33,6 +33,8 @@ yarn-error.log
 /tests/manual/.runtime
 /test-results
 /playwright-report
+# The backup feature was removed in M11.6 and nothing writes here any more, but
+# dev machines still hold real business data from before then.
 /storage/backups
 /dist
 

@@ -5,8 +5,8 @@ namespace Tests\Feature\Setup;
 use App\Http\Requests\Setup\ImportCredentialsRequest;
 use App\Models\Instance;
 use App\Models\User;
-use App\Support\Backup\DirectoryPicker;
 use App\Support\Printing\PrinterSettings;
+use App\Support\Setup\CredentialsFilePicker;
 use App\Support\Sync\CredentialsDocument;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
@@ -234,21 +234,11 @@ class InitialSetupTest extends TestCase
 
     private function fakePicker(?string $path): void
     {
-        $this->app->instance(DirectoryPicker::class, new class($path) implements DirectoryPicker
+        $this->app->instance(CredentialsFilePicker::class, new class($path) implements CredentialsFilePicker
         {
             public function __construct(private ?string $path) {}
 
-            public function pickDirectory(?string $default = null): ?string
-            {
-                return null;
-            }
-
-            public function pickFile(?string $default = null): ?string
-            {
-                return null;
-            }
-
-            public function pickCredentialsFile(?string $default = null): ?string
+            public function pick(?string $default = null): ?string
             {
                 return $this->path;
             }

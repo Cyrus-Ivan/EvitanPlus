@@ -4,8 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Exceptions\SetupFailedException;
 use App\Http\Requests\Setup\ImportCredentialsRequest;
-use App\Support\Backup\DirectoryPicker;
 use App\Support\Printing\PrinterSettings;
+use App\Support\Setup\CredentialsFilePicker;
 use App\Support\Sync\ConnectAndHydrate;
 use App\Support\Sync\CredentialsDocument;
 use Illuminate\Http\RedirectResponse;
@@ -46,14 +46,12 @@ class SetupController extends Controller
     /**
      * Open the OS file picker and hand the chosen path back to the form.
      *
-     * A POST because it has a side effect the user sees (a modal window), and
-     * because it mirrors BackupController's external-drive actions, which is
-     * where this picker already lives.
+     * A POST because it has a side effect the user sees (a modal window).
      */
-    public function browse(DirectoryPicker $picker): RedirectResponse
+    public function browse(CredentialsFilePicker $picker): RedirectResponse
     {
         try {
-            $path = $picker->pickCredentialsFile();
+            $path = $picker->pick();
         } catch (Throwable $e) {
             return back()->withErrors(['credentials_path' => $e->getMessage()]);
         }

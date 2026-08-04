@@ -5,11 +5,11 @@ namespace App\Providers;
 use App\Enums\UserRole;
 use App\Models\User;
 use App\Support\Auth\SessionManager;
-use App\Support\Backup\DirectoryPicker;
-use App\Support\Backup\NativeDialogPicker;
 use App\Support\Boot\EncryptionKeyBootstrapper;
 use App\Support\Search\LikeQuery;
 use App\Support\Settings\ApplyBusinessTimezone;
+use App\Support\Setup\CredentialsFilePicker;
+use App\Support\Setup\NativeCredentialsFilePicker;
 use App\Support\Sync\OnlineWrite;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
@@ -23,7 +23,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        $this->app->bind(DirectoryPicker::class, NativeDialogPicker::class);
+        $this->app->bind(CredentialsFilePicker::class, NativeCredentialsFilePicker::class);
 
         // Singleton because OnlineWrite::mirror() records against the run
         // currently in progress. A controller and the importer it calls must
@@ -109,7 +109,6 @@ class AppServiceProvider extends ServiceProvider
 
         // Owner-only.
         Gate::define('access-settings', fn (User $user): bool => $user->isOwner());
-        Gate::define('access-backup', fn (User $user): bool => $user->isOwner());
         Gate::define('view-item-cost', fn (User $user): bool => $user->isOwner());
         // Cross-branch figures read live from the business database (M11). The
         // branch-local report on the same screen stays Admin+; only the scope

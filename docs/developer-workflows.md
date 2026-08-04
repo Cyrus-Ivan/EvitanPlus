@@ -188,10 +188,12 @@ Each of these has cost real time on this project.
 - **`php artisan serve` drops env overrides** — its child process does not inherit
   `DB_DATABASE` / `APP_DEBUG`. Run `php -S` from `public/` with the framework's
   `server.php`, as `serve.sh`, the rig and the verify skill all do.
-- **Never run `php artisan inventory:reconcile` against a hydrated till.** It rebuilds
-  snapshots from the *local* ledger, and a hydrated device has snapshots with no ledger
-  behind them — it would zero every till. The command exists for a restored or hand-edited
-  database file, not for a branch.
+- **`php artisan inventory:reconcile` is safe on a hydrated till as of M11.6, and was
+  not before.** It rebuilds snapshots from the *local* ledger; hydration used to bring
+  snapshots down with no ledger behind them, so a rebuild zeroed every variant — and
+  `LaunchProvisioner` runs it on every launch. Hydration now copies the branch's ledger
+  too, and upstream a snapshot is *defined* as its ledger sum
+  (`RemoteStock::recompute()`), so the rebuild reproduces what it found.
 - **Feature tests render through the built Vite manifest.** After adding a page, run
   `npm run build` or tests fail with "Unable to locate file in Vite manifest".
 - **`pkill -f <pattern>` matches your own shell's command line** and kills the compound

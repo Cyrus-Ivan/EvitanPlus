@@ -6,7 +6,6 @@ import { type NavGroup } from '@/types';
 import { Link } from '@inertiajs/react';
 import {
     ChartColumn,
-    DatabaseBackup,
     FileSpreadsheet,
     History,
     Package,
@@ -52,7 +51,6 @@ const mainNavGroups: NavGroup[] = [
         items: [
             { title: 'User Management', url: '/users', icon: UsersRound, permission: 'manage-users' },
             { title: 'Business Settings', url: '/business-settings', icon: Store, permission: 'access-settings' },
-            { title: 'Database Backup', url: '/backup', icon: DatabaseBackup, permission: 'access-backup' },
         ],
     },
 ];

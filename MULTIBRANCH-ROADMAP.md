@@ -454,8 +454,9 @@ Replace the local Owner-creation wizard with a connect-and-hydrate flow.
 >   `afterRefreshingDatabase()`** — a trait's method beats an inherited one, so
 >   `RefreshDatabase`'s own empty version of that hook silently replaces the
 >   parent's, and the failure presents as "the gate ignores the instance row".
-> - **The JSON arrives by path, not upload**, reusing `DirectoryPicker` (the
->   backup/restore picker) for a **Browse** button in the desktop build. The
+> - **The JSON arrives by path, not upload**, reusing the native OS file picker
+>   for a **Browse** button in the desktop build (`DirectoryPicker`, renamed to
+>   `CredentialsFilePicker` in M11.6 when backup — its other caller — went). The
 >   reason is the one-time rule: knowing the real path is what lets the wizard
 >   *delete* the credential after importing it, which §9 asks for and an upload
 >   cannot offer. The checkbox is on by default and the toast says which happened.
@@ -498,8 +499,8 @@ Replace the local Owner-creation wizard with a connect-and-hydrate flow.
 >   against a real provisioned business — funnel → import → hydrate → log in as
 >   the pre-created Owner → the hydrated catalog on the POS screen with this
 >   branch's stock quantities, then the schema and role dropped. The one path no
->   suite covers is the native file dialog itself, which is the same
->   `Dialog::new()->files()` call backup/restore has shipped since Phase 17.
+>   suite covers is the native file dialog itself, a plain
+>   `Dialog::new()->files()` call.
 
 ## Tasks
 - Import JSON → **encrypt at rest** with per-install `APP_KEY` → prompt to remove JSON.
@@ -1384,6 +1385,77 @@ in where".
 ## Milestone
 A till names its business and branch on every screen including the login page, syncs before
 anyone signs in, and an Admin online can see which branch each session happened at.
+
+---
+
+# Phase M11.6 — Remove backup; hydrate a branch's history ✅
+
+## Goal
+
+Retire the Database Backup feature, and close the gap that removing it opens.
+
+Backup shipped in Evitan POS v1.0.0 because a single offline install had exactly
+one copy of its data. A branch does not: Postgres holds everything it authors,
+and a dead device is replaced by importing its credentials JSON into the wizard.
+Keeping both meant maintaining a second recovery path with its own failure modes
+(serial regression on restoring an old backup, WAL interaction, restore-over-data
+— see the backup rows in `docs/phase-18-findings.md`).
+
+But "restored via the wizard" was only three-quarters true. `Hydrator` copied the
+baseline and skipped history, so a replacement till came up with the right catalog
+and stock and an empty `/transactions`, `/audit-logs` and `/login-history` — no
+branch-local report figures and no receipt to reprint. Removing backup makes
+hydration the whole answer, so hydration has to carry history too.
+
+## Tasks
+- **Hydrate this branch's history**: `transactions`, `transaction_items`,
+  `sale_returns`, `sale_return_items`, `inventory_ledger`, `login_history`,
+  `audit_logs`, `import_history` — in FK order, scoped to this branch, written
+  `insertOrIgnore` because seven of the eight carry immutability triggers.
+- **Remove backup** end to end: controller, manager, restart controller, page,
+  routes, the `access-backup` gate and ability, the `restart_required` flash,
+  the sidebar entry, and both dedicated test files.
+- **Rehome the picker**: `App\Support\Backup\DirectoryPicker` was shared with
+  the setup wizard; it becomes `App\Support\Setup\CredentialsFilePicker` with
+  only the method the wizard uses.
+
+## As built
+> - **No schema, grant or console change.** All eight history tables were already
+>   in `SchemaParityTest::MIRRORED` and already carried `BranchGrants::SELECT`, so
+>   the branch role could always read its own history back — nothing had asked it
+>   to. First phase since M11 needing no `schema:reapply-grants`.
+> - **Branch scoping is detected, not listed.** `RowMapper::isBranchScoped()`
+>   already introspected Postgres for a `branch_id` column, so only the two
+>   line-item tables need naming (`Hydrator::PARENT_SCOPED`) — they inherit their
+>   branch from a parent and are filtered by subquery.
+> - **`upsert` would have shipped and passed.** The existing `copyTable()` used
+>   `upsert($rows, ['id'])`, whose `ON CONFLICT DO UPDATE` arm fires the
+>   `BEFORE UPDATE` immutability trigger. A first hydrate has no conflicts, so
+>   only a **re-hydrate** fails — which is exactly what `Hydrator`'s docblock
+>   promises to support and what `test_hydration_is_re_runnable_from_scratch`
+>   now proves.
+> - **It fixes a latent wipe.** `LaunchProvisioner` runs `inventory:reconcile` on
+>   every launch, rebuilding snapshots from the local ledger. A pre-M11.6
+>   hydrated device had snapshots with no ledger behind them, so the first launch
+>   after setup zeroed every variant — `docs/developer-workflows.md` warned
+>   against running the command by hand without noticing the boot path already
+>   did. Safe now, because upstream a snapshot *is* its ledger sum
+>   (`RemoteStock::recompute()`).
+> - **One assertion was under-specified rather than wrong.**
+>   `PushTest`'s serial-floor test read `Transaction::query()->value(...)` on what
+>   used to be a single-row table; with history hydrated it answered with the
+>   branch's past sale. Now ordered explicitly.
+> - **`import_history` hydrates empty.** It is mirrored and granted but nothing
+>   pushes it (`ImportHistory` has no `PushedUpward`) — a pre-existing gap,
+>   recorded in `docs/sync-architecture.md` rather than fixed here.
+> - **Unsynced offline work is still unrecoverable**, and nothing in the product
+>   claims otherwise any more. That is the residual risk backup used to blunt.
+
+**Milestone**
+
+A replacement device rebuilt from a credentials file comes up whole — its catalog,
+its staff, its stock *and* its trading history — and nothing offers to back up a
+file any more.
 
 ---
 

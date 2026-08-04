@@ -46,7 +46,8 @@ screenshots. Rewrite from that pattern.
   `php artisan migrate --force` only (no seed) — every route then redirects to
   `/setup` (4 client-side steps, one atomic POST, auto-login to `/pos`).
 - Error pages: `/definitely-missing` (404) and role-gated routes (e.g. admin →
-  `/backup` = 403) with `APP_DEBUG=false`; expect Inertia component `error`.
+  `/business-settings` = 403) with `APP_DEBUG=false`; expect Inertia component
+  `error`.
 - POS: product tiles are buttons with `.line-clamp-2` labels; search input
   placeholder starts with "Search or scan"; `#cash-received`; F9 = checkout.
 - Dialogs: `[role="dialog"][data-state="open"]`; toasts: `[data-sonner-toast]`.

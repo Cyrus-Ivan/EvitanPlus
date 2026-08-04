@@ -8,7 +8,6 @@ use App\Models\Category;
 use App\Models\Transaction;
 use App\Models\User;
 use App\Models\Variant;
-use App\Support\Backup\DatabaseBackupManager;
 use App\Support\Inventory\StockLedger;
 use App\Support\Sales\ProcessSaleReturn;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -193,27 +192,6 @@ class AuditLoggingTest extends TestCase
 
         $log = AuditLog::where('action', 'settings.updated')->firstOrFail();
         $this->assertArrayHasKey('business_name', $log->new_values);
-    }
-
-    public function test_backup_creation_is_audited()
-    {
-        $workDir = sys_get_temp_dir().'/evitan-audit-backup-'.uniqid();
-        mkdir($workDir, 0755, true);
-        $dbPath = $workDir.'/nativephp.sqlite';
-        file_put_contents($dbPath, "SQLite format 3\0live-data");
-        $this->app->instance(DatabaseBackupManager::class, new DatabaseBackupManager($dbPath, $workDir.'/backups'));
-
-        $owner = User::factory()->owner()->create();
-
-        $this->actingAs($owner)->post(route('backup.store'))->assertSessionHasNoErrors();
-
-        $this->assertDatabaseHas('audit_logs', ['action' => 'backup.created', 'user_id' => $owner->id]);
-
-        // cleanup
-        array_map('unlink', glob($workDir.'/backups/*') ?: []);
-        @rmdir($workDir.'/backups');
-        @unlink($dbPath);
-        @rmdir($workDir);
     }
 
     public function test_audit_rows_are_immutable()

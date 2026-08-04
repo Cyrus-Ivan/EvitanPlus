@@ -183,8 +183,8 @@ class PhpBinaryTest extends TestCase
      * @var array<string, string>
      */
     private const ALLOWED_GAPS = [
-        // Nothing in the app compresses with bzip2 — backups use zlib/zip.
-        'bz2' => 'unused: DatabaseBackupManager uses zlib/ZipArchive',
+        // Nothing in the app compresses with bzip2, or with anything else.
+        'bz2' => 'unused: no code path in the app compresses data',
     ];
 
     /**

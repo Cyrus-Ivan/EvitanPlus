@@ -3,7 +3,7 @@
 > **Naming:** the product was renamed from **Evitan POS** to **Evitan Plus**
 > after v1.0.0. The v1.0.0 entry below is left as released — it shipped under
 > the old name, and its file paths (`~/.config/evitan-pos/`) are where a real
-> v1.0.0 install actually stores its database, backups, and encryption key.
+> v1.0.0 install actually stores its database and encryption key.
 > Builds from the rename onward use the name **Evitan Plus**, application id
 > `com.evitan.plus`, artifacts `Evitan Plus-<version>.AppImage` /
 > `evitan-plus_<version>_amd64.deb`, and data under `~/.config/evitan-plus/`.
@@ -22,8 +22,7 @@ NativePHP (Electron) over Laravel 12 + React 19 + SQLite.
   On first launch a pre-login setup wizard creates the Owner account, the
   business identity (name, address, TIN, receipt footer), the business timezone
   and currency symbol, and — optionally — the receipt printer, in one atomic
-  step, then signs you straight in. Existing installs and restored backups never
-  see the wizard.
+  step, then signs you straight in. Existing installs never see the wizard.
 - **Configurable timezone & currency** — business timezone (default
   `Asia/Manila`) and currency symbol (default `₱`), set in the wizard and
   editable later under Business Settings; both apply across the POS, reports, and
@@ -50,8 +49,9 @@ NativePHP (Electron) over Laravel 12 + React 19 + SQLite.
   stacked-by-item net-sales chart, PDF export. Totals always recomputed as
   sales − returns − defects; profit/COGS are Owner-only.
 - **Admin & ops** — user management (Owner > Admin > Cashier), login history
-  with crash detection, immutable audit logs, Owner-only database backup and
-  restore (including to/from external drives) with automatic safety backups.
+  with crash detection, immutable audit logs, and Owner-only database backup and
+  restore. *(Backup was removed after v1.0.0 — Evitan Plus keeps a branch's data
+  in the business database and rebuilds a replacement device from it.)*
 
 ### Installing
 
@@ -79,13 +79,8 @@ Everything is stored per user account under `~/.config/evitan-pos/`:
 | What | Where |
 | --- | --- |
 | Database | `~/.config/evitan-pos/database/database.sqlite` |
-| Backups | `~/.config/evitan-pos/storage/backups/` |
 | Logs (rotating, 3 days) | `~/.config/evitan-pos/storage/logs/` |
 | Per-install encryption key | `~/.config/evitan-pos/storage/app/app.key` |
-
-Back up regularly from **Database Backup** — ideally to an external drive.
-After restoring a backup, restart the app when prompted: migrations and a
-stock-ledger reconcile run on launch to finish the restore.
 
 ### Known limitations
 
@@ -103,8 +98,6 @@ stock-ledger reconcile run on launch to finish the restore.
   stable — historical timestamps are stored in the business timezone.
 - **No auto-update.** Install new releases manually over the old one — your
   data directory is preserved.
-- **Restoring an older backup** permanently discards sales made after it was
-  created, and their printed receipt serials will be reissued to future sales.
 
 ### Manual release checklist (per install)
 
@@ -112,4 +105,3 @@ stock-ledger reconcile run on launch to finish the restore.
       real sale print, one reprint, cash-drawer kick.
 - [ ] First-launch flow: initial setup wizard completed (Owner account,
       business details, timezone/currency, printer), lands signed in on POS.
-- [ ] Backup created and restored once; app restarted after restore.

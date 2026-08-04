@@ -57,17 +57,54 @@ message says, submit again"), there is no half-imported state, and no screen has
 for one. It also means `instance.hydrated_at` cannot lie, which matters because that
 column is the fresh-install signal read on every request.
 
-`Hydrator` copies the catalog, **all** users business-wide, the settings, and this
-branch's stock snapshot — every one of them online-authoritative, so copying them down
-cannot lose a local edit. It deliberately does **not** copy history. The consequence is
-worth stating: a device replacing an existing branch's hardware starts with empty
-*branch-local* reports. Its serial does not restart, because `Hydrator::serialFloors()`
-brings down the highest transaction and return numbers Postgres already holds for the
-branch; the missing history is read through M11's consolidated report instead.
+`Hydrator` copies two groups. The **online-authoritative baseline** — the catalog, **all**
+users business-wide, the settings, and this branch's stock snapshot — where copying down
+cannot lose a local edit because the till never writes them offline. And, since **M11.6**,
+**this branch's history**: `transactions`, `transaction_items`, `sale_returns`,
+`sale_return_items`, `inventory_ledger`, `login_history`, `audit_logs` and
+`import_history`.
+
+The history half exists because hydration is now the **only** way to rebuild a device.
+Until M11.6 the Owner could restore a file backup instead, so a hydrate that skipped
+history left a gap somebody else could close; with that feature removed, three-quarters of
+a device is not a recovery. A replacement till used to come up with the right catalog and
+stock but an empty `/transactions`, `/audit-logs` and `/login-history`, no branch-local
+report figures, and no receipt to reprint.
+
+Three things make the history copy correct, and each of them fails silently if got wrong:
+
+- **It is scoped to this branch.** Directly by `branch_id` — detected per table through
+  `RowMapper::isBranchScoped()` rather than listed — except `transaction_items` and
+  `sale_return_items`, which Postgres deliberately does not scope (a line inherits its
+  parent's branch) and which are filtered through a subquery on that parent
+  (`Hydrator::PARENT_SCOPED`). The local schema has no `branch_id` column, so an unscoped
+  copy would land another branch's trading here with nothing to mark it as anyone else's.
+- **It is insert-only** (`Hydrator::INSERT_ONLY`, `insertOrIgnore`). Seven of the eight
+  tables carry `BEFORE UPDATE` immutability triggers, and an upsert's `ON CONFLICT DO
+  UPDATE` arm fires them. A first hydrate has no conflicts and would never notice; a
+  **re-hydrate** would abort on the first row it had already copied.
+- **It makes `inventory:reconcile` a no-op instead of a wipe.** `LaunchProvisioner` runs
+  that command on every launch, and it rebuilds snapshots from the *local* ledger — so
+  before M11.6 a freshly hydrated device had snapshots with no ledger behind them and the
+  first launch zeroed every variant. It reproduces them now because upstream a snapshot
+  *is* its ledger sum by construction (`RemoteStock::recompute()`), which is why "write a
+  ledger entry, not just a snapshot" binds anything that seeds opening stock.
+
+`Hydrator::serialFloors()` is unchanged and still read: with `transactions` copied the
+generators would find the branch's high-water mark locally too, but the floors on
+`instance` cost nothing and keep them correct however the copy is scoped later.
 
 Hydration writes through the **query builder, never models** — models would fire the
 single-Owner guard on users arriving from the authority, re-hash already-hashed passwords,
-regenerate UUIDs the business owns, and hide the very `deleted_at` values being copied.
+regenerate UUIDs the business owns, hide the very `deleted_at` values being copied, and —
+now that history is in reach — trip the `Immutable` trait and enqueue every pulled-back row
+into the outbox to be pushed straight up again.
+
+**What is still not recoverable.** Work a device did offline and never pushed dies with the
+hardware: nothing else has a copy, and after M11.6 nothing in the product claims otherwise.
+`import_history` is hydrated but will be empty in practice — it is mirrored and granted, but
+nothing pushes it (`ImportHistory` has no `PushedUpward`), which is a pre-existing gap
+rather than something M11.6 introduced.
 
 ---
 

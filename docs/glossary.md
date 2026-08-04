@@ -526,6 +526,24 @@ timer to stop a till being "stuck offline indefinitely". Once the pull exists it
 **only** trigger for an already-online till, because nothing local signals upstream change — so
 it is the freshness bound on shared data, not merely a safety net. One interval with no knob,
 which is §11.3's actual constraint, is untouched.
+✗ **Not** something that refreshes the screen. Like every automatic trigger it brings back the
+indicator's prop alone — see **Manual sync**.
+
+### Manual sync
+A cycle asked for by a **person pressing the Sync now button**, as against the four automatic
+triggers. The cycle itself is identical; what differs is what comes back — a manual sync also
+**re-runs the current page's controller**, an automatic one refreshes only the shared `sync`
+prop the indicator reads.
+*Anchor:* `run(true)` from `SyncIndicator`'s `onClick`, against the bare `run()` of
+`useSyncTriggers()`, in `resources/js/hooks/use-sync.ts`.
+✗ **Not** an optimisation of the automatic triggers, and not conditional on the cycle moving
+anything. The consolidated `scope` views are **online reads** inside their controller and
+`login_history` is not in the puller at all, so for those screens re-running the controller is
+the *only* mechanism that shows another branch's rows — a refresh gated on `pulled > 0` would
+skip exactly the case it exists for.
+✗ **Not** withheld from the automatic triggers because state would be lost. Inertia's
+`reload()` forces `preserveState`, so nothing is ever lost; the reason is **movement** — a
+background cycle must not re-sort a POS grid or shift table rows under someone mid-task.
 
 ### Outbox
 `sync_outbox` — the local FIFO of **rows waiting to push**. Stores *pointers, not payloads*:

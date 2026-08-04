@@ -187,7 +187,15 @@ export function SyncIndicator() {
                         fixed height, and two lines have to set their own. */}
                     <Button
                         variant="outline"
-                        onClick={run}
+                        // Wrapped, and NOT `onClick={run}`. This is the app's
+                        // only caller that refreshes the page as well as the
+                        // indicator, and passing the flag by hand is the only
+                        // honest way to say so: bare `onClick={run}` would hand
+                        // `run` the click MouseEvent as its first argument,
+                        // which is truthy, so it would do the right thing
+                        // entirely by accident and invert the moment anything
+                        // wrapped this handler.
+                        onClick={() => run(true)}
                         disabled={busy}
                         aria-label={busy ? 'Syncing now' : `Sync now — ${status}`}
                         className={cn('h-auto gap-2 px-3 py-1.5 font-normal shadow-sm', tone)}

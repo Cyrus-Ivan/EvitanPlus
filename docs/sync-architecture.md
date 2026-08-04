@@ -151,6 +151,24 @@ The throttled triggers share one due-check, which is what makes a till someone i
 through sync about every five minutes rather than once per click. Since M7 the timer's
 real job is the **pull**: nothing local signals that another branch changed a price.
 
+### What a finished cycle refreshes on screen
+
+All four triggers above refresh the **indicator's shared `sync` prop and nothing else**. The
+**Sync now** button additionally re-runs the current page's controller — `run(true)`, a full
+`router.reload()`. The asymmetry is the point: a person who pressed a button expects the
+screen to change, and a cashier three items into a sale does not, so an automatic cycle never
+re-sorts a POS grid or shifts rows between pages of a table under someone's hands. Nothing is
+*lost* either way — Inertia's `reload()` forces `preserveState`/`preserveScroll` after the
+caller's options, so the page never remounts and carts, half-typed forms and on-screen
+validation errors all survive.
+
+The button needs the wider refresh because a **pull cannot substitute for it**. The
+consolidated `scope` views on `/reports` and `/login-history` (§11) are online reads
+performed *inside* their controller, and `login_history` is not in the puller at all — so
+another branch's rows reach the screen when the controller runs again, and by no other
+mechanism. The refresh is therefore not conditional on the cycle having pushed or pulled
+anything: the counts `SyncController` returns would read `pulled: 0` in exactly that case.
+
 ---
 
 ## 4. Going up: outbox and push

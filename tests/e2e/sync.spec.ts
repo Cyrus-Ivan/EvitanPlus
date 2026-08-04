@@ -20,8 +20,8 @@ import { addToCart, login, toast } from './helpers';
  * already hydrated, and a reading corroborated against a `data-page` attribute
  * that a client-side visit never updates. A network observer attaches before
  * the first navigation and cannot race hydration, and the follow-up
- * `router.reload({ only: ['sync'] })` after every cycle is a GET, so it is never
- * miscounted.
+ * `router.reload()` after every cycle is a GET whether it asks for the `sync`
+ * prop alone or the whole page, so it is never miscounted.
  *
  * ## Each assertion was confirmed to fail
  *
@@ -50,6 +50,34 @@ function cycleCounter(page: Page): () => number {
     });
 
     return () => cycles;
+}
+
+/**
+ * The Inertia reloads of ONE path, in order, each recorded as the partial prop
+ * list it asked for or `'full'`.
+ *
+ * Network layer again, for the reason above, and the header does the whole job:
+ * Inertia sets `X-Inertia-Partial-Data` only on a partial visit, so its presence
+ * IS the distinction under test and no page script has to be trusted for it.
+ *
+ * Unlike `cycleCounter` this attaches AFTER arriving at the path. Navigating
+ * onto a page is itself a full Inertia GET of it, and would be indistinguishable
+ * from the reload being measured.
+ */
+function reloadsOf(page: Page, path: string): () => string[] {
+    const reloads: string[] = [];
+
+    page.on('request', (request) => {
+        const headers = request.headers();
+
+        if (request.method() !== 'GET' || new URL(request.url()).pathname !== path || !headers['x-inertia']) {
+            return;
+        }
+
+        reloads.push(headers['x-inertia-partial-data'] ?? 'full');
+    });
+
+    return () => reloads;
 }
 
 /**
@@ -132,6 +160,36 @@ test('the backstop runs a cycle at five minutes and not before', async ({ page }
     // interval is the freshness bound on shared data, not a safety net.
     await page.clock.fastForward('01:30');
     await expect.poll(cycles).toBe(2);
+});
+
+test('a manual sync refreshes the screen, an automatic one only the indicator', async ({ page }) => {
+    await page.clock.install();
+
+    const cycles = cycleCounter(page);
+
+    await login(page, 'owner');
+    await expect.poll(cycles).toBe(1);
+
+    // Login History because it is one of the two screens that CANNOT learn
+    // another branch's rows any other way: at a scope wider than this branch it
+    // reads Postgres live inside its controller, and `login_history` is not in
+    // the puller, so re-running the controller is the only mechanism there is.
+    await follow(page, 'Login History', '/login-history');
+
+    const reloads = reloadsOf(page, '/login-history');
+
+    // The backstop, standing in for all four automatic triggers: the indicator's
+    // prop and nothing else, so a table nobody asked to move does not move.
+    await page.clock.fastForward('05:30');
+    await expect.poll(cycles).toBe(2);
+    await expect.poll(reloads).toEqual(['sync']);
+
+    // The button, which is the whole point. `/^Sync now/` is the idle
+    // aria-label and does not match the busy one ('Syncing now'); the click
+    // auto-waits out the disabled window either way.
+    await page.getByRole('button', { name: /^Sync now/ }).click();
+    await expect.poll(cycles).toBe(3);
+    await expect.poll(reloads).toEqual(['sync', 'full']);
 });
 
 test('a backlog that cannot clear does not run a cycle per navigation', async ({ page }) => {

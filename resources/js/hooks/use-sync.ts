@@ -71,6 +71,23 @@ function xsrfToken(): string {
  * reload of that one prop, which is what makes a sync fired from the POS screen
  * show up in the header without either component knowing about the other.
  *
+ * ## Why a PERSON asking is a different case from a timer asking
+ *
+ * `refreshPage` re-runs the current page's controller as well, and only the
+ * button passes it. A cycle is not the only way a screen goes stale, and for
+ * some screens it is not a way at all: `/login-history` and `/reports` at a
+ * scope wider than this branch read Postgres LIVE inside their controller, so
+ * another branch's rows arrive by the controller running again and by nothing
+ * else — no amount of pulling puts them in SQLite. Before this flag existed,
+ * pressing a button labelled "Sync" updated the button and left the table
+ * beneath it untouched, and the only way to see another branch's activity was
+ * to reload the browser.
+ *
+ * It is deliberately NOT conditional on the cycle having moved anything. The
+ * response carries `pushed`/`pulled` counts and gating on them looks free, but
+ * `login_history` is not in the puller: the case above would report `pulled: 0`
+ * and skip the refresh that is the entire point.
+ *
  * `run()` never rejects. A cycle already records every outcome server-side, and
  * this is called from a page that has just completed a sale: nothing about a
  * failed sync may surface as an error over a transaction that is committed,
@@ -80,7 +97,7 @@ export function useSync() {
     const { sync } = usePage<SharedData>().props;
     const [busy, setBusy] = useState(false);
 
-    const run = useCallback(async () => {
+    const run = useCallback(async (refreshPage = false) => {
         // The backstop timer, the outbox listener and a reconnect can all land
         // together; one cycle at a time is enough, and a second would only
         // contend for the same rows. Module-scoped, so a navigation landing
@@ -106,9 +123,22 @@ export function useSync() {
             inFlight = false;
             setBusy(false);
 
-            // Only the shared sync prop comes back, so the page the cashier is
-            // looking at — cart included — is left exactly as it was.
-            router.reload({ only: ['sync'] });
+            // What comes back: the indicator's prop alone, or the whole screen.
+            //
+            // Nothing is LOST either way, and the reason this used to say
+            // otherwise was wrong. Inertia's reload() spreads
+            // `preserveState`/`preserveScroll` AFTER the caller's options, so a
+            // caller cannot switch them off: the page component is never
+            // remounted, and the POS cart, every half-typed useForm field and
+            // even the validation errors on screen all survive a full reload.
+            //
+            // The narrowing is about MOVEMENT, not loss. A full reload replaces
+            // `products`, so a background cycle could re-sort or grey out a POS
+            // tile — and shift rows between pages of any paginated table — under
+            // someone mid-task. A person who just pressed Sync is expecting the
+            // screen to change; a cashier three items into a sale is not, which
+            // is why only the button asks for it.
+            router.reload(refreshPage ? {} : { only: ['sync'] });
         }
     }, []);
 
@@ -139,6 +169,11 @@ export function useSync() {
  * nothing at all on Branch B, so B's outbox stays empty however much changes
  * upstream — which is why the timer survives, and why its job is now the pull
  * rather than the push.
+ *
+ * All four are the AUTOMATIC kind, so none of them passes `refreshPage`: they
+ * fire on a clock or on an event, at a moment nobody chose, and the screen a
+ * person is working on may not move underneath them. The button in
+ * {@link SyncIndicator} is the only caller that does — see {@link useSync}.
  */
 export function useSyncTriggers() {
     const { sync, run } = useSync();

@@ -81,3 +81,37 @@ test('a consolidated report this device cannot fetch falls back and says so', as
     // And no per-branch table, because there are no other branches in these figures.
     await expect(page.getByRole('columnheader', { name: 'Branch' })).toBeHidden();
 });
+
+test('a lagging navigation shows the loading bar', async ({ page }) => {
+    await login(page, 'owner');
+
+    // The indicator is deliberately silent for the first 150ms and gone the
+    // instant the page lands, so a normal navigation never shows it long enough
+    // to observe. Holding the response open manufactures the one condition it
+    // exists for — the lag that used to look like a frozen screen.
+    await page.route('**/inventory', async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await route.continue();
+    });
+
+    // A sidebar click, not page.goto: the bar rides Inertia's client-side visit.
+    // It is also the case that used to fail — see the prefetch note in
+    // `nav-main.tsx`, which is what this test is really guarding.
+    await page.getByRole('link', { name: 'Inventory', exact: true }).click();
+
+    // Inertia owns this id — the element is created by its progress component at
+    // runtime, so a selector is the only handle. Same exception the suite
+    // already makes for [data-sonner-toast].
+    const bar = page.locator('#nprogress .bar');
+    await expect(bar).toBeVisible();
+
+    // Drawn along the top edge, and drawn at all: the failure this guards is a
+    // prefetch hiding the element mid-navigation, which leaves it in the DOM
+    // with an empty box rather than removing it.
+    const box = (await bar.boundingBox())!;
+    expect(box.y).toBeLessThan(4);
+    expect(box.height).toBeGreaterThan(0);
+
+    await page.waitForURL('**/inventory');
+    await expect(bar).toBeHidden();
+});

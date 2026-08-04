@@ -48,7 +48,9 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
                                     'bg-muted': currentPath === item.url,
                                 })}
                             >
-                                <Link href={item.url} prefetch>
+                                {/* "click" for the same reason as every other
+                                    nav link — see `nav-main.tsx`. */}
+                                <Link href={item.url} prefetch="click">
                                     {item.title}
                                 </Link>
                             </Button>

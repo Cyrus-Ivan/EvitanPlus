@@ -117,6 +117,8 @@
     --sidebar-accent-foreground: hsl(0, 0%, 30%);
     --sidebar-border: hsl(0, 0%, 91%);
     --sidebar-ring: hsl(217.2, 91.2%, 59.8%);
+    /* The page-loading bar. #4B5563 — the colour it has always had. */
+    --progress: hsl(215, 14%, 34%);
 }
 
 .dark {
@@ -156,6 +158,9 @@
     --sidebar-accent-foreground: hsl(240, 4.8%, 95.9%);
     --sidebar-border: hsl(0, 0%, 15.9%);
     --sidebar-ring: hsl(217.2, 91.2%, 59.8%);
+    /* Not the light value: #4B5563 is a dark grey on a near-black background,
+       which is the same invisibility this change exists to fix. */
+    --progress: hsl(0, 0%, 80%);
 }
 
 @layer base {
@@ -194,4 +199,53 @@
     summary {
         cursor: pointer;
     }
+}
+
+/*
+ * The page-loading bar — Inertia's own progress component, restyled.
+ *
+ * There has always been one and nobody saw it, for three reasons: it was hidden
+ * outright on most navigations (the prefetch clash — see `nav-main.tsx`, which
+ * is the fix that matters), it was 2px of dark grey invisible against the dark
+ * theme, and it stayed silent for 250ms. This block is the second of those.
+ *
+ * `progress.includeCSS: false` in app.tsx stops Inertia injecting NProgress's
+ * stylesheet, so EVERY rule the element needs lives here instead — including the
+ * pointer-events guard, which is otherwise part of the block being declined.
+ * These are NProgress's own values but for the height and the colour: the engine,
+ * the trickle, the timing and the position are still Inertia's.
+ *
+ * Unlayered on purpose. It must beat Tailwind's `@layer base` without a
+ * specificity contest, and it styles an element created by Inertia at runtime
+ * that no Tailwind class can reach.
+ */
+#nprogress {
+    pointer-events: none;
+}
+
+#nprogress .bar {
+    position: fixed;
+    /* Above the dialogs (z-50) — a dialog submit is exactly when you are
+       waiting — and clear of Sonner's toasts. NProgress's own value. */
+    z-index: 1031;
+    top: 0;
+    left: 0;
+    width: 100%;
+    /* 2px is what nobody noticed. */
+    height: 3px;
+    background: var(--progress);
+}
+
+/* The glow at the leading edge, at NProgress's own angle. */
+#nprogress .peg {
+    display: block;
+    position: absolute;
+    right: 0;
+    width: 100px;
+    height: 100%;
+    box-shadow:
+        0 0 10px var(--progress),
+        0 0 5px var(--progress);
+    opacity: 1;
+    transform: rotate(3deg) translate(0, -4px);
 }

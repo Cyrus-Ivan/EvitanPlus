@@ -35,7 +35,24 @@ export function NavMain({ groups = [] }: { groups: NavGroup[] }) {
                         {group.items.map((item) => (
                             <SidebarMenuItem key={item.title}>
                                 <SidebarMenuButton asChild isActive={item.url === currentPath}>
-                                    <Link href={item.url} prefetch>
+                                    {/* On mousedown, not on hover — and the
+                                        difference is the page-loading bar.
+                                        Inertia's `prefetch()` hides the one
+                                        shared #nprogress element for the
+                                        duration of the prefetch, and only a
+                                        later visit un-hides it. Hover fires its
+                                        prefetch 75ms AFTER the click it belongs
+                                        to, so the hide landed on top of the
+                                        navigation it should have been helping
+                                        and the bar stayed invisible for the
+                                        whole request. Mousedown puts the
+                                        prefetch back in front of the visit,
+                                        which un-hides on its way past. The
+                                        request itself is unchanged — the visit
+                                        adopts the in-flight prefetch either
+                                        way — so this costs the hover head
+                                        start and nothing else. */}
+                                    <Link href={item.url} prefetch="click">
                                         {item.icon && <item.icon />}
                                         <span>{item.title}</span>
                                     </Link>

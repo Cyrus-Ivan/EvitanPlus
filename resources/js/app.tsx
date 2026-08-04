@@ -30,8 +30,20 @@ createInertiaApp({
             </ErrorBoundary>,
         );
     },
+    // Inertia's own progress component, in its usual place along the top edge,
+    // but styled by us — see the #nprogress block at the end of
+    // resources/css/app.css. Declining the injected stylesheet leaves the
+    // engine, the trickle and the timing Inertia's and the paint ours, which is
+    // what lets the bar be thicker and legible in dark mode; `color` is
+    // deliberately absent, since it exists only to build the stylesheet this
+    // declines.
+    //
+    // 150ms rather than the default 250: a lagging screen has to speak up
+    // before it reads as frozen, which is the whole complaint. Still long
+    // enough that an ordinary SQLite-local navigation finishes without a flash.
     progress: {
-        color: '#4B5563',
+        includeCSS: false,
+        delay: 150,
     },
 });
 

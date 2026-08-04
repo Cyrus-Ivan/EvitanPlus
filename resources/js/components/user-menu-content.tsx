@@ -22,7 +22,9 @@ export function UserMenuContent({ user }: UserMenuContentProps) {
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
                 <DropdownMenuItem asChild>
-                    <Link className="block w-full" href={route('profile.edit')} as="button" prefetch onClick={cleanup}>
+                    {/* "click" for the same reason as every other nav link —
+                        see `nav-main.tsx`. */}
+                    <Link className="block w-full" href={route('profile.edit')} as="button" prefetch="click" onClick={cleanup}>
                         <Settings className="mr-2" />
                         Settings
                     </Link>

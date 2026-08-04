@@ -64,7 +64,9 @@ export function AppSidebar() {
                 <SidebarMenu>
                     <SidebarMenuItem>
                         <SidebarMenuButton size="lg" asChild>
-                            <Link href="/pos" prefetch>
+                            {/* "click" for the same reason as every other nav
+                                link — see `nav-main.tsx`. */}
+                            <Link href="/pos" prefetch="click">
                                 <AppLogo />
                             </Link>
                         </SidebarMenuButton>

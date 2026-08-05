@@ -375,6 +375,11 @@ class AdjustmentResolver
      * account lives on the queue row and the stock entry dialog fetches it, but
      * that needs a connection; a sentence on the ledger row does not, and Stock
      * History is a screen that has to render with none.
+     *
+     * The verdict gets a line to itself. Either side of it is somebody's own
+     * words — the requester's above, the approver's below — and run together on
+     * one line there is nothing to tell a reader where a person stopped talking
+     * and the app started.
      */
     private function notes(stdClass $row, int $approved, string $outcome, ?string $reason): ?string
     {
@@ -390,7 +395,7 @@ class AdjustmentResolver
             $verdict === null ? null : $reason,
         ]);
 
-        return $parts === [] ? null : implode(' ', $parts);
+        return $parts === [] ? null : implode("\n", $parts);
     }
 
     /**

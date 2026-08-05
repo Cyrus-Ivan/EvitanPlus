@@ -137,6 +137,13 @@ class AdjustmentResolutionTest extends TestCase
         $this->assertStringContainsString('+2 of +3', (string) $entry->notes);
         $this->assertStringContainsString('crushed in transit', (string) $entry->notes);
 
+        // The app's verdict stands on its own line, between the requester's words
+        // and the approver's. Merged onto one line, nothing tells them apart.
+        $this->assertSame(
+            ['Transfer in', 'Partially approved: +2 of +3 asked for.', 'One was crushed in transit.'],
+            explode("\n", (string) $entry->notes),
+        );
+
         $answered = $remote->table('inventory_update_queue')->find($id);
         $this->assertSame('accepted', $answered->status);
         $this->assertSame(2, (int) $answered->approved_quantity);

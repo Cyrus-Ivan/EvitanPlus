@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import AppLayout from '@/layouts/app-layout';
+import { MOVEMENT_LABEL, movementLabel, movementVariant } from '@/lib/stock-movement';
 import type { BreadcrumbItem, Paginated, PendingAdjustments, StockLedgerEntry } from '@/types';
 import { Head, router } from '@inertiajs/react';
 import { ScrollText } from 'lucide-react';
@@ -19,26 +20,6 @@ const breadcrumbs: BreadcrumbItem[] = [
 ];
 
 const ALL = 'all';
-
-// Human labels for the ledger movement kind. A sale line carries a sale_type
-// (sale/return/defect); a manual recount is a stock adjustment.
-const TYPE_LABEL: Record<string, string> = {
-    sale: 'Sale',
-    stock_adjustment: 'Adjustment',
-};
-
-const SALE_TYPE_LABEL: Record<string, string> = {
-    sale: 'Sale',
-    return: 'Return',
-    defect: 'Defect',
-};
-
-function movementLabel(entry: StockLedgerEntry): string {
-    if (entry.type === 'sale' && entry.sale_type) {
-        return SALE_TYPE_LABEL[entry.sale_type] ?? entry.sale_type;
-    }
-    return TYPE_LABEL[entry.type] ?? entry.type;
-}
 
 function formatWhen(value: string): string {
     const date = new Date(value);
@@ -61,7 +42,7 @@ function variantLabel(variant: { name: string | null; item: string | null }): st
 
 interface Filters {
     variant: string | null;
-    type: string | null;
+    movement: string | null;
     date_from: string | null;
     date_to: string | null;
 }
@@ -69,12 +50,12 @@ interface Filters {
 export default function StockHistory({
     entries,
     variants,
-    types,
+    movements,
     filters,
 }: {
     entries: Paginated<StockLedgerEntry>;
     variants: VariantOption[];
-    types: string[];
+    movements: string[];
     filters: Filters;
 }) {
     const [detail, setDetail] = useState<StockLedgerEntry | null>(null);
@@ -90,7 +71,7 @@ export default function StockHistory({
             route('stock-history.index'),
             {
                 variant: merged.variant && merged.variant !== ALL ? merged.variant : undefined,
-                type: merged.type && merged.type !== ALL ? merged.type : undefined,
+                movement: merged.movement && merged.movement !== ALL ? merged.movement : undefined,
                 date_from: merged.date_from || undefined,
                 date_to: merged.date_to || undefined,
             },
@@ -152,15 +133,15 @@ export default function StockHistory({
                             ))}
                         </SelectContent>
                     </Select>
-                    <Select value={filters.type ?? ALL} onValueChange={(value) => applyFilters({ type: value })}>
-                        <SelectTrigger className="w-44">
-                            <SelectValue placeholder="All types" />
+                    <Select value={filters.movement ?? ALL} onValueChange={(value) => applyFilters({ movement: value })}>
+                        <SelectTrigger className="w-48">
+                            <SelectValue placeholder="All movements" />
                         </SelectTrigger>
                         <SelectContent>
-                            <SelectItem value={ALL}>All types</SelectItem>
-                            {types.map((type) => (
-                                <SelectItem key={type} value={type}>
-                                    {TYPE_LABEL[type] ?? type}
+                            <SelectItem value={ALL}>All movements</SelectItem>
+                            {movements.map((movement) => (
+                                <SelectItem key={movement} value={movement}>
+                                    {MOVEMENT_LABEL[movement] ?? movement}
                                 </SelectItem>
                             ))}
                         </SelectContent>
@@ -232,9 +213,7 @@ export default function StockHistory({
                                             )}
                                         </TableCell>
                                         <TableCell>
-                                            <Badge variant={entry.type === 'stock_adjustment' ? 'secondary' : 'outline'}>
-                                                {movementLabel(entry)}
-                                            </Badge>
+                                            <Badge variant={movementVariant(entry)}>{movementLabel(entry)}</Badge>
                                         </TableCell>
                                         <TableCell
                                             className={`text-right tabular-nums ${

@@ -225,7 +225,10 @@ export interface StockLedgerEntry {
     resulting_snapshot: number;
     type: 'sale' | 'stock_adjustment';
     sale_type: 'sale' | 'return' | 'defect' | null;
-    reference_type: string;
+    // What kind of record `reference_id` points at. Closed set (docs/glossary.md
+    // §4) — with `type` and `sale_type` it is what a movement kind is read from,
+    // see @/lib/stock-movement.
+    reference_type: 'transaction' | 'manual_adjustment' | 'csv_import' | 'return' | 'transfer';
     // The other branch involved, by CODE. Stored on the ledger row itself rather
     // than joined, because Stock History has to render with no connection and
     // `branches` is never pulled to a device.

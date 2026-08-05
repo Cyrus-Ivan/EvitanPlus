@@ -6,6 +6,7 @@ use App\Http\Controllers\Concerns\NormalizesDateFilter;
 use App\Http\Controllers\Controller;
 use App\Models\InventoryLedger;
 use App\Models\Variant;
+use App\Support\Inventory\MovementKind;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -22,20 +23,20 @@ class StockHistoryController extends Controller
 {
     use NormalizesDateFilter;
 
-    /** Allowed inventory_ledger.type values. */
-    private const TYPES = ['sale', 'stock_adjustment'];
-
     public function index(Request $request): Response
     {
         $variantFilter = $request->query('variant') ?: null;
-        $typeFilter = in_array($request->query('type'), self::TYPES, true) ? $request->query('type') : null;
+        // A movement kind (MovementKind), not a column value: `type` alone puts a
+        // recount, a CSV import and both legs of a transfer under one word, and
+        // since schema 21 that is every non-sale row there is.
+        $movementFilter = MovementKind::parse($request->query('movement'));
         $dateFrom = $this->normalizeDate($request->query('date_from'));
         $dateTo = $this->normalizeDate($request->query('date_to'));
 
         $entries = InventoryLedger::query()
             ->with(['variant:id,item_id,name', 'variant.item:id,name', 'performedBy:id,name,username'])
             ->when($variantFilter, fn ($query) => $query->where('variant_id', $variantFilter))
-            ->when($typeFilter, fn ($query) => $query->where('type', $typeFilter))
+            ->when($movementFilter, fn ($query) => MovementKind::apply($query, $movementFilter))
             ->when($dateFrom, fn ($query) => $query->where('created_at', '>=', $dateFrom->startOfDay()))
             ->when($dateTo, fn ($query) => $query->where('created_at', '<=', $dateTo->endOfDay()))
             ->orderByDesc('created_at')
@@ -76,10 +77,10 @@ class StockHistoryController extends Controller
                     'name' => $variant->name,
                     'item' => $variant->item?->name,
                 ]),
-            'types' => self::TYPES,
+            'movements' => MovementKind::values(),
             'filters' => [
                 'variant' => $variantFilter,
-                'type' => $typeFilter,
+                'movement' => $movementFilter,
                 'date_from' => $dateFrom?->toDateString(),
                 'date_to' => $dateTo?->toDateString(),
             ],

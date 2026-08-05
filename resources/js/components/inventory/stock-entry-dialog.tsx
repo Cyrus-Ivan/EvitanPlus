@@ -1,5 +1,6 @@
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { movementLabel, movementVariant } from '@/lib/stock-movement';
 import type { StockLedgerEntry } from '@/types';
 import type { ReactNode } from 'react';
 
@@ -13,24 +14,6 @@ const REFERENCE_LABEL: Record<string, string> = {
     return: 'Return or defect',
     transfer: 'Branch transfer',
 };
-
-const TYPE_LABEL: Record<string, string> = {
-    sale: 'Sale',
-    stock_adjustment: 'Adjustment',
-};
-
-const SALE_TYPE_LABEL: Record<string, string> = {
-    sale: 'Sale',
-    return: 'Return',
-    defect: 'Defect',
-};
-
-function movementLabel(entry: StockLedgerEntry): string {
-    if (entry.type === 'sale' && entry.sale_type) {
-        return SALE_TYPE_LABEL[entry.sale_type] ?? entry.sale_type;
-    }
-    return TYPE_LABEL[entry.type] ?? entry.type;
-}
 
 function formatWhen(value: string): string {
     const date = new Date(value);
@@ -83,7 +66,7 @@ export function StockEntryDialog({
 
                         <dl className="grid grid-cols-2 gap-4">
                             <Field label="Movement">
-                                <Badge variant={entry.type === 'stock_adjustment' ? 'secondary' : 'outline'}>{movementLabel(entry)}</Badge>
+                                <Badge variant={movementVariant(entry)}>{movementLabel(entry)}</Badge>
                             </Field>
                             <Field label="How it was asked for">{REFERENCE_LABEL[entry.reference_type] ?? entry.reference_type}</Field>
                             <Field label="Change">

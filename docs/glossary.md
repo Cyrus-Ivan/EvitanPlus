@@ -292,6 +292,23 @@ shape, not a value. Do not use it in specs.
 ✗ `adjustment` and `import` are likewise not values: they are `stock_adjustment` rows
 distinguished by `reference_type`.
 
+### Movement kind
+The reading of a ledger row a person recognises, as **one predicate over the three columns
+above**: `sale`, `return`, `defect`, `manual_adjustment`, `csv_import`, `transfer`. It exists
+because no single column answers "what kind of movement was this" — `type` alone reads
+*Adjustment* for a recount, a CSV import, another branch's request and both legs of a transfer
+alike, which since schema 21 is every non-sale row there is. Return and defect split on
+`sale_type` and never on `reference_type`: both carry `reference_type = 'return'`. A transfer is
+one kind and **two labels**, *Transfer out* / *Transfer in*, taken from the quantity's sign per
+"Counterparty branch" below.
+*Anchor:* `App\Support\Inventory\MovementKind` (which rows come back — the `movement` query
+parameter on `/inventory/stock-history`); `resources/js/lib/stock-movement.ts` (what each is
+called). Adding a kind means adding it in both.
+✗ **Not a column and not a fourth `type`.** It is a presentation and filter vocabulary only.
+Nothing about sync may key on it — direction of travel is decided by `type` alone
+("Ledger classification for sync"), so a kind mistaken for a `type` value would be neither
+pushed nor pulled.
+
 ### Ledger classification for sync
 Which way a ledger row moves is decided by its columns, not by a separate type:
 - **Local-write, pushed up:** `type = sale` (any `sale_type`).

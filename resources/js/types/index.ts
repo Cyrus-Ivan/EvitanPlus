@@ -131,7 +131,7 @@ export interface Branch {
     is_this_branch: boolean;
 }
 
-/** A row of `inventory_update_queue`, named and localised server-side (M8). */
+/** A row of `inventory_update_queue`, named and localised server-side. */
 export interface QueuedAdjustment {
     id: string;
     // Branch CODE, not id — the roster resolves it before this reaches the client.
@@ -140,13 +140,40 @@ export interface QueuedAdjustment {
     variant: string | null;
     // Signed: positive adds stock at that branch, negative removes it.
     quantity: number;
+    // What was actually agreed, once somebody has answered. Equal to `quantity`
+    // on a plain approval, smaller in magnitude on a partial one, null while the
+    // row is pending and on a rejection. There is no `partial` status: it IS this
+    // number disagreeing with the one above.
+    approved_quantity: number | null;
+    // How the movement was asked for: manual_adjustment | csv_import | transfer.
+    reference_type: string;
+    // The branch on the other end, by CODE, when there is one — who asked, or the
+    // far end of a transfer. Null when a branch is adjusting its own stock.
+    counterparty_branch: string | null;
     notes: string | null;
     status: 'pending' | 'accepted' | 'rejected';
-    // Set only on rejection, and written by the branch that turned it down.
-    rejection_reason: string | null;
+    // Why it was turned down, or why only part of it was approved. Written by
+    // whoever answered, and read by the branch that asked.
+    resolution_reason: string | null;
     issued_by: string;
+    resolved_by: string | null;
     created_at: string;
     resolved_at: string | null;
+}
+
+/**
+ * The payload behind the Pending stock adjustments dialog.
+ *
+ * Two sections because a queue row means opposite things at its two ends:
+ * `inbox` is what this branch has been asked to agree to, `elsewhere` is what has
+ * been asked of everyone else and what came of it. `online` is false when the
+ * read failed — everything here is Postgres-only, so there is then nothing to
+ * show rather than an empty list.
+ */
+export interface PendingAdjustments {
+    inbox: QueuedAdjustment[];
+    elsewhere: QueuedAdjustment[];
+    online: boolean;
 }
 
 export interface Item {
@@ -199,6 +226,10 @@ export interface StockLedgerEntry {
     type: 'sale' | 'stock_adjustment';
     sale_type: 'sale' | 'return' | 'defect' | null;
     reference_type: string;
+    // The other branch involved, by CODE. Stored on the ledger row itself rather
+    // than joined, because Stock History has to render with no connection and
+    // `branches` is never pulled to a device.
+    counterparty_branch_code: string | null;
     notes: string | null;
     created_at: string;
     variant: { id: string; name: string | null; item: string | null } | null;

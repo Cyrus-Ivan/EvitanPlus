@@ -943,6 +943,13 @@ correct across a sell-offline-then-sync cycle.
 
 # Phase M8 — Inventory update queue ✅
 
+> **⚠ Largely SUPERSEDED by M11.7.** The queue survives; how it is answered does not.
+> `QueueProcessor` and step 2 of the cycle are **deleted** — a person at the affected branch
+> answers these now, every stock movement goes through the queue rather than only cross-branch
+> ones, the resolution grant is six columns rather than four, and `rejection_reason` is
+> `resolution_reason`. Read this section as the record of what M8 decided and why; read M11.7 and
+> `docs/sync-architecture.md` §6 for what the code does.
+
 ## Goal
 Let online branch-targeted adjustments happen without ever driving stock negative.
 
@@ -1473,13 +1480,123 @@ Prove the whole loop and lock the security boundary before shipping the custom b
 - **Release verification:** confirm the packaged app contains **no** console code and **no**
   admin credentials; branch creds are runtime-only and encrypted at rest.
 - Update `README.md` / release notes for the Evitan Plus build — including the product split
-  itself: `README.md` still describes the single-install **Evitan POS** feature set ("no server,
-  no cloud, no network dependency"), which stays true of `v1.0.0` and is false of Evitan Plus.
+  itself. **`README.md` half done** (post-M11.6 doc sweep): its opener, naming banner, tech
+  stack, highlights and status now describe Evitan Plus, and `BRAINSTORM.md` / `ROADMAP.md`
+  were retitled to **Evitan POS** with scope banners, per `docs/glossary.md` §1. Still open:
+  release notes for the Evitan Plus build itself — `RELEASE-NOTES.md` currently records only
+  `v1.0.0`, which is correct until there is a second release to write up.
+- Regenerate the user-facing guide. `docs/Evitan-POS-Demo.pdf` is the 22-page screen-by-screen
+  walkthrough shipped for `v1.0.0`; it is correct *as of that release* and is kept as its
+  artifact, but it documents the removed Backup page and the old Owner-creation setup flow, and
+  says nothing about branches or sync. Evitan Plus needs its own guide, not an edit of that one.
 
 ## Milestone
 A green test suite and a verified build in which a single provisioned branch runs offline,
 syncs on reconnect, and the console monitors it — with the powerful provisioning surface
 provably absent from the shipped binary.
+
+---
+
+# Phase M11.7 — Pending stock adjustments, human resolution, branch transfers
+
+## Goal
+Stop stock from moving because somebody typed a number. Every stock movement is asked for
+first, and a person at the affected branch confirms it happened before it reaches the ledger.
+
+## As built
+
+- **Every stock movement is now a pending adjustment.** A recount typed at this till, a CSV
+  import, an adjustment aimed at another branch, and both legs of a transfer all write a
+  `pending` row into `inventory_update_queue` and stop (`App\Support\Inventory\AdjustmentQueue`).
+  M8 mediated only the cross-branch case, on the grounds that the issuer cannot see the
+  target's unsynced sales — an argument about arithmetic, and arithmetic was never what was in
+  doubt. Stock that moved on paper and stock that moved on a shelf are different things.
+
+- **`AdjustmentResolver` is the ONE writer of `type = 'stock_adjustment'`.** There were three:
+  the CSV importer, the manual adjust screen, and the sync cycle's step 2. Single-writer-per-
+  table was already an invariant; this is the first phase in which that class of row actually
+  has one.
+
+- **THE FLOOR ROSE, AND THAT IS THE PHASE'S REAL COST.** `MIN_APP_VERSION` 1.0.0 → **1.1.0**,
+  the first raise since M1. Not because of the `rejection_reason` → `resolution_reason` rename,
+  which merely rides along: a 1.0.0 build still runs its old step 2, so against a 21 schema it
+  would walk every row waiting for a human and **auto-approve the ones that fit** — every
+  adjustment, every CSV import, and a transfer's sending leg without ever spawning the
+  receiving leg, so stock leaves one branch and arrives nowhere. Nothing detects that; from the
+  schema's side it looks like a branch doing its job. **Deploy migrate-then-install**: stamping
+  the floor first sends old tills to `version_blocked` at step 0, so none reaches step 2 during
+  the rollout. They keep selling offline throughout.
+
+- **Step 2 of the cycle is deleted, not moved.** `QueueProcessor` is gone and the cycle is back
+  to `gate → push → pull → heartbeat`. Its `resolved` counter turned out to reach nothing —
+  `SyncController` never returned it — so the blast radius was the class, the ctor arg, and two
+  docblocks. `StockReconciler::unsyncedMovement()` went back to `private` with it.
+
+- **A rejection writes NO ledger row, and the tempting fix is wrong.** A zero-quantity audit row
+  (the trick defects already use) would be harmless but useless: `Puller` filters
+  `inventory_ledger` to one branch, so a rejection recorded at the target is invisible to the
+  branch that asked — the one reader who needs it. The queue row is the record instead, and the
+  dialog grew a **"Sent to other branches"** section so an issuer can see it at all.
+
+- **The resolver reads before it writes, and that filter is load-bearing.** `OnlineWrite` does
+  its local writes before any connection exists and stamps `branch_id` from `instance`, so a
+  device permitted to answer another branch's row would write that branch's stock movement onto
+  its own ledger — the stock lands in the wrong shop. The old step 2 could not make this
+  mistake because the cycle handed it the branch id it was already running as. Asserted by
+  `AdjustmentResolutionTest::test_a_device_cannot_answer_another_branchs_row`.
+
+- **Approving writes locally AND upstream**, unlike step 2, which wrote upstream only and let
+  the pull bring it down. A person pressing Approve is not inside a cycle, and a five-minute
+  wait to see the stock they just agreed to would make the button look broken. Not a second
+  writer: the row is created once and copied, which is the pattern the manual adjust screen has
+  used since M7.
+
+- **Grant widened to six columns**, per §9's standing rule that any widening states its reason:
+  `approved_quantity` (the whole of how a partial approval is stored) and `resolved_by` (a
+  different user from `issued_by`, once a person answers). Still far below table-level, which
+  would expose `quantity`, `branch_id` and `counterparty_branch_id` — a branch that could
+  rewrite those could approve itself more than it was sent, or aim a transfer elsewhere.
+
+- **`issuing_branch_id` was considered and dropped** as redundant: `counterparty_branch_id`
+  plus `issued_by` answer every question it would have.
+
+- **Partial approval is derived, not a fourth status.** `status` has a real CHECK constraint;
+  deriving "partial" from `approved_quantity` disagreeing with `quantity` costs one nullable
+  integer instead of a constraint swap plus four places learning a new word.
+
+- **`inventory_ledger.counterparty_branch_code`** — a CODE, not an id, because Stock History is
+  a Cashier-level screen that must render offline and `branches` is never pulled to a device.
+  The one new mirrored column, so both migrations moved together.
+
+- **Transfers are two rows, answered by two people.** The sender confirms what left; confirming
+  it spawns the receiver's row (`parent_id`) for **what was actually sent**. A shortfall on
+  arrival is **written off** — sender −3, receiver +2, the business one unit down, because that
+  unit no longer exists. No bounce-back: a compensating row at the sender would put stock on a
+  shelf that does not hold it. Stage 3 needed no migration, no version bump and no grant change,
+  because `parent_id` went in with the rest.
+
+- **The CSV import broke in a second, quieter place.** `mirrorImport()` read
+  `InventoryLedger::where('reference_id', $importId)` to decide both what to mirror and which
+  variants to recompute; with no ledger rows both collapse to nothing. Removed rather than left
+  to no-op — a recompute over an empty list is a statement that stock moved. An import also can
+  no longer fail for want of stock: that question moved to confirmation, per product, where it
+  can be partially approved.
+
+- **Staleness is absorbed by partial approval, not modelled.** REPLACE-mode CSV and "set to
+  count" both snapshot a delta that sales can invalidate before it is confirmed. Storing mode +
+  target and recomputing would make a partial approval meaningless ("approve 2 of set-to-25").
+
+- **`/inventory/stock-updates` is gone.** The list is a dialog on Stock History, whose table lost
+  its By and Notes columns to a per-row detail modal. The sidebar entry went with the page.
+
+- **A new test stand-in was needed.** `Tests\TestCase`'s `OnlineWrite` fake DROPS
+  `afterMirroring` closures, which is exactly where a pending row is now written — so under the
+  default fake every stock adjustment in the suite would silently become a no-op.
+  `FakesThePendingQueue` keeps them and runs them against a second SQLite connection.
+
+## Verified
+615 offline tests, 284 console tests against real Supabase, and five two-branch integration
+tests including the full transfer with its write-off (`tests/Integration/InventoryQueueTest.php`).
 
 ---
 

@@ -28,8 +28,17 @@ class StockLedger
      *                         audit rows pass 0 (stock unchanged).
      * @param  string  $type  inventory_ledger.type — 'sale' | 'stock_adjustment'.
      * @param  string|null  $saleType  'sale' | 'return' | 'defect' (null for adjustments).
-     * @param  string  $referenceType  'transaction' | 'manual_adjustment' | 'return'.
+     * @param  string  $referenceType  'transaction' | 'manual_adjustment' | 'csv_import' | 'return' | 'transfer'.
      * @param  string|null  $referenceId  UUID of the source record, when any.
+     * @param  string|null  $id  Force the row's UUID. One caller: an approved
+     *                           pending adjustment, whose ledger entry takes the
+     *                           queue row's own id so re-approving the same row
+     *                           collides with itself instead of moving stock
+     *                           twice ({@see AdjustmentResolver}).
+     * @param  string|null  $counterpartyBranchCode  The other branch involved, by
+     *                                               code because this is read offline. Null unless
+     *                                               another branch asked for the movement or it is a
+     *                                               leg of a transfer.
      *
      * @throws NegativeInventoryException when the movement would drive stock below zero.
      */
@@ -42,9 +51,12 @@ class StockLedger
         ?string $referenceId,
         User $performedBy,
         ?string $notes = null,
+        ?string $id = null,
+        ?string $counterpartyBranchCode = null,
     ): InventoryLedger {
         return DB::transaction(function () use (
             $variant, $quantity, $type, $saleType, $referenceType, $referenceId, $performedBy, $notes,
+            $id, $counterpartyBranchCode,
         ) {
             // Lock (or create) the snapshot row so concurrent writes serialize.
             $snapshot = StockSnapshot::query()
@@ -57,7 +69,7 @@ class StockLedger
                 throw new NegativeInventoryException;
             }
 
-            $entry = InventoryLedger::create([
+            $entry = new InventoryLedger([
                 'variant_id' => $variant->getKey(),
                 'quantity' => $quantity,
                 'resulting_snapshot' => $resulting,
@@ -66,8 +78,17 @@ class StockLedger
                 'reference_id' => $referenceId,
                 'reference_type' => $referenceType,
                 'notes' => $notes,
+                'counterparty_branch_code' => $counterpartyBranchCode,
                 'performed_by' => $performedBy->getKey(),
             ]);
+
+            // Assigned rather than filled: `id` is deliberately not fillable, and
+            // HasUuidPrimaryKey only generates one when the attribute is empty.
+            if ($id !== null) {
+                $entry->id = $id;
+            }
+
+            $entry->save();
 
             $snapshot->update(['quantity' => $resulting]);
 

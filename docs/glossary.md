@@ -225,8 +225,11 @@ A table that exists in the **local mirror and nowhere else** — it has no Postg
 is exempt from the parity guard. The list is Laravel's own infrastructure (`sessions`,
 `cache`, `cache_locks`, `jobs`, `job_batches`, `failed_jobs`, `migrations`, and `sqlite_sequence`,
 which SQLite materialises for the AUTOINCREMENT on `migrations`) plus M5's `instance` and
-`instance_secret`, M6's `sync_outbox` and `sync_status`, and M7's `sync_cursor`. M8's narrowed
-`inventory_update_queue` joins it.
+`instance_secret`, M6's `sync_outbox` and `sync_status`, and M7's `sync_cursor`.
+✗ **`inventory_update_queue` is NOT here**, and a previous edition of this entry said it was.
+It is **Postgres-only** — `SchemaParityTest::POSTGRES_ONLY`, and `MULTIBRANCH-BRAINSTORM.md`
+records the local one as "decided against, not deferred". Everything about resolving a pending
+adjustment rests on that: the list is an online read, and answering one is an online write.
 *Anchor:* `SchemaParityTest::SQLITE_LOCAL_ONLY` (added in M4).
 ✗ **Not** "mirrored" — and the distinction is the whole reason this set exists rather than the
 tables being folded into `MIRRORED`. A local-only table is deliberately a *different, narrower*
@@ -267,11 +270,21 @@ defect`) **does not exist**. `inventory_ledger` carries **three independent colu
 |---|---|---|
 | `type` | `sale` \| `stock_adjustment` | Whether the movement came from selling or from adjusting |
 | `sale_type` | `sale` \| `return` \| `defect` (null for adjustments) | Which after-sales event, when `type = sale` |
-| `reference_type` | `transaction` \| `manual_adjustment` \| `csv_import` \| `return` | What kind of record `reference_id` points at |
+| `reference_type` | `transaction` \| `manual_adjustment` \| `csv_import` \| `return` \| `transfer` | What kind of record `reference_id` points at |
+
+A **transfer** is a `reference_type`, not a fourth `type`. `type` decides which side of the sync
+owns a row (`InventoryLedger::shouldPush()`, `Puller`'s filter, `StockReconciler`'s sum all key
+on it), and a transfer leg is an ordinary `stock_adjustment` on both counts. Adding a `type`
+value would silently be neither pushed nor pulled.
+
+`inventory_ledger` also carries **`counterparty_branch_code`** (schema 21, nullable): the OTHER
+branch a movement involved — who asked for it, or the far end of a transfer. A **code** and not
+an id because Stock History is a Cashier-level screen that must render offline, and `branches`
+is never pulled to a device, so an id could not be turned into a name there.
 
 *Anchor:* `console/database/migrations/2026_07_26_000010_create_inventory_ledger_table.php`;
-`app/Support/Inventory/StockLedger::record()`; real writes in
-`StockAdjustmentController.php:44`, `CsvInventoryImporter.php:972`.
+`app/Support/Inventory/StockLedger::record()`. Since schema 21 there is exactly **one** writer of
+`type = 'stock_adjustment'`: `App\Support\Inventory\AdjustmentResolver`. There were three.
 
 ✗ **`restock` is not a term.** It appears in no code path. A restock is a *positive*
 `stock_adjustment` with `reference_type = manual_adjustment` — a UI framing of an existing
@@ -311,21 +324,73 @@ hands the branch stock it never regained.
 is the same stock counted against a better source. Writing it through `StockLedger` would invent
 inventory history and double-count against the pulled adjustment rows.
 
-### Inventory update queue
-`inventory_update_queue` — pending, branch-targeted stock adjustments **awaiting the branch's
-confirmation**. A queue row is *not* a ledger entry; it becomes one only on acceptance, which
-is what keeps stock from going negative behind an offline branch's back.
+### Pending stock adjustment
+A row of `inventory_update_queue`: a stock movement that has been **asked for and has not
+happened**. Since schema 21 **every** stock movement starts as one — a recount typed at this
+till, a CSV import, an adjustment aimed at another branch, and both legs of a transfer. It
+becomes a ledger entry only when a person at the affected branch says it really happened.
 *Anchor:* the `inventory_update_queue` table; `check ((status = 'pending') = (resolved_at is
-null))`; `BranchGrants::UPDATE_COLUMNS` (the four columns a resolution touches:
-`status, resolved_at, rejection_reason, ledger_entry_id`); `App\Support\Sync\QueueProcessor`
-answers it, `App\Http\Controllers\Inventory\InventoryQueueController` issues and displays it (M8).
+null))`; `App\Support\Inventory\AdjustmentQueue` writes them,
+`App\Support\Inventory\AdjustmentResolver` answers them,
+`App\Http\Controllers\Inventory\InventoryQueueController` displays them.
 ✗ **Not** the outbox. See §5.
-✗ **Not** how an adjustment aimed at THIS branch travels. That is an ordinary online write: the
-queue exists because the issuer cannot see the target's unsynced sales, and a device can always
-see its own.
-✗ **Not** answered by the issuer. The **target** branch resolves its own rows, during step 2 of
-its next cycle, and writes the accepted ledger entry upstream only — the pull brings it back
-down, so `type = 'stock_adjustment'` keeps exactly one writer.
+✗ **Not** a ledger entry, and a rejected one never becomes anything else — it writes no ledger
+row at all. The queue row IS the record of a refusal, which is why resolved rows are hidden
+rather than deleted, and why the dialog has a "Sent to other branches" section: `Puller` filters
+`inventory_ledger` to one branch, so a rejection recorded at the target could never reach the
+branch that asked.
+✗ **Not** only for other branches, which is what M8 built and what schema 21 widened. The
+narrow version mediated the cross-branch case because the issuer cannot see the target's unsynced
+sales — an argument about arithmetic. The wider rule rests on something arithmetic cannot settle:
+whether the goods are on the shelf.
+✗ **Not** answered by the issuer. The branch the row is aimed at answers it, and
+`AdjustmentResolver` re-reads every row filtered to that branch before writing anything.
+
+### Resolution
+Answering a pending stock adjustment. Three outcomes, and only the first two move stock:
+- **Approve** — all of it happened.
+- **Partial approve** — some of it did. Records `approved_quantity` (same sign as `quantity`,
+  smaller in magnitude, never zero) plus a required reason.
+- **Reject** — none of it did. Requires a reason.
+*Anchor:* `AdjustmentResolver::resolve()`; `ResolveAdjustmentRequest`;
+`BranchGrants::UPDATE_COLUMNS` — the **six** columns a resolution touches
+(`status, resolved_at, resolution_reason, ledger_entry_id, approved_quantity, resolved_by`).
+✗ **Not** `partial` as a fourth `status`. The DB constraint allows `pending | accepted |
+rejected`; a partial approval is `accepted` with `approved_quantity` disagreeing with `quantity`.
+✗ **Not** role-gated. **Any** authenticated user may resolve, Cashier included: whether a
+delivery arrived is known by whoever is in the shop. Issuing one is still Admin+.
+✗ **Not** possible offline, and never was — the list is an online read.
+✗ **Not** `rejection_reason`. That column was renamed to `resolution_reason` at schema 21,
+because it now also carries the reason for a partial approval.
+
+### Transfer
+Stock moving from one branch to another, as **two** pending adjustments answered by two different
+people. The sending branch confirms what left (negative); confirming it spawns the receiving
+branch's row (positive) for **what was actually sent**, not what was first asked for. Either end
+may approve, partially approve, or reject.
+*Anchor:* `reference_type = 'transfer'`; `inventory_update_queue.parent_id` links leg 2 to leg 1;
+`AdjustmentResolver::secondLeg()`; `IssueTransferRequest`.
+✗ **Not** one movement. Stock leaving one shop and arriving at another are two physical claims,
+either of which can be false on its own. One row would make whichever branch did not answer the
+author of the other's stock.
+✗ **Not** signed by the operator. They enter how many are moving; the legs' signs are the
+system's.
+
+### Write-off in transit
+The gap when a transfer's receiving branch approves less than was sent. The sender is down three,
+the receiver up two, and **the business is genuinely one unit short** — that unit no longer
+exists. Nothing is returned to the sender, and no compensating row is written: that would put
+stock on a shelf that does not hold it. The receiver's resolution reason, carried onto their
+ledger row's `notes`, is the record of where it went.
+
+### Counterparty branch
+The **other** branch a movement involved: who asked for an adjustment, or the far end of a
+transfer. Null when a branch is adjusting its own stock, which is most rows.
+*Anchor:* `inventory_update_queue.counterparty_branch_id` (an id, upstream);
+`inventory_ledger.counterparty_branch_code` (a code, so it reads offline).
+✗ **Not** the issuing *user*, which is `issued_by`.
+✗ **Not** a direction. One column serves both ends of a transfer; the quantity's sign says
+whether the stock went there or came from there.
 
 ---
 
@@ -335,12 +400,15 @@ down, so `type = 'stock_adjustment'` keeps exactly one writer.
 The **single ordered unit of sync**, and the only thing that opens a Postgres connection:
 
 ```
-0. version gate  →  1. push  →  2. queue  →  3. pull  →  4. heartbeat
+0. version gate  →  1. push  →  2. pull  →  3. heartbeat
 ```
 
 The order is load-bearing. Push runs first so the pulled baseline already reflects this
-branch's own movements; the queue runs after push so adjustments validate against true
-reconciled stock; the heartbeat runs last so it describes the cycle that just finished.
+branch's own movements; the heartbeat runs last so it describes the cycle that just finished.
+There was a **queue step between push and pull** until schema 21, which answered this branch's
+pending adjustments automatically. A person answers them now, as an ordinary online write that
+needs no cycle — and freezing builds that still run the old step is exactly why that schema
+raised `MIN_APP_VERSION` for the first time.
 A cycle **owns its connection**: connect → run → disconnect in a `finally`. (`DB::purge`, not
 `DB::disconnect`: disconnect closes the PDO but leaves the connection registered with the
 credentials it was built with, ready to reconnect behind the caller's back.)
@@ -392,7 +460,7 @@ on one device until M6.5.
 ### Online read
 A **live query against the business database serving one screen**, keeping nothing. Three things
 are read this way and none has a local counterpart: the branch **roster** (`branches`), the
-**inventory update queue**, and the [consolidated report].
+**pending stock adjustments** (`inventory_update_queue`), and the [consolidated report].
 *Anchor:* `App\Support\Sync\OnlineRead`; `OfflineWriteException::forReading()` (M8).
 ✗ **Not** a pull. A pull fills the local mirror so the till can read it offline forever; an
 online read mirrors nothing, which is exactly why these two tables need no migration, no
@@ -775,17 +843,19 @@ made. All three are now settled. Each carries work into a later phase; the phase
 `MULTIBRANCH-ROADMAP.md` hold the tasks.
 
 ### Issuing branch — replaces "online admin" and "HQ"
-An **Owner or Admin, on any branch device, while online, may issue a stock adjustment
-targeting any branch of their business.** They choose the target in the in-app admin screens;
-`inventory_update_queue` records the target (`branch_id`) and the issuing user (`issued_by`).
+An **Owner or Admin, on any branch device, while online, may ask for a stock adjustment at any
+branch of their business, or move stock between two of them.** They choose the target in the
+in-app admin screens; `inventory_update_queue` records the target (`branch_id`), the other end
+where there is one (`counterparty_branch_id`), and the asking user (`issued_by`).
 *Anchor:* the `inventory_update_queue` table.
 ✗ **"HQ" and "online admin" are retired.** There is no head-office application, no separate
 console-side actor, and no fourth permission role. Both words meant this one actor.
-✓ **Built (M8).** `inventory_update_queue` is in `BranchGrants::INSERT`, delivered to existing
-businesses with `schema:reapply-grants`, and the target is chosen in the adjust dialog on any
-product. It knowingly widened the deferred RLS gap — grants stop at the schema boundary, so a
-credential able to queue an adjustment for its own branch can queue one for any branch of the
-same business. See §9.
+✗ **Not the same actor as the one who ANSWERS.** Asking is Admin+; answering is any role at the
+affected branch, and `resolved_by` records who. See [Resolution] in §4.
+✓ **Built (M8, widened at schema 21).** `inventory_update_queue` is in `BranchGrants::INSERT`,
+delivered to existing businesses with `schema:reapply-grants`. It knowingly widened the deferred
+RLS gap — grants stop at the schema boundary, so a credential able to queue an adjustment for its
+own branch can queue one for any branch of the same business. See §9.
 
 ### `connection_state`
 **Four values, identical on both sides:** `online | offline | unauthorized | version_blocked`.
@@ -848,8 +918,13 @@ rules, not preferences:
   `ALTER DEFAULT PRIVILEGES`, so a table added by a future migration grants nothing by default.
 - **DELETE is granted on nothing, anywhere.** There is no `DELETE` constant in `BranchGrants` at
   all.
-- `inventory_update_queue` stays **column-level** UPDATE on its four resolution columns.
-- Any future widening states its reason in that phase's note, the way M6.5 and M8 both did.
+- `inventory_update_queue` stays **column-level** UPDATE on its resolution columns — **six**
+  since schema 21 (`status, resolved_at, resolution_reason, ledger_entry_id, approved_quantity,
+  resolved_by`), because a person rather than a cycle now answers these and can agree to PART of
+  what was asked. Still strictly less than table-level, which would expose `quantity`,
+  `variant_id`, `branch_id` and `issued_by` — a branch that could rewrite those could approve
+  itself more than it was sent, or aim a transfer somewhere else.
+- Any future widening states its reason in that phase's note, the way M6.5, M8 and schema 21 did.
 
 *Anchor:* `BranchGrants`; `BranchRoleGrantsTest::test_the_live_grants_match_the_documented_matrix`
 keeps live Postgres equal to the matrix, so nothing widens quietly;

@@ -239,31 +239,47 @@ class BranchRoleGrantsTest extends TestCase
     }
 
     /**
-     * The grant M8's resolution depends on, and the reason it is four columns
-     * rather than the one §7 names: `inventory_update_queue_resolved_at` requires
-     * resolved_at to move in the same statement as status, so a status-only grant
-     * could never resolve a queue row at all.
+     * The grant resolving a queue row depends on, and the reason it is six
+     * columns rather than the one §7 names.
+     *
+     * Two constraints force the shape. `inventory_update_queue_resolved_at`
+     * requires resolved_at to move in the same statement as status, so a
+     * status-only grant could never resolve a row at all. And since schema 21 a
+     * PERSON answers these rather than a sync cycle, so a resolution also records
+     * how much was actually agreed (`approved_quantity`, which is the whole of
+     * how a partial approval is stored) and who agreed it (`resolved_by`, which
+     * is a different user from `issued_by`).
      */
     public function test_it_can_resolve_a_queued_adjustment_but_not_rewrite_one(): void
     {
         $branch = $this->branch();
         $queued = $this->seedQueuedAdjustment();
+        $resolver = (string) SchemaConnection::pin($this->schema())->selectOne('select id from users')->id;
 
+        // A PARTIAL approval, which is the case that needs all six: agreed to 2
+        // of the 3 that were asked for, and said why.
         $this->assertAllowed(fn () => $branch->table('inventory_update_queue')
             ->where('id', $queued)
             ->update([
-                'status' => 'rejected',
+                'status' => 'accepted',
                 'resolved_at' => now(),
-                'rejection_reason' => 'Would drive stock negative.',
+                'resolution_reason' => 'Only 2 of the 3 arrived intact.',
+                'approved_quantity' => 2,
+                'resolved_by' => $resolver,
+                'ledger_entry_id' => $queued,
             ]));
 
-        $this->assertSame(
-            'rejected',
-            $branch->selectOne('select status from inventory_update_queue where id = ?', [$queued])->status,
+        $row = $branch->selectOne(
+            'select status, approved_quantity from inventory_update_queue where id = ?',
+            [$queued],
         );
 
+        $this->assertSame('accepted', $row->status);
+        $this->assertSame(2, (int) $row->approved_quantity);
+
         // The columns it must never touch: what was adjusted, by how much, for
-        // whom. Only the resolution is the branch's business.
+        // whom. Only the resolution is the branch's business — a branch that
+        // could rewrite `quantity` could approve itself more than it was sent.
         $this->assertRefused(fn () => $branch->table('inventory_update_queue')
             ->where('id', $queued)
             ->update(['quantity' => 0]));
@@ -271,6 +287,12 @@ class BranchRoleGrantsTest extends TestCase
         $this->assertRefused(fn () => $branch->table('inventory_update_queue')
             ->where('id', $queued)
             ->update(['notes' => 'tampered']));
+
+        // And it may not aim a row somewhere else, which the new columns make
+        // worth stating: a transfer's counterparty decides where stock lands.
+        $this->assertRefused(fn () => $branch->table('inventory_update_queue')
+            ->where('id', $queued)
+            ->update(['counterparty_branch_id' => null]));
     }
 
     /**

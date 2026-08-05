@@ -12,7 +12,6 @@ use App\Support\Sync\CredentialVault;
 use App\Support\Sync\Heartbeat;
 use App\Support\Sync\Puller;
 use App\Support\Sync\Pusher;
-use App\Support\Sync\QueueProcessor;
 use App\Support\Sync\StockReconciler;
 use App\Support\Sync\SyncCycle;
 use App\Support\Sync\VersionGate;
@@ -268,16 +267,6 @@ class HeartbeatTest extends TestCase
             public function push(Connection $remote): array
             {
                 return ['rows' => 0, 'groups' => 0];
-            }
-        });
-
-        $this->app->instance(QueueProcessor::class, new class extends QueueProcessor
-        {
-            public function __construct() {}
-
-            public function process(Connection $remote, string $branchId): int
-            {
-                return 0;
             }
         });
 

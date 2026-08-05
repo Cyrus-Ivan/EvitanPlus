@@ -3,17 +3,13 @@
 namespace App\Support\Inventory;
 
 use App\Exceptions\ImportRowException;
-use App\Exceptions\NegativeInventoryException;
 use App\Models\Category;
 use App\Models\ImportHistory;
-use App\Models\Instance;
-use App\Models\InventoryLedger;
 use App\Models\Item;
 use App\Models\User;
 use App\Models\Variant;
 use App\Rules\SpreadsheetSafeName;
 use App\Support\Sync\OnlineWrite;
-use App\Support\Sync\RemoteStock;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -22,15 +18,27 @@ use Throwable;
 /**
  * Bulk inventory CSV import (Phase 7). Parses an uploaded CSV, fully validates
  * every row, and — only when the whole file is clean — applies it inside a
- * single transaction: upserting Categories/Items/Variants and funnelling every
- * stock change through StockLedger::record() so the never-negative and
- * append-only invariants hold.
+ * single transaction.
  *
- * All-or-nothing by design: a single bad row (validation or a write that would
- * drive stock below zero) aborts the entire import and nothing is persisted to
- * the catalog. The outcome — counts and per-row errors — is recorded as an
- * ImportHistory row (the "Upload History" feature), which doubles as the
- * reference_id for the ledger entries the import creates.
+ * ## The catalog lands; the stock waits (schema 21)
+ *
+ * An import writes Categories, Items and Variants immediately, as an online
+ * write. It no longer moves stock: each row's delta becomes a PENDING stock
+ * adjustment ({@see AdjustmentQueue}) that somebody at the branch confirms, in
+ * one go, through Approve all.
+ *
+ * A new product therefore appears in the catalog at stock 0 until the import is
+ * confirmed, which is the honest state — the file says the shelf holds twelve,
+ * and nobody has looked yet.
+ *
+ * All-or-nothing still, for everything the file can get wrong: one bad row
+ * aborts the import and nothing is persisted. What it can no longer fail on is
+ * stock, because no stock moves here; a subtraction that will not fit is refused
+ * when it is confirmed, per product, where it can be partially approved instead.
+ *
+ * The outcome — counts and per-row errors — is recorded as an ImportHistory row
+ * (the "Upload History" feature), which doubles as the reference_id carried
+ * through the queue onto whatever ledger entries confirmation produces.
  *
  * Semantics the importer enforces (mirroring the item form):
  *   - SKUs are mandatory and canonically UPPERCASE — lowercase input is
@@ -46,7 +54,7 @@ class CsvInventoryImporter
     public function __construct(
         private readonly StockLedger $ledger,
         private readonly OnlineWrite $online,
-        private readonly RemoteStock $stock,
+        private readonly AdjustmentQueue $queue,
     ) {}
 
     /**
@@ -157,17 +165,23 @@ class CsvInventoryImporter
             // writes is actually true.
             // An ONLINE WRITE, not a plain local transaction (M6.5). An import
             // creates categories, items and variants — shared catalog every
-            // branch reads — and `stock_adjustment` ledger rows, which are
-            // online-authoritative. Written locally only, none of it would ever
+            // branch reads — and, since schema 21, pending adjustments, which
+            // live only in Postgres. Written locally only, none of it would ever
             // reach the business database: §17 gated this screen on connectivity
             // in M6 believing that was enough, and being online is not the same
             // as arriving. See MULTIBRANCH-ROADMAP.md M6.5.
             return $this->online->run(function () use ($rows, $user, $canViewCost, $importId, $filename, $mode, $total, $variantsBySku) {
-                $this->apply($rows, $user, $canViewCost, $importId, $variantsBySku);
+                $queued = $this->apply($rows, $user, $canViewCost, $importId, $variantsBySku);
 
                 $import = $this->record($importId, $user, $filename, $mode, 'success', $total, $total, 0, []);
 
-                $this->mirrorImport($import, $importId, $rows);
+                $this->mirrorImport($import, $rows);
+
+                // Registered on this same online write rather than run as one of
+                // its own: nesting an OnlineWrite would open a second Postgres
+                // connection and re-run the version gate inside this one's open
+                // transaction. One multi-row insert for the whole file.
+                $this->queue->enqueue($queued, $user);
 
                 return $import;
             }, 'A CSV import');
@@ -187,44 +201,31 @@ class CsvInventoryImporter
      * Every row is reachable from the import's own id or from the SKUs in the
      * file, so the set is derived rather than accumulated.
      *
-     * The ledger rows are the reason `stock_adjustment` finally has a writer at
-     * all: §5.1 calls them online-authoritative and M6's outbox deliberately
-     * does not carry them, which left nothing at all putting them upstream. This
-     * is that path, and it is single-writer — one synchronous online operation,
-     * not a queued push, so the objection §17 raised does not apply.
+     * ## No ledger rows any more, and nothing to recompute
+     *
+     * This used to read back `inventory_ledger where reference_id = <import id>`
+     * and mirror those rows too, then recompute Postgres's `stock_snapshots` from
+     * them. Since schema 21 an import writes no ledger rows at all — it asks for
+     * pending adjustments instead — so both halves would now find nothing and
+     * silently do nothing. Removed rather than left to no-op: a recompute over an
+     * empty variant list is a statement that stock moved, and it did not.
+     *
+     * The SKUs in the file are therefore the only net for the catalog rows, which
+     * they already were: a variant whose stock did not change never had a ledger
+     * row to be found by.
      *
      * @param  list<array<string, mixed>>  $rows
      */
-    private function mirrorImport(ImportHistory $import, string $importId, array $rows): void
+    private function mirrorImport(ImportHistory $import, array $rows): void
     {
-        $ledger = InventoryLedger::query()->where('reference_id', $importId)->get();
-        $variantIds = $ledger->pluck('variant_id')->unique();
-
-        // Catalog rows the import may have created or changed, resolved upward:
-        // variants it touched, their items, and those items' categories. A
-        // variant whose stock did not move has no ledger row, so the file's SKUs
-        // are the wider net.
-        $variants = Variant::query()
-            ->where(fn ($query) => $query->whereIn('id', $variantIds)->orWhereIn('sku', array_column($rows, 'sku')))
-            ->get();
-
+        $variants = Variant::query()->whereIn('sku', array_column($rows, 'sku'))->get();
         $items = Item::query()->whereIn('id', $variants->pluck('item_id')->unique())->get();
         $categories = Category::query()->whereIn('id', $items->pluck('category_id')->filter()->unique())->get();
 
         $this->online->mirror(...$categories->all());
         $this->online->mirror(...$items->all());
         $this->online->mirror(...$variants->all());
-        $this->online->mirror(...$ledger->all());
         $this->online->mirror($import);
-
-        // Postgres keeps no trigger on stock_snapshots, so the rows just sent
-        // change the ledger sum without changing the cached total. Recomputed
-        // upstream once they have landed — which is what afterMirroring() is for.
-        $branchId = (string) Instance::current()?->branch_id;
-
-        $this->online->afterMirroring(
-            fn ($remote) => $this->stock->recompute($remote, $branchId, $variantIds->values()->all()),
-        );
     }
 
     /**
@@ -956,9 +957,14 @@ class CsvInventoryImporter
      *
      * @param  list<array<string, mixed>>  $rows
      * @param  Collection<string, Variant>  $variantsBySku  from variantsBySku()
+     * @return list<array<string, mixed>> the pending stock adjustments this file
+     *                                    asks for — the catalog is written here
+     *                                    and now, the stock is not
      */
-    private function apply(array $rows, User $user, bool $canViewCost, string $importId, Collection $variantsBySku): void
+    private function apply(array $rows, User $user, bool $canViewCost, string $importId, Collection $variantsBySku): array
     {
+        $queued = [];
+
         $categoryCache = [];
         $itemCache = [];
 
@@ -1013,40 +1019,66 @@ class CsvInventoryImporter
 
             $variant->save();
 
-            $this->applyStock($variant, $row, $user, $importId);
+            $pending = $this->applyStock($variant, $row, $importId);
+
+            if ($pending !== null) {
+                $queued[] = $pending;
+            }
         }
+
+        return $queued;
     }
 
     /**
-     * Translate the row's mode + stock value into a signed delta and record it
-     * through the ledger. Zero-delta rows write nothing (no-op, not an error).
+     * Translate the row's mode + stock value into a signed delta and describe it
+     * as a pending adjustment. Zero-delta rows produce nothing (no-op, not an
+     * error).
+     *
+     * ## An import no longer moves stock, and this is where that changed
+     *
+     * This wrote a ledger entry per row until schema 21. It now returns a row for
+     * {@see AdjustmentQueue}, and the stock moves when somebody at the branch
+     * confirms it — in one go, through Approve all, which is the reason that
+     * button exists at all: a file of three hundred products is one action, and
+     * answering it three hundred times is not a workflow.
+     *
+     * Two consequences, both deliberate:
+     *
+     *  - **An import can no longer fail for want of stock.** Whether a
+     *    subtraction fits is now asked when it is confirmed, so a file that would
+     *    have gone negative imports cleanly and is refused later, per product,
+     *    where the operator can approve part of it instead. `ImportRowException`
+     *    is still thrown for everything else the file can get wrong.
+     *  - **A REPLACE delta can go stale.** `stock - on hand right now` is fixed
+     *    here and confirmed later, so sales in between shift it. Same trade as
+     *    the manual adjust screen, and the same answer: the approver partially
+     *    approves what fits. Modelling it would cost the queue two columns and
+     *    make a partial approval meaningless.
      *
      * @param  array<string, mixed>  $row
+     * @return array<string, mixed>|null
      */
-    private function applyStock(Variant $variant, array $row, User $user, string $importId): void
+    private function applyStock(Variant $variant, array $row, string $importId): ?array
     {
         $delta = $row['mode'] === InventoryCsvSchema::MODE_REPLACE
             ? $row['stock'] - $this->ledger->currentStock($variant)
             : $row['stock'];
 
         if ($delta === 0) {
-            return;
+            return null;
         }
 
-        try {
-            $this->ledger->record(
-                variant: $variant,
-                quantity: $delta,
-                type: 'stock_adjustment',
-                saleType: null,
-                referenceType: 'csv_import',
-                referenceId: $importId,
-                performedBy: $user,
-                notes: 'CSV import',
-            );
-        } catch (NegativeInventoryException $e) {
-            throw new ImportRowException($row['line'], $e->getMessage());
-        }
+        return [
+            'branch_id' => $this->queue->thisBranch(),
+            'variant_id' => (string) $variant->getKey(),
+            'quantity' => $delta,
+            'reference_type' => 'csv_import',
+            // The import_history row, so an approved movement can still be traced
+            // back to the file it came from — carried through the queue and onto
+            // the ledger entry by the resolver.
+            'reference_id' => $importId,
+            'notes' => 'CSV import',
+        ];
     }
 
     /**

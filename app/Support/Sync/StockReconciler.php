@@ -152,13 +152,14 @@ class StockReconciler
      * second opinion: `synced_at is null` is the one definition of the backlog
      * anywhere in this system (glossary §5).
      *
-     * Public because {@see QueueProcessor} needs the identical number — an
-     * adjustment issued from another branch has to be validated against
-     * reconciled stock, which is this term plus the upstream baseline. Two
-     * spellings of "unsynced" is precisely the kind of divergence that lets one
-     * of them quietly stop counting returns.
+     * Private again as of schema 21. It was public for one caller, the sync
+     * cycle's old step 2, which validated an adjustment issued elsewhere against
+     * `upstream baseline + this term`. A person at the branch answers those now,
+     * and their device reads its OWN ledger — which already contains the unsynced
+     * sales this term exists to add back — so the two-term formula has no caller
+     * and no reason to have one.
      */
-    public function unsyncedMovement(string $variantId): int
+    private function unsyncedMovement(string $variantId): int
     {
         return (int) DB::table('inventory_ledger')
             ->join('sync_outbox', function (JoinClause $join): void {

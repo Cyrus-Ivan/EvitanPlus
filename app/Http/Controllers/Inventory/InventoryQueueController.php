@@ -4,27 +4,33 @@ namespace App\Http\Controllers\Inventory;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Inventory\IssueStockAdjustmentRequest;
+use App\Http\Requests\Inventory\IssueTransferRequest;
+use App\Http\Requests\Inventory\ResolveAdjustmentRequest;
 use App\Models\Instance;
 use App\Models\User;
 use App\Models\Variant;
 use App\Support\Audit\AuditRecorder;
+use App\Support\Inventory\AdjustmentQueue;
+use App\Support\Inventory\AdjustmentResolver;
 use App\Support\Sync\BranchCycle;
+use App\Support\Sync\BranchRoster;
 use App\Support\Sync\OnlineRead;
 use App\Support\Sync\OnlineWrite;
-use App\Support\Sync\QueueProcessor;
 use App\Support\Sync\RowMapper;
 use Illuminate\Database\Connection;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Str;
-use Inertia\Inertia;
-use Inertia\Response;
 
 /**
- * Stock adjustments issued against ANOTHER branch (§10, M8).
+ * Pending stock adjustments (§10, M8).
  *
- * ## Why this screen is online-only, and why that is not a limitation
+ * There is no page here any more. This used to render
+ * `/inventory/stock-updates`; the list is now a dialog on Stock History, so what
+ * is left is JSON for that dialog plus the two write paths that fill the queue.
+ *
+ * ## Why all of it is online-only, and why that is not a limitation
  *
  * Everything it shows lives in Postgres and is deliberately not mirrored:
  * `inventory_update_queue` is coordination between the issuing user and a
@@ -40,19 +46,20 @@ use Inertia\Response;
  *
  * ## What this controller does NOT do
  *
- * It never accepts, rejects, or writes a ledger entry. A queue row is answered by
- * the TARGET branch's own device, during step 2 of its sync cycle
- * ({@see QueueProcessor}), because that device holds the one
- * copy of the facts that includes its own unsynced sales. This side only issues
- * and displays.
+ * It never writes a ledger entry. Answering a row moves stock, and that belongs
+ * to {@see AdjustmentResolver} — one class, because it is now the only writer of
+ * `type = 'stock_adjustment'` anywhere and single-writer-per-table is what keeps
+ * last-write-wins out of this system. This controller issues, displays, and
+ * hands decisions to that class.
  *
- * ## And what still belongs on the other screen
+ * ## Every branch's rows go through here, including this one's
  *
- * An adjustment aimed at THIS branch stays a direct online write through
- * {@see StockAdjustmentController}: the device can see its own backlog, so
- * `StockLedger` validates it against reconciled stock immediately and refuses a
- * negative outcome on the spot. Sending it through the queue would make a shelf
- * recount wait for a cycle to buy nothing.
+ * Until schema 21 only an adjustment aimed at ANOTHER branch was queued; one
+ * aimed at this device was a direct online write, on the grounds that a device
+ * can see its own backlog and so needs no mediation. That reasoning was about
+ * arithmetic, and arithmetic was never the hard part — a recount is a claim about
+ * a shelf somebody has to go and look at. So the exception is gone, and
+ * {@see StockAdjustmentController} now asks rather than writes.
  */
 class InventoryQueueController extends Controller
 {
@@ -62,26 +69,58 @@ class InventoryQueueController extends Controller
     public function __construct(
         private readonly OnlineRead $read,
         private readonly OnlineWrite $online,
+        private readonly AdjustmentQueue $queue,
     ) {}
 
-    public function index(): Response
+    /**
+     * The pending list, as JSON for the dialog on Stock History.
+     *
+     * JSON and not an Inertia page because there is no page any more: this used
+     * to be `/inventory/stock-updates`, and it is now a modal opened from Stock
+     * History, which every role can reach. Fetching on open (and on that page's
+     * mount, for the count badge) keeps the read off every other render — the
+     * same reason {@see branches()} is a JSON route.
+     *
+     * ## Two sections, because they answer two different questions
+     *
+     * - `inbox` — rows aimed at THIS branch and still pending. These are the ones
+     *   somebody here has to answer, so they are ordered OLDEST FIRST: that is the
+     *   order they should be worked, and two subtractions that fit one at a time
+     *   may not fit together.
+     * - `elsewhere` — rows aimed at other branches, newest first. Informational.
+     *   This is the whole of what the old page showed, and it is the only place an
+     *   issuer ever learns their adjustment was turned down: a rejection writes no
+     *   ledger row, and could not reach them if it did, because `Puller` filters
+     *   `inventory_ledger` to this branch.
+     *
+     * `?resolved=1` swaps the inbox for this branch's already-answered rows. They
+     * are hidden by default — an answered row's movement is in Stock History, and
+     * a list that keeps them is a list nobody can see the work in.
+     */
+    public function pending(Request $request): JsonResponse
     {
         $branchId = $this->branchId();
+        $resolved = $request->boolean('resolved');
 
-        $data = rescue(fn (): array => $this->read->run(function (Connection $remote) use ($branchId): array {
+        // The `null` is the rescue's fallback, not this closure's: a read that
+        // failed is a device with no connection, which is a different answer from
+        // a queue with nothing in it.
+        $data = rescue(fn (): array => $this->read->run(function (Connection $remote) use ($branchId, $resolved): array {
             return [
-                'branches' => $this->roster($remote, $branchId),
-                'rows' => $this->queued($remote),
+                'branches' => BranchRoster::read($remote),
+                'inbox' => $this->inbox($remote, $branchId, $resolved),
+                'elsewhere' => $this->elsewhere($remote, $branchId),
             ];
-        }, 'Branch stock updates'), ['branches' => [], 'rows' => []], report: false);
+        }, 'Branch stock updates'), null, report: false);
 
-        return Inertia::render('inventory/stock-updates', [
-            'branches' => $data['branches'],
-            'queued' => $this->describe($data['rows'], $data['branches']),
-            // One flag for both halves: everything on this screen came from the
-            // business database, so if the read failed there is nothing to show
-            // and nothing to issue.
-            'online' => $data['branches'] !== [],
+        if ($data === null) {
+            return response()->json(['inbox' => [], 'elsewhere' => [], 'online' => false]);
+        }
+
+        return response()->json([
+            'inbox' => $this->describe($data['inbox'], $data['branches']),
+            'elsewhere' => $this->describe($data['elsewhere'], $data['branches']),
+            'online' => true,
         ]);
     }
 
@@ -126,7 +165,7 @@ class InventoryQueueController extends Controller
         $data = $request->validated();
         $variant = Variant::query()->with('item')->findOrFail($data['variant_id']);
 
-        $this->issue($data, (string) $request->user()?->getKey());
+        $this->issue($data, $request->user());
 
         $audit->record(
             action: 'inventory.stock.queued',
@@ -146,12 +185,13 @@ class InventoryQueueController extends Controller
     }
 
     /**
-     * Issue a rejected adjustment again, unchanged.
+     * Ask for a rejected adjustment again, unchanged.
      *
      * A new row rather than a reopened one: `status` and `resolved_at` are tied by
      * a check constraint, the rejection is a fact that happened, and the queue is
      * the record of what was asked for and what came of it. Re-deciding a resolved
-     * row would erase the first answer.
+     * row would erase the first answer — and that answer is the only account of it
+     * anywhere, since a rejection writes no ledger row.
      */
     public function reissue(string $queued, AuditRecorder $audit): RedirectResponse
     {
@@ -170,23 +210,154 @@ class InventoryQueueController extends Controller
             ]);
         }
 
-        $this->issue([
-            'branch_id' => (string) $original->branch_id,
-            'variant_id' => (string) $original->variant_id,
-            'quantity' => (int) $original->quantity,
-            'notes' => $original->notes,
-        ], (string) request()->user()?->getKey());
+        // Carried through unchanged, and this is easy to get wrong: a re-issue
+        // that hard-coded `manual_adjustment` would silently turn a rejected
+        // TRANSFER leg into a plain adjustment aimed at the branch that turned it
+        // down, with the counterparty pointing at whoever pressed the button.
+        // A re-issue is the same request again, not a new kind of one.
+        $this->online->run(function () use ($original): void {
+            $this->queue->enqueue([[
+                'branch_id' => (string) $original->branch_id,
+                'counterparty_branch_id' => $original->counterparty_branch_id === null
+                    ? null
+                    : (string) $original->counterparty_branch_id,
+                'parent_id' => $original->parent_id === null ? null : (string) $original->parent_id,
+                'variant_id' => (string) $original->variant_id,
+                'quantity' => (int) $original->quantity,
+                'reference_type' => (string) $original->reference_type,
+                'reference_id' => $original->reference_id === null ? null : (string) $original->reference_id,
+                'notes' => $original->notes,
+            ]], request()->user());
+        }, 'Stock');
 
         $audit->record(
             action: 'inventory.stock.queued',
             auditable: Variant::query()->find($original->variant_id),
-            description: sprintf('Re-issued a rejected stock adjustment of %+d.', (int) $original->quantity),
+            description: sprintf('Asked again for a rejected stock adjustment of %+d.', (int) $original->quantity),
             new: ['branch_id' => (string) $original->branch_id, 'reissued_from' => $queued],
         );
 
         return back()->with('toast', [
             'type' => 'success',
-            'message' => 'Adjustment queued again. That branch will apply it on its next sync.',
+            'message' => 'Asked again. That branch has to confirm it before anything moves.',
+        ]);
+    }
+
+    /**
+     * Move stock from one branch to another, in two halves.
+     *
+     * Only the FIRST half is written here: a pending row at the SENDING branch
+     * for what is about to leave. Somebody there confirms the stock really went
+     * out of the door, and confirming it spawns the second row at the receiving
+     * branch ({@see AdjustmentResolver}) — for what was actually sent, which is
+     * not always what was asked for.
+     *
+     * Both ends answer for themselves, and that is the whole design. Stock
+     * leaving one shop and arriving at another are two physical claims made by
+     * two different people, and either can be false on its own: the van left with
+     * three and two came off it intact. A transfer written as one movement would
+     * make whichever branch did not answer the author of the other's stock.
+     */
+    public function transfer(IssueTransferRequest $request, AuditRecorder $audit): RedirectResponse
+    {
+        $data = $request->validated();
+        $variant = Variant::query()->with('item')->findOrFail($data['variant_id']);
+
+        $this->online->run(function () use ($data, $request): void {
+            $this->queue->enqueue([[
+                'branch_id' => $data['from_branch_id'],
+                'counterparty_branch_id' => $data['to_branch_id'],
+                'variant_id' => $data['variant_id'],
+                // Negative: this leg is stock LEAVING. The operator types how
+                // many are moving and never a sign — see IssueTransferRequest.
+                'quantity' => -$data['quantity'],
+                'reference_type' => 'transfer',
+                'notes' => $data['notes'] ?? null,
+            ]], $request->user());
+        }, 'Stock');
+
+        $audit->record(
+            action: 'inventory.stock.transfer',
+            auditable: $variant,
+            description: sprintf('Asked to transfer %d between branches.', $data['quantity']),
+            new: [
+                'from_branch_id' => $data['from_branch_id'],
+                'to_branch_id' => $data['to_branch_id'],
+                'quantity' => $data['quantity'],
+                'notes' => $data['notes'] ?? null,
+            ],
+        );
+
+        return back()->with('toast', [
+            'type' => 'success',
+            'message' => 'Transfer requested. The sending branch confirms it first, then the receiving branch.',
+        ]);
+    }
+
+    /**
+     * Answer pending rows aimed at THIS branch.
+     *
+     * Open to every role, Cashier included, and that is the point rather than an
+     * oversight. The question a resolution answers is "did this stock actually
+     * arrive", and the person who knows is whoever is standing in the shop — a
+     * permission floor here would mean stock waiting on somebody who is not
+     * there. Issuing one is still Admin+, because deciding what SHOULD move is a
+     * different question from reporting what did.
+     */
+    public function resolve(ResolveAdjustmentRequest $request, AdjustmentResolver $resolver, AuditRecorder $audit): RedirectResponse
+    {
+        $decisions = $request->decisions();
+        $resolved = $resolver->resolve($decisions, $request->user());
+
+        return $this->resolved($resolved, count($decisions), $audit, $request->user());
+    }
+
+    /**
+     * Approve everything currently waiting on this branch.
+     *
+     * Exists because a CSV import is one action that produces hundreds of rows.
+     * Guarded by a confirmation dialog on the client — it moves real stock, and
+     * the count is the whole of what somebody is agreeing to.
+     */
+    public function resolveAll(Request $request, AdjustmentResolver $resolver, AuditRecorder $audit): RedirectResponse
+    {
+        $resolved = $resolver->approveAll($request->user());
+
+        return $this->resolved($resolved, $resolved, $audit, $request->user());
+    }
+
+    /**
+     * The shared reply, and the audit row that goes with it.
+     *
+     * $asked can exceed $resolved when a row was answered on another device
+     * between this one reading the list and submitting — which is not an error,
+     * but is worth saying rather than reporting a number nobody recognises.
+     */
+    private function resolved(int $resolved, int $asked, AuditRecorder $audit, User $actor): RedirectResponse
+    {
+        if ($resolved === 0) {
+            return back()->with('toast', [
+                'type' => 'error',
+                'message' => 'Nothing was left to answer — those adjustments have already been dealt with.',
+            ]);
+        }
+
+        // The queue row records WHAT was decided (status, approved_quantity,
+        // resolution_reason); this records that a person decided it, on this
+        // device, at this time — which the queue's own columns cannot say once a
+        // row has been read from another branch.
+        $audit->record(
+            action: 'inventory.stock.resolved',
+            description: sprintf('Answered %d pending stock adjustment(s).', $resolved),
+            new: ['resolved' => $resolved],
+            actor: $actor,
+        );
+
+        return back()->with('toast', [
+            'type' => 'success',
+            'message' => $resolved === $asked
+                ? sprintf('%d stock adjustment(s) answered.', $resolved)
+                : sprintf('%d of %d answered — the rest had already been dealt with.', $resolved, $asked),
         ]);
     }
 
@@ -195,24 +366,20 @@ class InventoryQueueController extends Controller
      *
      * @param  array{branch_id: string, variant_id: string, quantity: int, notes: string|null}  $data
      */
-    private function issue(array $data, string $issuedBy): void
+    private function issue(array $data, User $issuedBy): void
     {
         $this->online->run(function () use ($data, $issuedBy): void {
-            $this->online->afterMirroring(function (Connection $remote) use ($data, $issuedBy): void {
-                $remote->table('inventory_update_queue')->insert([
-                    'id' => (string) Str::uuid(),
-                    'branch_id' => $data['branch_id'],
-                    'variant_id' => $data['variant_id'],
-                    'quantity' => $data['quantity'],
-                    'notes' => $data['notes'] ?? null,
-                    'status' => 'pending',
-                    'issued_by' => $issuedBy,
-                    // Postgres's clock, not PHP's: these are `timestamptz`, and
-                    // the ordering the target walks the queue in depends on them.
-                    'created_at' => $remote->raw('CURRENT_TIMESTAMP'),
-                    'updated_at' => $remote->raw('CURRENT_TIMESTAMP'),
-                ]);
-            });
+            $this->queue->enqueue([[
+                'branch_id' => $data['branch_id'],
+                // The branch being asked cannot see who asked, and the ledger
+                // entry it may write has to say so — this is what becomes
+                // `counterparty_branch_code` on that entry.
+                'counterparty_branch_id' => $this->queue->thisBranch(),
+                'variant_id' => $data['variant_id'],
+                'quantity' => $data['quantity'],
+                'reference_type' => 'manual_adjustment',
+                'notes' => $data['notes'] ?? null,
+            ]], $issuedBy);
         }, 'Stock');
     }
 
@@ -237,11 +404,33 @@ class InventoryQueueController extends Controller
     }
 
     /**
+     * Rows this branch has to answer — or, with $resolved, the ones it already has.
+     *
      * @return list<object>
      */
-    private function queued(Connection $remote): array
+    private function inbox(Connection $remote, string $branchId, bool $resolved): array
     {
         return $remote->table('inventory_update_queue')
+            ->where('branch_id', $branchId)
+            ->when($resolved,
+                fn ($query) => $query->where('status', '!=', 'pending')->orderByDesc('resolved_at'),
+                // Oldest first: see the pending() docblock.
+                fn ($query) => $query->where('status', 'pending')->orderBy('created_at')->orderBy('id'),
+            )
+            ->limit(self::LIMIT)
+            ->get()
+            ->all();
+    }
+
+    /**
+     * Rows aimed at some other branch, whatever their status.
+     *
+     * @return list<object>
+     */
+    private function elsewhere(Connection $remote, string $branchId): array
+    {
+        return $remote->table('inventory_update_queue')
+            ->where('branch_id', '!=', $branchId)
             ->orderByDesc('created_at')
             ->limit(self::LIMIT)
             ->get()
@@ -256,8 +445,13 @@ class InventoryQueueController extends Controller
      * or issuer has since been archived still renders, because both lookups
      * include the archived.
      *
+     * Branch names come from {@see BranchRoster} rather than the picker's roster,
+     * because that one hides disabled branches: a branch disabled after it was
+     * sent an adjustment cannot be offered a new one, but the row it was already
+     * sent still has to say whose it is.
+     *
      * @param  list<object>  $rows
-     * @param  list<array{id: string, code: string, name: string, is_this_branch: bool}>  $branches
+     * @param  array<string, array{id: string, code: string, name: string}>  $branches
      * @return list<array<string, mixed>>
      */
     private function describe(array $rows, array $branches): array
@@ -272,27 +466,40 @@ class InventoryQueueController extends Controller
             ->get()
             ->keyBy('id');
 
-        // Names only, and `withTrashed()`: the person who issued an adjustment
-        // may since have been archived, and the row still has to say who asked.
+        // Names only, and `withTrashed()`: the person who issued an adjustment —
+        // or answered it — may since have been archived, and the row still has to
+        // say who. Both columns in one lookup; `resolved_by` is null until
+        // somebody answers.
         $users = User::query()
             ->withTrashed()
-            ->whereIn('id', array_map(fn (object $row): string => (string) $row->issued_by, $rows))
+            ->whereIn('id', array_filter(array_merge(
+                array_map(fn (object $row): string => (string) $row->issued_by, $rows),
+                array_map(fn (object $row): ?string => $row->resolved_by === null ? null : (string) $row->resolved_by, $rows),
+            )))
             ->pluck('name', 'id');
 
-        $branchNames = collect($branches)->keyBy('id');
-
-        return array_map(function (object $row) use ($variants, $users, $branchNames): array {
+        return array_map(function (object $row) use ($variants, $users, $branches): array {
             $variant = $variants->get((string) $row->variant_id);
 
             return [
                 'id' => (string) $row->id,
-                'branch' => $branchNames->get((string) $row->branch_id)['code'] ?? 'Unknown branch',
+                'branch' => $branches[(string) $row->branch_id]['code'] ?? 'Unknown branch',
                 'item' => $variant?->item->name ?? 'Unknown product',
                 'variant' => $variant?->name,
                 'quantity' => (int) $row->quantity,
+                'approved_quantity' => $row->approved_quantity === null ? null : (int) $row->approved_quantity,
+                'reference_type' => (string) $row->reference_type,
+                // The branch on the other end, when there is one. Null on most
+                // rows: a branch adjusting its own stock has no counterparty.
+                'counterparty_branch' => $row->counterparty_branch_id === null
+                    ? null
+                    : ($branches[(string) $row->counterparty_branch_id]['code'] ?? 'Unknown branch'),
                 'notes' => $row->notes,
                 'status' => (string) $row->status,
-                'rejection_reason' => $row->rejection_reason,
+                'resolution_reason' => $row->resolution_reason,
+                'resolved_by' => $row->resolved_by === null
+                    ? null
+                    : ($users[(string) $row->resolved_by] ?? 'Unknown user'),
                 // The queue is read from Postgres and the names come from this
                 // device's mirror, so the two can legitimately disagree for one
                 // cycle — a user created at another branch minutes ago.

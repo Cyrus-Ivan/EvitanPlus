@@ -40,30 +40,30 @@ class StockUpdateQueueTest extends TestCase
         ], $overrides);
     }
 
-    public function test_a_cashier_may_neither_see_nor_issue(): void
+    public function test_a_cashier_may_see_the_list_but_not_issue(): void
     {
         $variant = Variant::factory()->create();
         $cashier = User::factory()->cashier()->create();
 
-        $this->actingAs($cashier)->get(route('stock-updates'))->assertForbidden();
+        // The two halves part company at schema 21. Reading and ANSWERING the
+        // list is Cashier-level, because whether a delivery arrived is known by
+        // whoever is in the shop (AdjustmentResolutionTest). Deciding what SHOULD
+        // move — especially at another branch — is still Admin+.
+        $this->actingAs($cashier)->getJson(route('stock-updates.pending'))->assertOk();
         $this->actingAs($cashier)->post(route('stock-updates.store'), $this->payload($variant))->assertForbidden();
     }
 
-    public function test_an_admin_can_open_the_screen(): void
+    public function test_an_admin_can_read_the_pending_list(): void
     {
         // No credential is sealed on a test device, so the online read cannot
-        // happen — and the screen says so rather than failing. Everything on it
-        // lives in the business database, so there is genuinely nothing to show.
+        // happen — and the endpoint says so rather than failing. Everything it
+        // returns lives in the business database, so there is genuinely nothing
+        // to show, and `online: false` is what makes the dialog say that instead
+        // of claiming the queue is empty.
         $this->actingAs(User::factory()->admin()->create())
-            ->get(route('stock-updates'))
+            ->getJson(route('stock-updates.pending'))
             ->assertOk()
-            ->assertInertia(fn ($page) => $page
-                // `false`, like every other component assertion here: the view
-                // finder looks in js/Pages and this project uses js/pages.
-                ->component('inventory/stock-updates', false)
-                ->where('online', false)
-                ->where('queued', [])
-            );
+            ->assertExactJson(['inbox' => [], 'elsewhere' => [], 'online' => false]);
     }
 
     public function test_issuing_leaves_this_device_untouched(): void

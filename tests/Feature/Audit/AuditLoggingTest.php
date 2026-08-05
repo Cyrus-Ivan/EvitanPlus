@@ -143,7 +143,10 @@ class AuditLoggingTest extends TestCase
             'notes' => 'restock',
         ])->assertSessionHasNoErrors();
 
-        $log = AuditLog::where('action', 'inventory.stock.adjusted')->firstOrFail();
+        // `queued`, not `adjusted`: since schema 21 this screen asks for a stock
+        // change rather than making one, and the audit trail says which of those
+        // happened. Answering it is a separate row (`inventory.stock.resolved`).
+        $log = AuditLog::where('action', 'inventory.stock.queued')->firstOrFail();
         $this->assertSame(5, $log->new_values['delta']);
     }
 

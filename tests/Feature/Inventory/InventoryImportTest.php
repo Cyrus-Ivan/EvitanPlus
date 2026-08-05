@@ -11,11 +11,39 @@ use App\Support\Inventory\InventoryCsvSchema;
 use App\Support\Inventory\StockLedger;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Tests\Feature\Inventory\Concerns\FakesThePendingQueue;
 use Tests\TestCase;
 
 class InventoryImportTest extends TestCase
 {
-    use RefreshDatabase;
+    use FakesThePendingQueue, RefreshDatabase;
+
+    /**
+     * An import writes the catalog and asks for the stock (schema 21).
+     *
+     * The stand-in is installed for every test in this file because the ASKING
+     * is an `afterMirroring` insert into a Postgres-only table, which the
+     * default fake drops — so without it an import would appear to queue
+     * nothing, and the tests below would prove the wrong thing quietly.
+     */
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->fakeBusinessQueue();
+    }
+
+    /**
+     * Agree that everything the file asked for really arrived.
+     *
+     * Called by the tests whose subject is what an import DOES to stock. They
+     * used to get this for free, because an import moved stock the moment it was
+     * uploaded; it now asks, and somebody at the branch answers.
+     */
+    private function confirmImportedStock(User $actor): void
+    {
+        $this->approveEverythingPending($actor);
+    }
 
     private function stockOf(Variant $variant): int
     {
@@ -86,6 +114,13 @@ class InventoryImportTest extends TestCase
         $this->assertSame('15.00', $variant->selling_price);
         $this->assertSame('9.50', $variant->cost);
         $this->assertSame(12, $variant->low_stock_threshold);
+
+        // The catalog lands immediately; the stock does not. A brand-new product
+        // sits at 0 until somebody says the shelf really holds a hundred, which
+        // is the honest state — nobody has looked yet.
+        $this->assertSame(0, $this->stockOf($variant));
+
+        $this->confirmImportedStock($owner);
         $this->assertSame(100, $this->stockOf($variant));
 
         $this->assertDatabaseHas('categories', ['name' => 'Beverages']);
@@ -156,7 +191,11 @@ class InventoryImportTest extends TestCase
         $variant->refresh();
         $this->assertSame('25.00', $variant->selling_price);
         $this->assertSame(8, $variant->low_stock_threshold);
-        // Replace-count from 5 -> 20 is a +15 delta.
+
+        // Replace-count from 5 -> 20 is a +15 delta, fixed when the file was
+        // read. If stock moves before this is confirmed the delta no longer
+        // produces 20 — deliberately, and the approver partially approves.
+        $this->confirmImportedStock($owner);
         $this->assertSame(20, $this->stockOf($variant));
         $this->assertDatabaseHas('inventory_ledger', [
             'variant_id' => $variant->id,
@@ -179,6 +218,8 @@ class InventoryImportTest extends TestCase
                 $this->row(['category' => '', 'sku' => 'SKU-1', 'variant' => '', 'unit' => '', 'description' => '', 'stock' => '5', 'mode' => 'add_to_current_stock']),
             ])])
             ->assertSessionHasNoErrors();
+
+        $this->confirmImportedStock($owner);
 
         $this->assertSame(15, $this->stockOf($variant->refresh()));
         $this->assertDatabaseHas('inventory_ledger', ['variant_id' => $variant->id, 'quantity' => 5]);
@@ -324,6 +365,11 @@ class InventoryImportTest extends TestCase
             ->post(route('inventory.import.store'), ['file' => $this->csv([$this->row(['stock' => '30'])])])
             ->assertSessionHasNoErrors();
 
+        $this->confirmImportedStock($owner);
+
+        // The link survives the extra step: the import id rides the queue row
+        // and is carried onto the ledger entry when it is confirmed, so a
+        // movement can still be traced back to the file that asked for it.
         $import = ImportHistory::first();
         $variant = Variant::where('sku', 'WATER-500')->first();
         $this->assertDatabaseHas('inventory_ledger', [
@@ -528,9 +574,11 @@ class InventoryImportTest extends TestCase
     {
         $owner = User::factory()->owner()->create();
 
+        // `currentStock`, not `record`: the importer no longer writes ledger
+        // rows at all, so throwing from record() would prove nothing. This is
+        // still the one StockLedger call an import makes.
         $this->mock(StockLedger::class, function ($mock) {
-            $mock->shouldReceive('currentStock')->andReturn(0);
-            $mock->shouldReceive('record')->andThrow(new \RuntimeException('boom'));
+            $mock->shouldReceive('currentStock')->andThrow(new \RuntimeException('boom'));
         });
 
         $this->actingAs($owner)
@@ -746,6 +794,8 @@ class InventoryImportTest extends TestCase
         $this->assertSame('25.00', $variant->selling_price);
         $this->assertSame('11.00', $variant->cost);
         $this->assertSame(5, $variant->low_stock_threshold);
+
+        $this->confirmImportedStock($owner);
         $this->assertSame(40, $this->stockOf($variant));
         $this->assertSame('500ml', $variant->name); // immutable, untouched
         $this->assertSame('4801234567890', $variant->barcode); // immutable, untouched

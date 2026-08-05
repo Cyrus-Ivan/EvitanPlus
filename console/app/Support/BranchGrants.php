@@ -211,15 +211,42 @@ final class BranchGrants
      * moving status off 'pending' MUST set resolved_at in the same statement or
      * the constraint rejects it. Accepting a row additionally writes
      * ledger_entry_id (the traceability link that makes acceptance idempotent)
-     * and rejecting one writes rejection_reason (what the in-app admin shows
-     * the Owner). So the grant is the four columns that one resolution touches
-     * — still strictly less than table-level UPDATE, which would also expose
+     * and turning one down writes resolution_reason (what the branch that asked
+     * is shown). So the grant is the columns that one resolution touches —
+     * still strictly less than table-level UPDATE, which would also expose
      * quantity, variant_id, branch_id and issued_by.
+     *
+     * ## Widened to six at schema 21, and why (§9's standing rule)
+     *
+     * A queue row used to be answered by the target branch's sync cycle, which
+     * could only say yes or no. It is now answered by a PERSON at that branch,
+     * who can also agree to PART of it — "3 were sent, 2 arrived intact" — and
+     * who is a different user from the one who asked. Recording that needs two
+     * more columns:
+     *
+     *  - approved_quantity — what was actually agreed. This is the whole of how
+     *    a partial approval is stored; without it the resolver could only write
+     *    the number somebody else asked for.
+     *  - resolved_by — who agreed. `issued_by` is who asked, and those stop
+     *    being the same person once a human answers.
+     *
+     * The exposure does not change in kind. All six are resolution columns on a
+     * row the branch is being asked to answer; none of them lets a branch alter
+     * what it was asked for, aim a row somewhere else, or remove one. Delivered
+     * to already-provisioned businesses by `schema:reapply-grants`, and by
+     * `schema:migrate` for any schema that advanced.
      *
      * @var array<string, list<string>>
      */
     public const UPDATE_COLUMNS = [
-        'inventory_update_queue' => ['status', 'resolved_at', 'rejection_reason', 'ledger_entry_id'],
+        'inventory_update_queue' => [
+            'status',
+            'resolved_at',
+            'resolution_reason',
+            'ledger_entry_id',
+            'approved_quantity',
+            'resolved_by',
+        ],
     ];
 
     /**

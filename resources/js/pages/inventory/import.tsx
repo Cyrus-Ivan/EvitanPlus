@@ -75,7 +75,7 @@ export default function InventoryImport({ history, online }: { history: Paginate
             await confirm({
                 title: 'Import this CSV?',
                 description:
-                    'New categories, products and variants will be created. For a row matching an existing SKU, only price, cost, stock, low-stock threshold and category are updated — name, barcode, unit and description are fixed after creation. If any row is invalid the entire import is rejected and nothing is saved.',
+                    'New categories, products and variants will be created. For a row matching an existing SKU, only price, cost, low-stock threshold and category are updated — name, barcode, unit and description are fixed after creation. Stock does NOT move: each row becomes a pending stock adjustment for somebody at this branch to confirm under Pending stock adjustments on Stock History. If any row is invalid the entire import is rejected and nothing is saved.',
                 confirmLabel: 'Import',
             })
         ) {
@@ -124,14 +124,20 @@ export default function InventoryImport({ history, online }: { history: Paginate
                         Each row carries its own mode column: <span className="font-medium">replace_stock_count</span> sets the exact on-hand count,{' '}
                         <span className="font-medium">add_to_current_stock</span> adjusts it by the given amount.
                     </p>
+                    <p className="text-muted-foreground mt-1 text-sm">
+                        The catalog is written straight away; the stock is not. Every row's change waits under{' '}
+                        <span className="font-medium">Pending stock adjustments</span> on Stock History until somebody here confirms it — use{' '}
+                        <span className="font-medium">Approve all</span> to accept the whole file at once. A new product stays at 0 until then.
+                    </p>
                     {/*
-                        An import creates catalog rows and stock-adjustment
-                        ledger rows, all of which belong to the whole business.
-                        Since M6.5 it writes them straight to the business
-                        database (CsvInventoryImporter runs as an online write),
-                        which is what "online-only" was always supposed to mean —
-                        M6 gated the screen on connectivity believing that alone
-                        was enough, and being online is not the same as arriving.
+                        An import creates catalog rows, which belong to the whole
+                        business. Since M6.5 it writes them straight to the
+                        business database (CsvInventoryImporter runs as an online
+                        write), which is what "online-only" was always supposed to
+                        mean — M6 gated the screen on connectivity believing that
+                        alone was enough, and being online is not the same as
+                        arriving. Its STOCK changes are pending adjustments as of
+                        schema 21 and move nothing until confirmed.
                     */}
                     {!online && (
                         <div className="mt-3">

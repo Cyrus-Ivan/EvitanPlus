@@ -33,6 +33,7 @@ class InventoryLedger extends Model
         'reference_id',
         'reference_type',
         'notes',
+        'counterparty_branch_code',
         'performed_by',
     ];
 

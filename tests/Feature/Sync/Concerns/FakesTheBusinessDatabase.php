@@ -2,9 +2,9 @@
 
 namespace Tests\Feature\Sync\Concerns;
 
+use App\Support\Inventory\AdjustmentResolver;
 use App\Support\Sync\BranchCycle;
 use App\Support\Sync\Puller;
-use App\Support\Sync\QueueProcessor;
 use App\Support\Sync\RemoteStock;
 use App\Support\Sync\RowMapper;
 use App\Support\Sync\StockReconciler;
@@ -74,10 +74,13 @@ trait FakesTheBusinessDatabase
                             "last_sync_at" datetime, "unsynced_count" integer, "last_seen_at" datetime,
                             "connection_state" varchar, "last_error" text,
                             "created_at" datetime, "updated_at" datetime',
-        'inventory_update_queue' => '"id" varchar, "branch_id" varchar, "variant_id" varchar,
-                                     "quantity" integer, "notes" varchar, "status" varchar,
-                                     "rejection_reason" varchar, "ledger_entry_id" varchar,
-                                     "issued_by" varchar, "resolved_at" datetime,
+        'inventory_update_queue' => '"id" varchar, "parent_id" varchar, "branch_id" varchar,
+                                     "counterparty_branch_id" varchar, "variant_id" varchar,
+                                     "quantity" integer, "approved_quantity" integer,
+                                     "reference_type" varchar, "reference_id" varchar,
+                                     "notes" varchar, "status" varchar,
+                                     "resolution_reason" varchar, "ledger_entry_id" varchar,
+                                     "issued_by" varchar, "resolved_by" varchar, "resolved_at" datetime,
                                      "created_at" datetime, "updated_at" datetime',
     ];
 
@@ -86,10 +89,11 @@ trait FakesTheBusinessDatabase
      *
      * `ON CONFLICT (cols)` needs a matching unique index to target, on both
      * engines — so a stand-in without these would refuse the very statements
-     * {@see RemoteStock} and {@see QueueProcessor}
-     * really run, and the alternative would be testing a rewritten query instead
-     * of the shipped one. Everything else stays constraint-free for the reason
-     * given on {@see createTableSql()}.
+     * {@see RemoteStock} and the mirroring in
+     * {@see AdjustmentResolver} really run, and the
+     * alternative would be testing a rewritten query instead of the shipped one.
+     * Everything else stays constraint-free for the reason given on
+     * {@see createTableSql()}.
      *
      * @var array<string, list<string>>
      */

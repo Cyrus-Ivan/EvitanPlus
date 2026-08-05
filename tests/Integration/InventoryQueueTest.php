@@ -7,6 +7,7 @@ use App\Models\Instance;
 use App\Models\SyncStatus;
 use App\Models\User;
 use App\Models\Variant;
+use App\Support\Inventory\AdjustmentResolver;
 use App\Support\Inventory\StockLedger;
 use App\Support\Sync\SyncCycle;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -20,24 +21,23 @@ use Tests\TestCase;
 use Throwable;
 
 /**
- * The M8 milestone, against two real provisioned branches: **an adjustment
- * issued at one branch for another, and turned down by that branch when its own
- * sales have already spent the stock.**
+ * Pending stock adjustments against two real provisioned branches: **asked for
+ * at one branch, answered by a person at the other.**
  *
  * ## Why this cannot be proved anywhere else
  *
- * tests/Feature/Sync/InventoryQueueTest.php covers the accept/reject arithmetic
+ * tests/Feature/Inventory/AdjustmentResolutionTest.php covers the decision
  * against a SQLite stand-in, in milliseconds. Three things it structurally
  * cannot reach, and each of them fails silently:
  *
- *  - **The INSERT grant.** `inventory_update_queue` was added to
- *    `BranchGrants::INSERT` by this phase and delivered to existing schemas with
- *    `schema:reapply-grants`. Without it every issue is `permission denied`, and
- *    the branch role is the only credential the shipped app ever holds — the
+ *  - **The INSERT grant.** Without `inventory_update_queue` in
+ *    `BranchGrants::INSERT`, every request is `permission denied` — and the
+ *    branch role is the only credential the shipped app ever holds, because the
  *    console never ships.
- *  - **The four-column UPDATE grant.** A resolution that also set `updated_at`
- *    is refused, because the grant is column-level. A stand-in with no grants at
- *    all would pass either way.
+ *  - **The SIX-column UPDATE grant.** The grant is column-level, so a resolution
+ *    that touched a seventh column is refused. Schema 21 widened it from four to
+ *    six for `approved_quantity` and `resolved_by`; a stand-in with no grants at
+ *    all would pass either way, including with the old four.
  *  - **The check constraints.** `(status = 'pending') = (resolved_at is null)`
  *    and `resulting_snapshot >= 0` are real Postgres constraints; the stand-in
  *    carries none, on purpose.
@@ -132,7 +132,7 @@ class InventoryQueueTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_an_adjustment_the_branch_cannot_afford_is_turned_down_on_reconnect(): void
+    public function test_a_branch_can_turn_down_an_adjustment_and_the_reason_reaches_the_issuer(): void
     {
         // Branch B has ten on its shelf, and that figure reaches Postgres — a
         // manual adjustment is an online write.
@@ -142,28 +142,35 @@ class InventoryQueueTest extends TestCase
         $this->hydrateAs(self::$documentB);
         $this->stockUp('QUEUE1', 10);
 
-        // Someone at branch A writes off twenty-five. B is not running, is not
-        // consulted, and cannot be: the row is only a request.
+        // Someone at branch A writes off twenty-five. B is not running and is
+        // not consulted: the row is only a request.
         $this->hydrateAs(self::$documentA);
         $this->issue(self::$documentB, 'QUEUE1', -25, 'Written off at QBB');
 
-        $queued = $this->remote('select * from inventory_update_queue');
-        $this->assertCount(1, $queued);
-        $this->assertSame('pending', $queued[0]['status']);
-        $this->assertNull($queued[0]['resolved_at']);
+        $queued = $this->queued('Written off at QBB');
+        $this->assertSame('pending', $queued['status']);
+        $this->assertNull($queued['resolved_at']);
 
-        // B reconnects. Its cycle answers the queue in step 2.
+        // B comes back. A full cycle now changes NOTHING about the queue — the
+        // step that used to answer these is gone, which is why schema 21 raised
+        // the app floor: a build still running it would auto-approve this.
         $this->hydrateAs(self::$documentB);
         $result = app(SyncCycle::class)->run();
 
         $this->assertSame(SyncStatus::ONLINE, $result['state'], (string) $result['error']);
-        $this->assertSame(1, $result['resolved']);
+        $this->assertSame('pending', $this->queued('Written off at QBB')['status']);
 
-        $answered = $this->remote('select * from inventory_update_queue')[0];
+        // A person at B answers it. This is the statement of record: the stock
+        // was never written off here.
+        $this->resolve($queued['id'], 'reject', reason: 'Nothing was ever taken off the shelf here.');
+
+        $answered = $this->queued('Written off at QBB');
 
         $this->assertSame('rejected', $answered['status']);
         $this->assertNotNull($answered['resolved_at']);
-        $this->assertStringContainsString('10 on hand', (string) $answered['rejection_reason']);
+        $this->assertSame('Nothing was ever taken off the shelf here.', $answered['resolution_reason']);
+        $this->assertSame($this->owner()->getKey(), $answered['resolved_by']);
+        $this->assertNull($answered['approved_quantity']);
         $this->assertNull($answered['ledger_entry_id']);
 
         // Stock is untouched on both sides, and never went negative anywhere.
@@ -181,7 +188,7 @@ class InventoryQueueTest extends TestCase
         );
     }
 
-    public function test_an_adjustment_the_branch_can_afford_becomes_a_ledger_entry_and_comes_back_down(): void
+    public function test_an_approved_adjustment_becomes_a_ledger_entry_on_both_sides(): void
     {
         $this->hydrateAs(self::$documentA);
         $this->createProduct('QUEUE2', '20.00');
@@ -193,13 +200,15 @@ class InventoryQueueTest extends TestCase
         $this->issue(self::$documentB, 'QUEUE2', -4, 'Damaged at QBB');
 
         $this->hydrateAs(self::$documentB);
-        $result = app(SyncCycle::class)->run();
+        $queued = $this->queued('Damaged at QBB');
 
-        $this->assertSame(SyncStatus::ONLINE, $result['state'], (string) $result['error']);
+        $this->resolve($queued['id'], 'approve');
 
-        $answered = $this->remote('select * from inventory_update_queue')[0];
+        $answered = $this->queued('Damaged at QBB');
 
         $this->assertSame('accepted', $answered['status']);
+        $this->assertSame(-4, (int) $answered['approved_quantity']);
+        $this->assertSame($this->owner()->getKey(), $answered['resolved_by']);
         // The entry's id IS the queue row's id, which is what makes a retry
         // after a lost connection collide with itself instead of double-applying.
         $this->assertSame($answered['id'], $answered['ledger_entry_id']);
@@ -213,9 +222,9 @@ class InventoryQueueTest extends TestCase
         $this->assertSame('stock_adjustment', $entry['type']);
         $this->assertSame('manual_adjustment', $entry['reference_type']);
         $this->assertSame(self::$documentB['branch']['id'], $entry['branch_id']);
-        // Written against the ISSUER, not against whoever happened to be logged
-        // in at the branch that applied it.
-        $this->assertSame($this->owner()->getKey(), $entry['performed_by']);
+        // The branch that ASKED, carried onto the entry by code so branch B's
+        // Stock History can name it with no connection.
+        $this->assertSame(self::BRANCH_A, $entry['counterparty_branch_code']);
 
         // Upstream stock is recomputed from Postgres's own ledger, so the next
         // baseline contains the adjustment rather than reverting it.
@@ -224,8 +233,9 @@ class InventoryQueueTest extends TestCase
             [self::$documentB['branch']['id']],
         )[0]['quantity']);
 
-        // And the whole point of running step 2 BEFORE step 3: the entry rode
-        // the same cycle's pull back down, and the reconciliation used it.
+        // Local too, and immediately: approving is an ordinary online write, so
+        // the stock is on the POS grid the instant the response lands rather
+        // than up to five minutes later when a cycle next pulls.
         $variant = Variant::query()->where('sku', 'QUEUE2')->sole();
 
         $this->assertSame(6, app(StockLedger::class)->currentStock($variant));
@@ -236,7 +246,7 @@ class InventoryQueueTest extends TestCase
         ]);
     }
 
-    public function test_unsynced_sales_at_the_branch_are_counted_before_the_decision(): void
+    public function test_an_approval_is_refused_when_the_branchs_own_sales_have_spent_the_stock(): void
     {
         // The case the queue exists for, and the one an issuer cannot see. The
         // upstream figure says ten; B has sold eight of them and has not pushed.
@@ -256,20 +266,39 @@ class InventoryQueueTest extends TestCase
         }
 
         // Issued from A against the ten it can see. Note B is NOT re-hydrated
-        // afterwards — its outbox has to survive into the cycle below, because
-        // the unsynced sales are half the arithmetic.
+        // afterwards — its own unsynced sales are half of what makes this fail.
         $this->issueAsBranchA(self::$documentB, 'QUEUE3', -5, 'Shrinkage at QBB');
 
-        $result = app(SyncCycle::class)->run();
+        $queued = $this->queued('Shrinkage at QBB');
 
-        $this->assertSame(SyncStatus::ONLINE, $result['state'], (string) $result['error']);
+        // Somebody at B tries to agree to it, and cannot: their own till says 2.
+        // The local snapshot ALREADY contains the unsynced sales, which is why
+        // schema 21 could delete the old two-term formula rather than port it —
+        // the branch reading its own ledger is the stricter of the two figures.
+        $this->actingAs($this->owner())
+            ->post(route('stock-updates.resolve'), ['adjustments' => [[
+                'id' => $queued['id'], 'outcome' => 'approve',
+            ]]])
+            ->assertSessionHasErrors('adjustments');
 
-        // The push in step 1 lands the eight sales, so step 2 decides against 2
-        // and refuses. Decided against the baseline alone it would have been
-        // accepted, and the branch would have gone to -3.
-        $this->assertSame('rejected', $this->remote('select * from inventory_update_queue')[0]['status']);
+        $this->assertSame('pending', $this->queued('Shrinkage at QBB')['status']);
         $this->assertSame(2, app(StockLedger::class)->currentStock($variant));
-        $this->assertSame(2, (int) $this->remote(
+
+        // Partially approving what DOES fit is the way out, and the reason the
+        // refusal names the product rather than the batch.
+        $this->resolve($queued['id'], 'partial', quantity: -2, reason: 'Only two were left to write off.');
+
+        $answered = $this->queued('Shrinkage at QBB');
+
+        $this->assertSame('accepted', $answered['status']);
+        $this->assertSame(-2, (int) $answered['approved_quantity']);
+        $this->assertSame(0, app(StockLedger::class)->currentStock($variant));
+
+        // And Postgres never saw a negative, on either the ledger's own
+        // `resulting_snapshot >= 0` or `stock_snapshots_non_negative`.
+        app(SyncCycle::class)->run();
+
+        $this->assertSame(0, (int) $this->remote(
             'select quantity from stock_snapshots where branch_id = ?',
             [self::$documentB['branch']['id']],
         )[0]['quantity']);
@@ -287,31 +316,36 @@ class InventoryQueueTest extends TestCase
         $this->issue(self::$documentB, 'QUEUE4', -9, 'Too many');
 
         $this->hydrateAs(self::$documentB);
-        app(SyncCycle::class)->run();
+        $this->resolve($this->queued('Too many')['id'], 'reject', reason: 'We never had nine of these.');
 
         // Back at the branch that issued it: the in-app admin, reading the queue
         // live out of the business database.
         $this->hydrateAs(self::$documentA);
 
-        $rejected = null;
-
-        $this->actingAs($this->owner())
-            ->get(route('stock-updates'))
+        $response = $this->actingAs($this->owner())
+            ->getJson(route('stock-updates.pending'))
             ->assertOk()
-            ->assertInertia(function ($page) use (&$rejected) {
-                $page->component('inventory/stock-updates', false)->where('online', true);
+            ->assertJsonPath('online', true);
 
-                $rows = $page->toArray()['props']['queued'];
+        // Every row here is aimed at branch B, so from A they are all in
+        // `elsewhere` — the section that exists precisely so an issuer can see
+        // one was turned down. A rejection writes no ledger row, so this is the
+        // only place it ever appears.
+        $rows = collect($response->json('elsewhere'));
+        $turned_down = $rows->firstWhere('notes', 'Too many');
 
-                $this->assertCount(1, $rows);
-                $this->assertSame('rejected', $rows[0]['status']);
-                $this->assertSame(self::BRANCH_B, $rows[0]['branch']);
-                $this->assertSame('Product QUEUE4', $rows[0]['item']);
-                $this->assertSame(-9, $rows[0]['quantity']);
-                $this->assertNotNull($rows[0]['rejection_reason']);
+        $this->assertNotNull($turned_down);
+        $this->assertSame('rejected', $turned_down['status']);
+        $this->assertSame(self::BRANCH_B, $turned_down['branch']);
+        $this->assertSame('Product QUEUE4', $turned_down['item']);
+        $this->assertSame(-9, $turned_down['quantity']);
+        $this->assertSame('We never had nine of these.', $turned_down['resolution_reason']);
 
-                $rejected = $rows[0]['id'];
-            });
+        // And nothing is waiting on A itself, which is the other half of the
+        // split: these are rows A ASKED FOR, not rows A owes an answer to.
+        $this->assertSame([], $response->json('inbox'));
+
+        $rejected = $turned_down['id'];
 
         // Re-issued for an amount that fits: a NEW pending row, leaving the
         // rejection standing as the record of what happened.
@@ -320,12 +354,90 @@ class InventoryQueueTest extends TestCase
             ->assertRedirect()
             ->assertSessionHasNoErrors();
 
-        $rows = $this->remote('select * from inventory_update_queue order by created_at');
+        $rows = $this->remote(
+            "select * from inventory_update_queue where notes = 'Too many' order by created_at"
+        );
 
         $this->assertCount(2, $rows);
         $this->assertSame('rejected', $rows[0]['status']);
         $this->assertSame('pending', $rows[1]['status']);
         $this->assertNotSame($rows[0]['id'], $rows[1]['id']);
+    }
+
+    public function test_a_transfer_is_answered_at_both_ends_and_the_shortfall_is_written_off(): void
+    {
+        // Added here rather than in a file of its own: a transfer needs two
+        // really provisioned branches, and this class already has them. A second
+        // copy of that scaffold would be a second thing to keep in step.
+        $this->hydrateAs(self::$documentA);
+        $this->createProduct('QUEUE5', '20.00');
+        $this->stockUp('QUEUE5', 8);
+
+        // A is sending three of its eight to B.
+        $this->actingAs($this->owner())
+            ->post(route('stock-transfers.store'), [
+                'from_branch_id' => self::$documentA['branch']['id'],
+                'to_branch_id' => self::$documentB['branch']['id'],
+                'variant_id' => Variant::query()->where('sku', 'QUEUE5')->sole()->getKey(),
+                'quantity' => 3,
+                'notes' => 'Weekly top-up',
+            ])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $sending = $this->queued('Weekly top-up');
+
+        $this->assertSame(self::$documentA['branch']['id'], $sending['branch_id']);
+        $this->assertSame(self::$documentB['branch']['id'], $sending['counterparty_branch_id']);
+        $this->assertSame(-3, (int) $sending['quantity']);
+        $this->assertNull($sending['parent_id']);
+
+        // Somebody at A confirms all three went into the van.
+        $this->resolve($sending['id'], 'approve');
+
+        $this->assertSame(5, app(StockLedger::class)->currentStock(Variant::query()->where('sku', 'QUEUE5')->sole()));
+
+        $outgoing = $this->remote('select * from inventory_ledger where id = ?', [$sending['id']])[0];
+        $this->assertSame(-3, (int) $outgoing['quantity']);
+        $this->assertSame('transfer', $outgoing['reference_type']);
+        // Where it went, by code, so A's Stock History names it offline.
+        $this->assertSame(self::BRANCH_B, $outgoing['counterparty_branch_code']);
+
+        // Confirming the send is what asks B, and only then.
+        $incoming = $this->remote('select * from inventory_update_queue where parent_id = ?', [$sending['id']])[0];
+
+        $this->assertSame(self::$documentB['branch']['id'], $incoming['branch_id']);
+        $this->assertSame(3, (int) $incoming['quantity']);
+        $this->assertSame('pending', $incoming['status']);
+
+        // At B: only two came off the van intact.
+        $this->hydrateAs(self::$documentB);
+        $this->resolve($incoming['id'], 'partial', quantity: 2, reason: 'One was crushed in transit.');
+
+        $this->assertSame(2, app(StockLedger::class)->currentStock(Variant::query()->where('sku', 'QUEUE5')->sole()));
+
+        $arrived = $this->remote('select * from inventory_ledger where id = ?', [$incoming['id']])[0];
+        $this->assertSame(2, (int) $arrived['quantity']);
+        $this->assertSame(self::BRANCH_A, $arrived['counterparty_branch_code']);
+        $this->assertStringContainsString('crushed in transit', (string) $arrived['notes']);
+
+        // The arithmetic the whole design rests on: A is down three, B is up
+        // two, and the business is one unit short — because one unit no longer
+        // exists. Nothing bounced back to A, and no third row was created.
+        $this->assertSame(5, (int) $this->remote(
+            'select quantity from stock_snapshots where branch_id = ? and variant_id = ?',
+            [self::$documentA['branch']['id'], $sending['variant_id']],
+        )[0]['quantity']);
+
+        $this->assertSame(2, (int) $this->remote(
+            'select quantity from stock_snapshots where branch_id = ? and variant_id = ?',
+            [self::$documentB['branch']['id'], $sending['variant_id']],
+        )[0]['quantity']);
+
+        $this->assertSame(0, (int) $this->remote(
+            'select count(*) as c from inventory_update_queue where parent_id = ?',
+            [$incoming['id']],
+        )[0]['c']);
     }
 
     // ---------------------------------------------------------------- helpers
@@ -365,13 +477,51 @@ class InventoryQueueTest extends TestCase
 
         self::$admin->exec(
             "insert into inventory_update_queue
-               (id, branch_id, variant_id, quantity, notes, status, issued_by, created_at, updated_at)
+               (id, branch_id, variant_id, quantity, reference_type, notes, status, issued_by, created_at, updated_at)
              values ('{$this->uuid()}', '{$target['branch']['id']}', '{$variantId}', {$quantity},
-                     '{$notes}', 'pending', '{$ownerId}', now(), now())"
+                     'manual_adjustment', '{$notes}', 'pending', '{$ownerId}', now(), now())"
         );
     }
 
-    /** Opening stock at the currently hydrated branch, as an online write. */
+    /**
+     * The queue row a test is actually about, by its notes.
+     *
+     * Opening stock is itself a pending adjustment now, so every test has at
+     * least two rows in this table and "the first one" is whichever Postgres
+     * felt like returning.
+     *
+     * @return array<string, mixed>
+     */
+    private function queued(string $notes): array
+    {
+        return $this->remote('select * from inventory_update_queue where notes = ?', [$notes])[0];
+    }
+
+    /**
+     * Answer a pending row as a person at the currently hydrated branch.
+     *
+     * Through the HTTP route rather than the resolver, so the branch filter, the
+     * FormRequest and the six-column grant are all really exercised.
+     */
+    private function resolve(string $id, string $outcome, ?int $quantity = null, ?string $reason = null): void
+    {
+        $this->actingAs($this->owner())
+            ->post(route('stock-updates.resolve'), ['adjustments' => [array_filter([
+                'id' => $id,
+                'outcome' => $outcome,
+                'quantity' => $quantity,
+                'reason' => $reason,
+            ], fn ($value) => $value !== null)]])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+    }
+
+    /**
+     * Opening stock at the currently hydrated branch.
+     *
+     * Two steps since schema 21: the adjustment is asked for, then confirmed by
+     * somebody standing there. Both are online writes.
+     */
     private function stockUp(string $sku, int $quantity): void
     {
         $this->actingAs($this->owner())
@@ -381,6 +531,8 @@ class InventoryQueueTest extends TestCase
                 'notes' => 'Opening',
             ])
             ->assertSessionHasNoErrors();
+
+        app(AdjustmentResolver::class)->approveAll($this->owner());
     }
 
     private function createProduct(string $sku, string $price): void

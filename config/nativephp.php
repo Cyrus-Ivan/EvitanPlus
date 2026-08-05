@@ -7,8 +7,14 @@ return [
      * The version of your app.
      * It is used to determine if the app needs to be updated.
      * Increment this value every time you release a new version of your app.
+     *
+     * It is also the value the version gate compares against a business schema's
+     * MIN_APP_VERSION, so it may never fall behind that floor — a console test
+     * asserts exactly that. 1.1.0 is the build that answers pending stock
+     * adjustments with a person instead of a cycle; see
+     * Provisioning\Support\SchemaVersion for why schema 21 refuses 1.0.0.
      */
-    'version' => env('NATIVEPHP_APP_VERSION', '1.0.0'),
+    'version' => env('NATIVEPHP_APP_VERSION', '1.1.0'),
 
     /**
      * The ID of your application. This should be a unique identifier

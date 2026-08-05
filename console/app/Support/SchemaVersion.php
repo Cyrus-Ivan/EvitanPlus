@@ -59,10 +59,27 @@ final class SchemaVersion
      * Asserted against {@see migrationCount()}, so this is not a number you
      * choose — it is one you keep in step, and the test says so when you don't.
      */
-    public const SCHEMA_VERSION = 20;
+    public const SCHEMA_VERSION = 21;
 
-    /** Raise ONLY for a breaking change. See the class docblock. */
-    public const MIN_APP_VERSION = '1.0.0';
+    /**
+     * Raise ONLY for a breaking change. See the class docblock.
+     *
+     * 1.1.0 (schema 21) is the first raise, and it is the case this constant was
+     * built for. Before 21, a till answered its own pending stock adjustments
+     * automatically during step 2 of its sync cycle. From 21 a PERSON answers
+     * them, and the automatic step is gone.
+     *
+     * A 1.0.0 build let loose against a 21 schema would still run its old step 2:
+     * it would walk every pending row aimed at its branch and auto-accept the
+     * ones that fit — approving every adjustment and every CSV import that was
+     * waiting for a human, and accepting a transfer's sending leg without ever
+     * spawning the receiving leg, so stock leaves one branch and arrives nowhere.
+     *
+     * Nothing detects that, because from the schema's side it looks exactly like
+     * a branch doing its job. Freezing those builds is the only defence, which is
+     * what this number does.
+     */
+    public const MIN_APP_VERSION = '1.1.0';
 
     /**
      * The business migration set on disk.

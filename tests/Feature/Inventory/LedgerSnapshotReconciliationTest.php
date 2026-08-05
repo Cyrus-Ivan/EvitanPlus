@@ -9,6 +9,7 @@ use App\Models\Variant;
 use App\Support\Inventory\StockLedger;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Tests\Feature\Inventory\Concerns\FakesThePendingQueue;
 use Tests\TestCase;
 
 /**
@@ -19,7 +20,17 @@ use Tests\TestCase;
  */
 class LedgerSnapshotReconciliationTest extends TestCase
 {
-    use RefreshDatabase;
+    use FakesThePendingQueue, RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // Adjustments and imports ASK for stock since schema 21; the confirming
+        // is what writes the ledger row this file is about. The stand-in is what
+        // makes that step reachable without a Postgres.
+        $this->fakeBusinessQueue();
+    }
 
     private function assertReconciled(Variant $variant, int $expected): void
     {
@@ -40,6 +51,7 @@ class LedgerSnapshotReconciliationTest extends TestCase
         $this->actingAs($admin)
             ->post(route('stock.adjust', $variant), ['mode' => 'set', 'value' => 10, 'notes' => 'seed'])
             ->assertSessionHasNoErrors();
+        $this->approveEverythingPending($admin);
         $this->assertReconciled($variant, 10);
 
         // Sale of 4.
@@ -72,6 +84,7 @@ class LedgerSnapshotReconciliationTest extends TestCase
         $this->actingAs($admin)
             ->post(route('stock.adjust', $variant), ['mode' => 'delta', 'value' => -2, 'notes' => 'shrinkage'])
             ->assertSessionHasNoErrors();
+        $this->approveEverythingPending($admin);
         $this->assertReconciled($variant, 5);
     }
 
@@ -115,6 +128,8 @@ class LedgerSnapshotReconciliationTest extends TestCase
             ]);
 
         $response->assertSessionHasNoErrors();
+
+        $this->approveEverythingPending($owner);
 
         $this->assertReconciled($variant->fresh(), 9);
     }

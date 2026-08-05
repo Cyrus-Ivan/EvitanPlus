@@ -9,6 +9,7 @@ use App\Models\Item;
 use App\Models\Setting;
 use App\Models\User;
 use App\Models\Variant;
+use App\Support\Inventory\AdjustmentResolver;
 use App\Support\Inventory\InventoryCsvSchema;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -275,6 +276,20 @@ class OnlineWriteTest extends TestCase
 
         // The catalog rows.
         $this->assertSame(1, (int) $this->remote("select count(*) as n from variants where sku = 'IMPORTED1'")[0]['n']);
+
+        // An import no longer moves stock at all (schema 21): every row's change
+        // is a pending adjustment for somebody at the branch to confirm, so
+        // nothing is on the ledger and nothing is in the upstream cache yet.
+        $this->assertSame(
+            0,
+            (int) $this->remote("select count(*) as n from inventory_ledger where type = 'stock_adjustment'")[0]['n'],
+        );
+        $this->assertSame(
+            1,
+            (int) $this->remote("select count(*) as n from inventory_update_queue where reference_type = 'csv_import'")[0]['n'],
+        );
+
+        app(AdjustmentResolver::class)->approveAll(User::query()->where('username', self::OWNER_USERNAME)->sole());
 
         // The stock_adjustment ledger rows — the class of row that had NO writer
         // at all before M6.5. M6's outbox does not carry them (§5.1 calls them

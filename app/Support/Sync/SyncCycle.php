@@ -5,6 +5,7 @@ namespace App\Support\Sync;
 use App\Exceptions\VersionBlockedException;
 use App\Models\Instance;
 use App\Models\SyncStatus;
+use App\Support\Inventory\AdjustmentResolver;
 use Illuminate\Database\Connection;
 use Throwable;
 
@@ -12,14 +13,23 @@ use Throwable;
  * One sync cycle, and the only thing in the app that runs one
  * (MULTIBRANCH-BRAINSTORM.md §11.2, docs/glossary.md §5).
  *
- *     0. version gate  →  1. push  →  2. queue  →  3. pull  →  4. heartbeat
+ *     0. version gate  →  1. push  →  2. pull  →  3. heartbeat
  *
  * The order is load-bearing: push runs first so the pulled baseline already
- * reflects this branch's own movements; the queue runs after push so an
- * adjustment validates against true reconciled stock, and before the pull so the
- * entry it accepts comes back down in the same cycle; the heartbeat runs last so
- * it describes the cycle that just finished. M6 built steps 0 and 1, M7 step 3,
- * M8 step 2, M10 step 4.
+ * reflects this branch's own movements, and the heartbeat runs last so it
+ * describes the cycle that just finished. M6 built steps 0 and 1, M7 step 2,
+ * M10 step 3.
+ *
+ * ## There used to be a step between the push and the pull
+ *
+ * M8 answered this branch's pending stock adjustments here, automatically,
+ * accepting any that fit its reconciled stock. Schema 21 removed it: a person at
+ * the branch answers them now, because whether stock CAN come off the shelf is a
+ * sum and whether it DID is not
+ * ({@see AdjustmentResolver}). A resolution is an ordinary
+ * online write and needs no cycle, so nothing replaced it — which is why the app
+ * version floor rose with that schema. A build still running the old step 2
+ * against a 21 schema would auto-approve every adjustment waiting for a human.
  *
  * ## Nothing here may stop a sale
  *
@@ -46,7 +56,6 @@ class SyncCycle
         private readonly BranchCycle $cycle,
         private readonly VersionGate $gate,
         private readonly Pusher $pusher,
-        private readonly QueueProcessor $queue,
         private readonly Puller $puller,
         private readonly StockReconciler $stock,
         private readonly Outbox $outbox,
@@ -56,7 +65,7 @@ class SyncCycle
     /**
      * Run a cycle and record what happened. Never throws.
      *
-     * @return array{state: string, pushed: int, resolved: int, pulled: int, unsynced_count: int, error: string|null}
+     * @return array{state: string, pushed: int, pulled: int, unsynced_count: int, error: string|null}
      */
     public function run(): array
     {
@@ -81,7 +90,7 @@ class SyncCycle
         $branchId = (string) Instance::current()?->branch_id;
 
         try {
-            /** @var array{pushed: int, resolved: int, pulled: int} $moved */
+            /** @var array{pushed: int, pulled: int} $moved */
             $moved = $this->cycle->run($connection, function (Connection $remote) use ($branchId): array {
                 try {
                     // Step 0. Read live — a schema migrated since the credentials
@@ -96,19 +105,14 @@ class SyncCycle
                     // has less to subtract.
                     $pushed = $this->pusher->push($remote)['rows'];
 
-                    // Step 2. Between the push and the pull, and only there: an
-                    // adjustment issued elsewhere can be validated against true
-                    // reconciled stock once the movements that already happened have
-                    // landed, and its accepted ledger entry then rides the pull below
-                    // back down in this same cycle.
-                    $resolved = $this->queue->process($remote, $branchId);
-
-                    // Step 3. The catalog, staff and settings deltas, then this
-                    // branch's stock agreed against the business's figure.
+                    // Step 2. The catalog, staff and settings deltas, then this
+                    // branch's stock agreed against the business's figure. This
+                    // is also what brings down the adjustments OTHER branches
+                    // approved, which is the only way this device learns of them.
                     $pulled = array_sum($this->puller->pull($remote, $branchId));
                     $pulled += $this->stock->reconcile($remote, $branchId);
                 } catch (Throwable $e) {
-                    // Step 4 on the way out, while there still IS a connection —
+                    // Step 3 on the way out, while there still IS a connection —
                     // and this is the beat that matters most. A `version_blocked`
                     // branch is precisely the one somebody is looking for after a
                     // migration raised the floor, and it is invisible to the
@@ -120,11 +124,11 @@ class SyncCycle
                     throw $e;
                 }
 
-                // Step 4. Last, so it describes the cycle that just finished
+                // Step 3. Last, so it describes the cycle that just finished
                 // rather than the one about to start.
                 $this->beat($remote, $branchId, SyncStatus::ONLINE, null, synced: true);
 
-                return ['pushed' => $pushed, 'resolved' => $resolved, 'pulled' => $pulled];
+                return ['pushed' => $pushed, 'pulled' => $pulled];
             });
         } catch (Throwable $e) {
             [$state, $kind] = $this->classify($e);
@@ -137,7 +141,6 @@ class SyncCycle
             null,
             null,
             pushed: $moved['pushed'],
-            resolved: $moved['resolved'],
             pulled: $moved['pulled'],
             synced: true,
         );
@@ -290,14 +293,13 @@ class SyncCycle
     }
 
     /**
-     * @return array{state: string, pushed: int, resolved: int, pulled: int, unsynced_count: int, error: string|null}
+     * @return array{state: string, pushed: int, pulled: int, unsynced_count: int, error: string|null}
      */
     private function record(
         string $state,
         ?string $kind,
         ?string $error,
         int $pushed = 0,
-        int $resolved = 0,
         int $pulled = 0,
         bool $synced = false,
     ): array {
@@ -335,7 +337,6 @@ class SyncCycle
         return [
             'state' => $state,
             'pushed' => $pushed,
-            'resolved' => $resolved,
             'pulled' => $pulled,
             'unsynced_count' => $this->outbox->unsyncedCount(),
             'error' => $error,

@@ -113,18 +113,21 @@ rather than something M11.6 introduced.
 `App\Support\Sync\SyncCycle` is the only thing in the app that runs one:
 
 ```
-0. version gate  →  1. push  →  2. queue  →  3. pull  →  4. heartbeat
+0. version gate  →  1. push  →  2. pull  →  3. heartbeat
 ```
 
 The order is load-bearing:
 
 - **push before pull**, so the baseline the pull reads already reflects this branch's own
   movements and reconciliation has less to subtract;
-- **queue between them**, so an adjustment issued elsewhere is validated against true
-  reconciled stock *after* the real movements have landed, and the ledger entry it accepts
-  rides the same cycle's pull back down;
 - **heartbeat last**, so it describes the cycle that just finished rather than the one
   about to start.
+
+There was a **queue step between push and pull** until schema 21. It answered this branch's
+pending stock adjustments by arithmetic, accepting whatever fit. A person answers them now
+(§6), which is an ordinary online write and needs no cycle — so the step was deleted rather
+than moved. That deletion is why schema 21 is the **first breaking change**: a build still
+running the old step 2 would walk every row waiting for a human and auto-approve it.
 
 ### Nothing here may stop a sale
 
@@ -292,43 +295,71 @@ push, the next baseline contains them and the correction converges to zero on it
 
 ---
 
-## 6. Cross-branch stock: the inventory update queue
+## 6. Pending stock adjustments
 
-An Owner or Admin, online, may aim a stock adjustment at **another** branch. It cannot
-simply be applied: the issuer cannot see the target's unsynced sales, and the two together
-could drive stock negative. So the issuer writes a **pending** row into
-`inventory_update_queue` (`app/Http/Controllers/Inventory/InventoryQueueController.php`,
-surfaced at `/inventory/stock-updates`) and the *target branch* answers it itself, in step
-2 of its own cycle (`QueueProcessor`):
+**Every** stock movement is now asked for before it happens. A recount typed at this till, a
+CSV import, an adjustment aimed at another branch, and both legs of a transfer all write a
+`pending` row into `inventory_update_queue` (`App\Support\Inventory\AdjustmentQueue`) and
+stop. It becomes a ledger entry when a person at the affected branch says it really happened
+(`App\Support\Inventory\AdjustmentResolver`), from the dialog on `/inventory/stock-history`.
 
-```
-available = upstream stock_snapshots.quantity + Σ(signed unsynced local ledger)
-accept iff available + quantity >= 0
-```
+M8 mediated only the cross-branch case, on the grounds that the issuer cannot see the target's
+unsynced sales. True, and not the point: arithmetic was never what was in doubt. Stock that
+moved on paper and stock that moved on a shelf are different things, and only somebody standing
+in the shop can tell them apart. Three answers, and only the first two move stock: **approve**,
+**partial approve** (`approved_quantity`, plus a reason), **reject** (a reason, and no ledger
+row at all).
 
-Those are M7's two terms, taken from the same method, so there is one definition of
-"unsynced" and not two. Validating against reconciled stock is *stricter* than Postgres's
-own `stock_snapshots_non_negative` — the unsynced term is where the negative movements are
-— so neither side can go negative.
+### The resolver reads before it writes, and the filter is not defensive
 
-An accepted row is written as a ledger entry **upstream only**, and comes back down moments
-later through the ordinary pull. That keeps one writer for `type = 'stock_adjustment'`,
-which is what keeps last-write-wins out of the system; writing it locally too would also
-enqueue it into the outbox and hand the business back its own data. The entry's id **is**
-the queue row's id, so a cycle that dies mid-resolution cannot re-decide an adjustment it
-already applied.
+`OnlineWrite` performs its local writes **before** any connection exists and mirrors them after,
+stamping `branch_id` from `instance`. So the resolver re-reads every row from Postgres filtered
+to `branch_id = <this branch> and status = 'pending'` before writing anything. Without that, a
+device could answer a row aimed elsewhere and write **that branch's stock movement onto its own
+ledger** — the stock would land in the wrong shop, and both branches' figures would be wrong in
+opposite directions. The old step 2 could not make this mistake because the cycle handed it the
+branch id it was already running as; a controller taking ids from a form can.
 
-Two Postgres details that are easy to get wrong, both load-bearing:
+### Approving writes locally AND upstream
 
-- **The resolution must not touch `updated_at`.** The branch role holds column-level
-  UPDATE on exactly four columns (`BranchGrants::UPDATE_COLUMNS`); a fifth in the SET list
-  is `permission denied`, which reads as a missing grant and is in fact the matrix being
-  exactly right.
-- **Timestamps come from the server's clock** (`CURRENT_TIMESTAMP`), never PHP's. These
-  are `timestamptz` and this app's convention is a naive local string; stamping one with
-  the other is the eight-hour drift M6 spent a phase finding.
+Unlike the old step 2, which wrote upstream only and let the pull bring the row down. A person
+pressing Approve is not inside a cycle, and waiting up to five minutes to see the stock they just
+agreed to would make the button look broken. So it is an ordinary online write — local ledger row
+and snapshot first, mirrored up in the same act.
 
-An adjustment aimed at *this* branch is unchanged and still direct.
+That does not reintroduce a second writer: the rule is about a class of row having one authoring
+path, not one direction of travel, and `AdjustmentResolver` is now the **only** writer of
+`type = 'stock_adjustment'` (there were three). Nothing double-counts either — the outbox stays
+empty because `shouldPush()` is false for adjustments, `Puller` `insertOrIgnore`s the row it
+re-reads, and `RemoteStock` recomputes with a `sum()` that converges.
+
+The entry's id **is** the queue row's id, so two people pressing Approve at once collide on the
+primary key and the loser becomes a no-op.
+
+### The two-term formula is gone
+
+Step 2 needed `upstream baseline + Σ unsynced local` because it ran before this branch's own
+writes were guaranteed up. The approver *is* the branch, reading its own ledger, which already
+contains its unsynced sales — the lower of the two figures. `StockLedger::record()`'s ordinary
+local check is therefore at least as strict, and Postgres's `stock_snapshots_non_negative`
+cannot fire.
+
+### A transfer is two of these
+
+The sending branch's row is negative; confirming it spawns the receiving branch's row
+(`parent_id`) for **what was actually sent**. Either end may approve part of it. A shortfall on
+arrival is **written off** — sender −3, receiver +2, the business one unit down, because that
+unit no longer exists. Nothing bounces back.
+
+### Two Postgres details that are easy to get wrong, both load-bearing
+
+- **A resolution must not touch `updated_at`.** The branch role holds column-level UPDATE on
+  exactly **six** columns (`BranchGrants::UPDATE_COLUMNS`); a seventh in the SET list is
+  `permission denied`, which reads as a missing grant and is in fact the matrix being exactly
+  right.
+- **Timestamps come from the server's clock** (`CURRENT_TIMESTAMP`), never PHP's. These are
+  `timestamptz` and this app's convention is a naive local string; stamping one with the other is
+  the eight-hour drift M6 spent a phase finding.
 
 ---
 
@@ -355,7 +386,8 @@ local COMMIT failing after Postgres accepted — which is self-healing, because 
 mirror is the store that may be thrown away.
 
 **`OnlineRead`** (M8) — a live query that mirrors nothing: it asks Postgres a question,
-renders the answer, keeps none of it. Used for `branches` and `inventory_update_queue`,
+renders the answer, keeps none of it. Used for `branches` and `inventory_update_queue`
+(including the read the resolver does before it writes),
 both Postgres-only by decision (§1). Same credential, same probe, same `BranchCycle`
 owning the connection — **but no version gate**, and that is the one deliberate difference:
 the gate exists so a build below the floor cannot *write* stale data. Refusing to render a
@@ -444,11 +476,27 @@ the build carries — but whether a migration is *breaking*, and so whether
 `MIN_APP_VERSION` must rise, is not decidable by any check and stays a human call. The
 enforceable half exists largely to force that question at the moment it arises.
 
+### Schema 21 is the first raise, and what it cost
+
+`MIN_APP_VERSION` sat at 1.0.0 from M1 to M11.6. Schema 21 moved it to **1.1.0**, and the
+reason is not the column rename it also carries. Before 21, a till answered its own pending
+stock adjustments automatically in step 2 of its cycle. A 1.0.0 build let loose against a 21
+schema still runs that step: it would walk every row waiting for a human and **auto-approve
+the ones that fit** — approving every adjustment and every CSV import somebody was meant to
+confirm, and accepting a transfer's sending leg without ever spawning the receiving leg, so
+stock leaves one branch and arrives nowhere. Nothing detects it, because from the schema's
+side it looks exactly like a branch doing its job.
+
+**Deployment order is migrate-then-install**, which is counter-intuitive and correct.
+Stamping the floor first sends every old till to `version_blocked` at step 0, so none of them
+reaches its step 2 during the rollout window. They keep selling offline throughout. The other
+order means new builds writing `resolution_reason` into a schema that has not got it.
+
 ---
 
 ## 10. Monitoring
 
-`Heartbeat` upserts one row per branch into `branch_status` as step 4 — inside the cycle's
+`Heartbeat` upserts one row per branch into `branch_status` as the cycle's last step — inside its
 own connection, never a connection of its own, and on **both** ways out: after the pull on
 success, and from a `catch` before the exception is re-thrown. A branch frozen by the
 version gate is exactly the branch someone is looking for after a migration, and it is
@@ -481,8 +529,9 @@ data**, so the tests can assert the live grants in Postgres equal it exactly. It
 - **INSERT** on what a branch originates (its history), the derived-state tables it
   upserts (`branch_status`, `stock_snapshots`), the online-authoritative tables (M6.5) and
   `inventory_update_queue` (M8);
-- **UPDATE** on the derived and online-authoritative tables, plus four named columns of
-  the queue;
+- **UPDATE** on the derived and online-authoritative tables, plus **six** named columns of
+  the queue (widened from four at schema 21 for `approved_quantity` and `resolved_by`, because
+  a person rather than a cycle now answers these and can agree to part of what was asked);
 - **DELETE on nothing, ever.**
 
 Grants are **enumerated per table**, and `ALTER DEFAULT PRIVILEGES` is deliberately not

@@ -78,6 +78,16 @@ Route::middleware(['auth'])->group(function () {
     // {item} wildcard writes below.
     Route::get('inventory/stock-history', [StockHistoryController::class, 'index'])->name('stock-history.index');
 
+    // Pending stock adjustments — the dialog on Stock History, and answering
+    // one. Cashier-level ON PURPOSE: whether stock actually arrived is known by
+    // whoever is standing in the shop, not by a role, and a floor here would
+    // leave deliveries waiting on somebody who is not there. What bounds it is
+    // the branch, not the role — AdjustmentResolver re-reads every row filtered
+    // to this device's own. Issuing one is still Admin+, below.
+    Route::get('inventory/stock-updates/pending', [InventoryQueueController::class, 'pending'])->name('stock-updates.pending');
+    Route::post('inventory/stock-updates/resolve', [InventoryQueueController::class, 'resolve'])->name('stock-updates.resolve');
+    Route::post('inventory/stock-updates/resolve-all', [InventoryQueueController::class, 'resolveAll'])->name('stock-updates.resolve-all');
+
     // Admin-level: Admins and the Owner.
     Route::middleware('role:admin')->group(function () {
         Route::get('reports', [ReportsController::class, 'index'])->name('reports');     // Phase 12
@@ -105,14 +115,18 @@ Route::middleware(['auth'])->group(function () {
         Route::get('inventory/import/template', [InventoryImportController::class, 'template'])->name('inventory.import.template');
         Route::get('inventory/export', InventoryExportController::class)->name('inventory.export');
 
-        // Stock adjustments aimed at ANOTHER branch (M8). Online-only in both
-        // directions: everything here lives in Postgres and is deliberately not
-        // mirrored, and the branch that is targeted is what resolves the row on
-        // its own next sync. Literal segments, ahead of the {item} wildcard.
-        Route::get('inventory/stock-updates', [InventoryQueueController::class, 'index'])->name('stock-updates');
+        // ASKING for a stock adjustment at another branch. Online-only:
+        // everything here lives in Postgres and is deliberately not mirrored.
+        // Answering one is Cashier-level and sits above. Literal segments, ahead
+        // of the {item} wildcard.
         Route::get('inventory/stock-updates/branches', [InventoryQueueController::class, 'branches'])->name('stock-updates.branches');
         Route::post('inventory/stock-updates', [InventoryQueueController::class, 'store'])->name('stock-updates.store');
         Route::post('inventory/stock-updates/{queued}/reissue', [InventoryQueueController::class, 'reissue'])->name('stock-updates.reissue');
+
+        // A branch-to-branch transfer, which is one request and TWO pending
+        // rows: the sending branch answers first, and confirming it is what
+        // creates the receiving branch's row.
+        Route::post('inventory/stock-transfers', [InventoryQueueController::class, 'transfer'])->name('stock-transfers.store');
 
         Route::get('inventory/{item}/edit', [ItemController::class, 'edit'])->name('items.edit');
         Route::patch('inventory/{item}', [ItemController::class, 'update'])->name('items.update');

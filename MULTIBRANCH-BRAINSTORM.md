@@ -197,7 +197,8 @@ records, UUID PKs, one Owner, Item Cost Owner-only, negative inventory never all
 
 > **As built (M2).** Two qualifications, both load-bearing:
 >
-> - The `inventory_update_queue` grant is **four columns**, not `status` alone — see §7.
+> - The `inventory_update_queue` grant is **six columns** (four until schema 21), not `status`
+>   alone — see §7.
 > - The isolation this bullet promises is **schema-level, not row-level**. Within its own
 >   business schema, a compromised branch credential can insert rows tagged with *another
 >   branch's* `branch_id`: a grant cannot see row contents. Row-level security would be the
@@ -373,13 +374,15 @@ Written **only** on the till, append-only/immutable, pushed as brand-new UUID-ke
 >   business*. Two businesses each opening a "MNL" branch would want the same role name, and
 >   the collision would be one business's till authenticating into another's role. The branch
 >   code keeps its real job: the receipt serial prefix (§12).
-> - **`UPDATE` on `inventory_update_queue` is four columns, not `status` alone.** As written,
+> - **`UPDATE` on `inventory_update_queue` is six columns, not `status` alone.** As written,
 >   the grant permits nothing: the table carries
 >   `check ((status = 'pending') = (resolved_at is null))`, so a statement moving `status` off
 >   `pending` *must* set `resolved_at` in the same statement or the constraint rejects it. The
->   grant is the four columns one resolution touches — `status`, `resolved_at`,
->   `rejection_reason`, `ledger_entry_id` — still far below table-level `UPDATE`, which would
->   also expose `quantity`, `variant_id`, `branch_id` and `issued_by`.
+>   grant is the columns one resolution touches — `status`, `resolved_at`, `resolution_reason`,
+>   `ledger_entry_id`, and from schema 21 also `approved_quantity` and `resolved_by`, because a
+>   PERSON rather than a cycle now answers these and can agree to part of what was asked. Six,
+>   still far below table-level `UPDATE`, which would also expose `quantity`, `variant_id`,
+>   `branch_id`, `counterparty_branch_id` and `issued_by`.
 > - **`INSERT` is narrower than "mirrored/append tables" suggests.** Only the nine local-write
 >   and derived tables of §5.2/§5.3 are insertable. `SELECT` is schema-wide (minus Laravel's
 >   `migrations` ledger), because the till mirrors the catalog, all users, settings and its
@@ -866,24 +869,26 @@ So branch-targeted adjustments are **mediated**:
 This holds for both currently-offline and currently-online branches (an online branch just
 processes the queue seconds later on the next opportunistic/polled cycle).
 
-> **As built (M8): the queue carries adjustments aimed at ANOTHER branch, and nothing else.**
-> `App\Support\Sync\QueueProcessor` runs as step 2 of a cycle, between the push and the pull.
-> Four things this section did not say and which turn out to be load-bearing:
+> **As built (M8, then superseded at schema 21).** M8 built the queue for adjustments aimed at
+> ANOTHER branch, answered automatically by `App\Support\Sync\QueueProcessor` as step 2 of a
+> cycle. **That class no longer exists and there is no step 2.** Since schema 21, EVERY stock
+> movement is a pending adjustment and a PERSON at the affected branch answers it
+> (`App\Support\Inventory\AdjustmentResolver`) — see `MULTIBRANCH-ROADMAP.md` M11.7 and
+> `docs/sync-architecture.md` §6, which are the current account. What survives of the four
+> findings below, and what did not:
 >
-> - **An adjustment aimed at THIS device never enters the queue.** It stays the direct online
->   write M7 made of it. The mediation above exists because the issuer cannot see the target's
->   unsynced sales — and when the target is the issuing device, it can, so `StockLedger` validates
->   against reconciled stock and refuses on the spot. Queueing it would add a wait and a reject
->   path that could never fire.
-> - **Acceptance writes the ledger entry UPSTREAM ONLY.** The entry rides the same cycle's pull
->   back down and `StockReconciler` sets the local snapshot from the refreshed baseline. Writing
->   it at both ends would give `type = 'stock_adjustment'` two writers — the rule §5.1 depends on
->   — and would enqueue the row in the outbox to be handed back to the business that issued it.
->   This is why step 2 must sit *before* step 3 and not after it.
-> - **The ledger entry's id is the queue row's id.** A cycle that inserted the entry and then lost
->   its connection leaves a `pending` row whose adjustment is already applied; by the next cycle
->   the baseline contains it, so re-deciding could *reject* an adjustment that is in the ledger.
->   Recognising it is one primary-key lookup.
+> - ~~**An adjustment aimed at THIS device never enters the queue.**~~ **No longer true.** It was
+>   an argument about arithmetic — the issuing device can see its own unsynced sales — and
+>   arithmetic was never what was in doubt. A recount is a claim about a shelf somebody has to go
+>   and look at, so it is queued like everything else.
+> - ~~**Acceptance writes the ledger entry UPSTREAM ONLY.**~~ **No longer true.** That followed
+>   from running inside a cycle that was about to pull anyway. A person pressing Approve is not,
+>   so approving is an ordinary online write: local row and snapshot first, mirrored up in the
+>   same act. Still ONE writer, which is the rule §5.1 actually depends on — the row is created
+>   once and copied, not generated independently at both ends.
+> - **The ledger entry's id is the queue row's id.** Still true, and still load-bearing, though
+>   for a different reason: it now makes two people pressing Approve at once collide on the
+>   primary key instead of moving stock twice.
 > - **The queue and the branch roster are read live, never mirrored** — an **online read**
 >   (`docs/glossary.md` §5). Neither has a local counterpart and neither needs one: both screens
 >   are Owner/Admin, and the operation they serve cannot happen offline either.

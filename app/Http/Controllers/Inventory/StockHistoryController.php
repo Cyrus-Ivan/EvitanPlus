@@ -48,6 +48,11 @@ class StockHistoryController extends Controller
                 'type' => $entry->type,
                 'sale_type' => $entry->sale_type,
                 'reference_type' => $entry->reference_type,
+                // The branch that asked, or the other end of a transfer. Stored
+                // as a CODE on the row itself precisely so this page keeps
+                // working offline: `branches` is Postgres-only and never pulled,
+                // so an id could not be turned into a name here.
+                'counterparty_branch_code' => $entry->counterparty_branch_code,
                 'notes' => $entry->notes,
                 'created_at' => $entry->created_at,
                 'variant' => $entry->variant ? [

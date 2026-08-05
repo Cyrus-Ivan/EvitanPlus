@@ -10,6 +10,7 @@ use App\Models\SyncCursor;
 use App\Models\SyncStatus;
 use App\Models\User;
 use App\Models\Variant;
+use App\Support\Inventory\AdjustmentResolver;
 use App\Support\Inventory\StockLedger;
 use App\Support\Sync\CredentialVault;
 use App\Support\Sync\StockReconciler;
@@ -264,11 +265,10 @@ class PullTest extends TestCase
 
         $variant = Variant::query()->where('sku', 'STOCK1')->sole();
 
-        // Opening stock, online — a manual adjustment, which since M7 reaches
-        // Postgres as a ledger row and recomputes the upstream cache.
-        $this->actingAs($this->owner())
-            ->post(route('stock.adjust', $variant->id), ['mode' => 'delta', 'value' => 50, 'notes' => 'Opening'])
-            ->assertSessionHasNoErrors();
+        // Opening stock, online. Two steps since schema 21: the adjustment is
+        // asked for, then confirmed by somebody at the branch — and only the
+        // confirming writes the ledger row and recomputes the upstream cache.
+        $this->stockUp($variant, 50);
 
         $this->assertSame(50, (int) $this->remote('select quantity from stock_snapshots')[0]['quantity']);
 
@@ -307,9 +307,7 @@ class PullTest extends TestCase
 
         $variant = Variant::query()->where('sku', 'KEEP1')->sole();
 
-        $this->actingAs($this->owner())
-            ->post(route('stock.adjust', $variant->id), ['mode' => 'delta', 'value' => 30, 'notes' => 'Opening'])
-            ->assertSessionHasNoErrors();
+        $this->stockUp($variant, 30);
 
         app(StockLedger::class)->record(
             variant: $variant, quantity: -7, type: 'sale', saleType: 'sale',
@@ -327,13 +325,17 @@ class PullTest extends TestCase
         $this->assertSame(23, app(StockLedger::class)->currentStock($variant));
     }
 
-    public function test_a_manual_adjustment_reaches_the_business_database(): void
+    public function test_a_confirmed_manual_adjustment_reaches_the_business_database(): void
     {
         // The defect M7 had to fix before the reconciliation above could be
         // safe. Before this, the row was written to local SQLite and nothing
         // else — shouldPush() excludes stock_adjustment rows from the outbox, so
         // no other path would ever have carried it — and the next baseline
         // silently reverted the count.
+        //
+        // Schema 21 moved WHEN it is written, not whether: asking for the
+        // adjustment writes nothing anywhere, and confirming it writes both
+        // sides in one online write.
         $this->hydrateAs(self::$documentA);
         $this->createProduct('ADJUST1', '20.00');
 
@@ -342,6 +344,14 @@ class PullTest extends TestCase
         $this->actingAs($this->owner())
             ->post(route('stock.adjust', $variant->id), ['mode' => 'delta', 'value' => 15, 'notes' => 'Recount'])
             ->assertSessionHasNoErrors();
+
+        // Nothing yet, on either side.
+        $this->assertSame(
+            0,
+            (int) $this->remote("select count(*) as c from inventory_ledger where type = 'stock_adjustment'")[0]['c'],
+        );
+
+        app(AdjustmentResolver::class)->approveAll($this->owner());
 
         $ledger = $this->remote("select quantity, type, reference_type from inventory_ledger where type = 'stock_adjustment'");
 
@@ -399,6 +409,21 @@ class PullTest extends TestCase
         DB::purge('pgsql');
 
         return DB::connection('pgsql');
+    }
+
+    /**
+     * Opening stock at the currently hydrated branch.
+     *
+     * Two steps since schema 21 — asked for, then confirmed by somebody standing
+     * there. Both are online writes, and only the second one moves anything.
+     */
+    private function stockUp(Variant $variant, int $quantity): void
+    {
+        $this->actingAs($this->owner())
+            ->post(route('stock.adjust', $variant->id), ['mode' => 'delta', 'value' => $quantity, 'notes' => 'Opening'])
+            ->assertSessionHasNoErrors();
+
+        app(AdjustmentResolver::class)->approveAll($this->owner());
     }
 
     private function createProduct(string $sku, string $price): void

@@ -1,10 +1,10 @@
 # Evitan Plus
 
-**Evitan Plus** is an offline-first retail Point of Sale desktop app for a single business installation. It runs entirely on the local machine — no server, no cloud, no network dependency — and packages Laravel + React into a native desktop executable via NativePHP.
+**Evitan Plus** is an offline-first, multi-branch retail Point of Sale desktop app. Many branches of one business share a single authoritative Postgres schema on Supabase; each branch runs Laravel + React packaged as a native desktop executable via NativePHP, sells against its own local SQLite database, and reconciles with the business database through a sync cycle.
 
-The schema stays sync-compatible (UUID primary keys everywhere) so multi-branch and cloud sync remain possible later, but they are explicitly **out of scope** for the MVP.
+**Offline-first means offline-capable, not offline-only.** A till that loses its network keeps selling, queues its work, and catches up when the connection returns. Only shared writes — catalog, staff and settings, which every branch must agree on — require being online. UUID primary keys throughout are what make that reconciliation work.
 
-> **Naming.** This README describes the shipped single-install product — released as **Evitan POS** (`v1.0.0`) and renamed **Evitan Plus** thereafter (see `RELEASE-NOTES.md`). Work is now under way on the **multi-branch initiative** (`M0–M12`), which makes Evitan Plus a multi-branch, cloud-connected product backed by Supabase — at which point "no cloud, multi-branch out of scope" above stops being true of it. The two names then denote two products; `docs/glossary.md` §1 is normative on the split, and `MULTIBRANCH-BRAINSTORM.md` is that initiative's spec.
+> **Naming.** **Evitan POS** is the single-install, offline-only product released as `v1.0.0`; **Evitan Plus** is the multi-branch, cloud-connected product it was evolved into by the `M0–M12` initiative. They are **different products**, with different application ids and data directories — not old and new spellings of one name. This README describes **Evitan Plus**; `RELEASE-NOTES.md` records v1.0.0 as it shipped, and `docs/glossary.md` §1 is normative on the split.
 
 ## Highlights
 
@@ -17,6 +17,10 @@ The schema stays sync-compatible (UUID primary keys everywhere) so multi-branch 
 - **Reports** — daily / weekly / monthly / yearly sales on one page with drill-down buckets, a stacked-by-item net-sales chart, and PDF export. Totals are always recomputed from sales minus returns minus defects; COGS and profit are Owner-only.
 - **Roles & permissions** — Owner > Admin > Cashier, enforced at routes, actions, and UI. **Item cost is Owner-only** everywhere, including reports and API responses.
 - **Admin & ops** — user management (create / archive / reset password / change role), login history (login, logout, crash, forced logout, power loss), an immutable audit log of every significant action (Admin+ view, cost redacted for non-Owners).
+- **Multi-branch sync** — every local write is enqueued in an outbox and carried upward by a five-step sync cycle (version gate → push → inventory queue → pull → heartbeat), which also brings down catalog, staff and settings changes made at other branches. The header shows the unsynced count and a **Sync now** button on every screen; receipt serials are branch-prefixed (`MNL-0000000001`).
+- **Branch scope on reports and login history** — `local` (this branch, works offline), `all`, or a single branch. Consolidated scopes are an online read and fall back to the branch-local view, saying so, rather than presenting one branch under an "All branches" heading. Reports are Owner-only beyond `local`; login history is Admin+.
+- **Cross-branch stock updates** — an Owner or Admin can aim a stock adjustment at another branch; it lands in a queue that the *target* branch answers during its own sync cycle, accepting only when the result cannot go negative. `/inventory/stock-updates` shows every request and its answer.
+- **Developer-run setup** — a fresh install is connected to its business by importing the credentials JSON the Provisioning Console emits. One atomic submit connects, hydrates the branch's catalog, staff, stock and history into local SQLite, and seals the credential under a per-install `APP_KEY`. Replacing dead hardware is the same flow.
 
 ## Tech stack
 
@@ -24,7 +28,8 @@ The schema stays sync-compatible (UUID primary keys everywhere) so multi-branch 
 - **React 19 + TypeScript** over **Inertia**, from the Laravel React starter kit.
 - **Tailwind CSS 4** + **shadcn/ui** components.
 - **NativePHP (Electron)** to package the app as a native desktop executable.
-- **SQLite** as the only database (`database/nativephp.sqlite`), with foreign-key enforcement on.
+- **SQLite** as the device database (`database/nativephp.sqlite`), with foreign-key enforcement on. Every screen reads it, which is what makes the app work offline.
+- **Postgres on Supabase** as the business database — one schema per business, reached through `App\Support\Sync\*` on the sealed branch credential.
 
 ## Repository layout
 
@@ -439,9 +444,13 @@ Deeper documentation lives in the repo:
 
 ## Project status
 
-**Released — v1.0.0** (see [`RELEASE-NOTES.md`](RELEASE-NOTES.md)). All 19 `ROADMAP.md` phases are complete: the full commerce chain (Setup, DB schema, Auth, Authorization, Settings, Inventory, Ledger, CSV Import/Export, POS, Transactions, Returns/Defects, Printing, Reports), the full admin/ops track (User Management, Login History, Audit Logs), UI polish, the Phase 18 final review (400+ backend tests, 10 Playwright E2E specs, DB-level immutability triggers), and release preparation.
+**Evitan POS shipped as `v1.0.0`** (see [`RELEASE-NOTES.md`](RELEASE-NOTES.md)) with all 19 [`ROADMAP.md`](ROADMAP.md) phases complete: the full commerce chain (Setup, DB schema, Auth, Authorization, Settings, Inventory, Ledger, CSV Import/Export, POS, Transactions, Returns/Defects, Printing, Reports), the full admin/ops track (User Management, Login History, Audit Logs), UI polish, the Phase 18 final review (DB-level immutability triggers) and release preparation.
 
-This summary is approximate — confirm current progress against `git log` and the code.
+**Evitan Plus** has since taken that through `M0–M11.6` of the [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md) initiative: the Provisioning Console, per-business Postgres schemas and least-privilege branch roles, the connect-and-hydrate setup wizard, the five-step sync cycle (push, inventory queue, pull, heartbeat), atomic online writes for shared data, the schema version gate, branch monitoring, consolidated cross-branch reports and login history, and the removal of Database Backup in favour of rebuilding a device from its credential. `M12` remains.
+
+The suite currently runs `composer verify` offline plus 7 Playwright E2E specs, with `composer verify:console` and `composer verify:hydrate` covering the Supabase-dependent halves.
+
+This summary is approximate — confirm current progress against `git log` and the code. [`docs/sync-architecture.md`](docs/sync-architecture.md) is the as-built account of the multi-branch machinery.
 
 ## License
 

@@ -1,10 +1,24 @@
 # BRAINSTORM.md
 
-# Evitan Plus MVP
+# Evitan POS MVP
+
+> **Scope.** This is the functional spec of **Evitan POS** — the single-install,
+> offline-only product released as `v1.0.0`. It is **still the spec of record for the
+> commerce chain** (POS, inventory, ledger, returns, discounts, reports, settings, audit,
+> archiving, UUID policy): the `M0–M12` multi-branch initiative did not change those rules,
+> and the code still implements what is written below.
+>
+> What it does **not** cover is everything that initiative added — branches, provisioning,
+> Postgres, the sync cycle — specified in `MULTIBRANCH-BRAINSTORM.md`. Read the two together;
+> where this document says multi-branch is out of scope, it is describing the MVP's
+> boundaries, not the current product's.
+>
+> `docs/glossary.md` §1 is normative on the Evitan POS / Evitan Plus split, and outranks this
+> document on what any term means.
 
 ## Overview
 
-Evitan Plus is an **offline-first Retail Point of Sale (POS)** application built using:
+Evitan POS is an **offline-first Retail Point of Sale (POS)** application built using:
 
 * Laravel
 * NativePHP
@@ -23,7 +37,7 @@ The project should prioritize:
 * Clean architecture
 * Future compatibility for synchronization and multi-branch support
 
-The application is intentionally designed for a **single business installation**. Multi-branch support and cloud synchronization are future milestones and are **not part of the MVP**.
+The application is intentionally designed for a **single business installation**. Multi-branch support and cloud synchronization are future milestones and are **not part of the MVP**. *(Both were subsequently built by the `M0–M12` initiative that turned this product into Evitan Plus — see `MULTIBRANCH-BRAINSTORM.md`. The "future compatibility" bullet above is why that was possible without rewriting the schema.)*
 
 ---
 

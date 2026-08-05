@@ -1,10 +1,17 @@
 # ROADMAP.md
 
-# Evitan Plus MVP Development Roadmap
+# Evitan POS MVP Development Roadmap
 
 This roadmap prioritizes building a **working application as early as possible**, while minimizing refactoring. Each phase should produce a usable milestone before moving to the next.
 
 > **Status:** All phases 0–19 are **complete** (✅) — first production release tagged `v1.0.0` (see `RELEASE-NOTES.md`). Confirm against `git log` and the code.
+>
+> **Scope.** These are the phases that built **Evitan POS**, the single-install offline-only
+> product. They are finished; nothing here is forward-looking, and the document is kept as the
+> per-phase record. The work that turned it into **Evitan Plus** — branches, provisioning,
+> Postgres, sync — is phased separately in `MULTIBRANCH-ROADMAP.md` (`M0–M12`), which is the
+> roadmap to read for current and remaining work. `docs/glossary.md` §1 is normative on the
+> two product names.
 
 ---
 

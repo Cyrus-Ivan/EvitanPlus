@@ -13,9 +13,6 @@ import { FormEventHandler, useEffect, useState } from 'react';
 
 type Mode = 'set' | 'delta';
 
-/** Move stock at one branch, or move it between two. */
-type Kind = 'adjust' | 'transfer';
-
 /**
  * The local fields, plus the three the queued form is validated on — declared
  * here only so `errors.branch_id` / `errors.quantity` are reachable, since
@@ -29,8 +26,6 @@ type AdjustForm = {
     branch_id?: string;
     variant_id?: string;
     quantity?: number;
-    from_branch_id?: string;
-    to_branch_id?: string;
 };
 
 /** The sentinel for "this branch", which is the default and needs no id. */
@@ -43,25 +38,29 @@ const HERE = 'here';
  * Notes are optional except when setting a count, or when removing stock
  * (a negative add/remove) — both need an explanation for the ledger.
  *
+ * ## Adjusting only. Transfers are {@see StockTransferDialog}
+ *
+ * This form used to carry a third destination — move it to another branch — and
+ * the two do not share a shape. An adjustment is a claim about one shelf and its
+ * quantity is SIGNED; a transfer is a quantity plus a direction, and the direction
+ * is two branch pickers rather than a minus sign. Sharing one number field meant a
+ * transfer inherited this one's affordances and quietly `Math.abs`'d what was
+ * typed, so `-3` became a 3-unit transfer with no indication the sign had been
+ * dropped. The signed field below is correct HERE and only here.
+ *
  * ## Nothing here moves stock any more
  *
- * Every one of the three destinations writes a PENDING row and stops. Somebody
- * at the affected branch confirms it under Pending stock adjustments on Stock
- * History, and that is what moves the stock — including when the branch is this
- * one, because a recount is still a claim about a shelf someone has to look at.
+ * Both destinations write a PENDING row and stop. Somebody at the affected branch
+ * confirms it under Pending stock adjustments on Stock History, and that is what
+ * moves the stock — including when the branch is this one, because a recount is
+ * still a claim about a shelf someone has to look at.
  *
  *  - **This branch** → `stock.adjust`.
  *  - **Another branch** → `stock-updates.store`, for that branch to answer.
- *  - **Transfer** → `stock-transfers.store`, which is TWO answers: the sending
- *    branch confirms what left, and confirming it asks the receiving branch what
- *    arrived. Either can approve part of it, and a unit that never turns up is
- *    written off rather than bounced back.
  *
- * "Set to count" is hidden for a remote target on purpose. The only on-hand
- * figure available here would be a baseline that excludes the target's unsynced
- * sales, so a derived delta would be a guess presented as a count. It is hidden
- * for a transfer for a plainer reason: a transfer moves a quantity, and "set the
- * other branch to 25" is not a thing anyone means.
+ * "Set to count" is hidden for a remote target on purpose. The only on-hand figure
+ * available here would be a baseline that excludes the target's unsynced sales, so
+ * a derived delta would be a guess presented as a count.
  *
  * The roster is fetched when the dialog opens rather than passed in as a prop:
  * it lives in Postgres, and reading it on every inventory page render would put
@@ -83,16 +82,12 @@ export default function StockAdjustDialog({
 
     const [branches, setBranches] = useState<Branch[]>([]);
     const [target, setTarget] = useState<string>(HERE);
-    const [kind, setKind] = useState<Kind>('adjust');
-    const [destination, setDestination] = useState<string>('');
 
     // Reset on open so values/errors never leak between variants.
     useEffect(() => {
         if (open) {
             setData({ mode: 'delta', value: '', notes: '' });
             setTarget(HERE);
-            setKind('adjust');
-            setDestination('');
             clearErrors();
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -121,15 +116,12 @@ export default function StockAdjustDialog({
         };
     }, [open]);
 
-    const transferring = kind === 'transfer';
-    const elsewhere = !transferring && target !== HERE;
+    const elsewhere = target !== HERE;
     const current = variant?.current_stock ?? 0;
-    const mode: Mode = elsewhere || transferring ? 'delta' : data.mode;
+    const mode: Mode = elsewhere ? 'delta' : data.mode;
 
-    // Notes are mandatory when setting a count or when removing stock. A
-    // transfer needs none: both branches will say what actually happened when
-    // they answer, which is the explanation that matters.
-    const notesRequired = !transferring && (mode === 'set' || Number(data.value) < 0);
+    // Notes are mandatory when setting a count or when removing stock.
+    const notesRequired = mode === 'set' || Number(data.value) < 0;
 
     const submit: FormEventHandler = (e) => {
         e.preventDefault();
@@ -148,22 +140,6 @@ export default function StockAdjustDialog({
 
         // Re-declared on every submit, so switching the target after one attempt
         // cannot leave the previous transform in place.
-        if (transferring) {
-            form.transform(() => ({
-                from_branch_id: target === HERE ? thisBranch?.id : target,
-                to_branch_id: destination,
-                variant_id: variant.id,
-                // Always positive: the operator says how many are moving, and
-                // which way is the system's business (IssueTransferRequest).
-                quantity: Math.abs(Number(data.value)),
-                notes: data.notes,
-            }));
-
-            form.post(route('stock-transfers.store'), done);
-
-            return;
-        }
-
         if (elsewhere) {
             form.transform(() => ({
                 branch_id: target,
@@ -186,28 +162,27 @@ export default function StockAdjustDialog({
     // Only for this branch: another branch's on-hand is not known here.
     const parsed = Number(data.value);
     const hasValue = data.value !== '' && Number.isFinite(parsed);
-    const resulting = hasValue && !elsewhere && !transferring ? (mode === 'set' ? parsed : current + parsed) : null;
+    const resulting = hasValue && !elsewhere ? (mode === 'set' ? parsed : current + parsed) : null;
 
     // In add/remove, zero is not a change: a positive value adds, a negative removes.
     const deltaIsZero = mode === 'delta' && hasValue && parsed === 0;
-    const canSubmit = hasValue && !deltaIsZero && (!transferring || destination !== '');
+    const canSubmit = hasValue && !deltaIsZero;
 
-    // Only worth showing the picker when there is somewhere else to send it.
+    // Only worth showing the picker when there is somewhere else to aim this.
     const others = branches.filter((branch) => !branch.is_this_branch);
-    const thisBranch = branches.find((branch) => branch.is_this_branch);
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent>
                 <form onSubmit={submit} className="space-y-4">
                     <DialogHeader>
-                        <DialogTitle>{transferring ? 'Transfer stock' : 'Adjust stock'}</DialogTitle>
+                        <DialogTitle>Adjust stock</DialogTitle>
                         <DialogDescription>
                             {variant ? (
                                 <>
                                     {itemName ? `${itemName} — ` : ''}
                                     {variant.name}
-                                    {elsewhere || transferring ? null : (
+                                    {elsewhere ? null : (
                                         <>
                                             {' '}
                                             · current on-hand <span className="text-foreground font-medium tabular-nums">{current}</span>
@@ -218,28 +193,9 @@ export default function StockAdjustDialog({
                         </DialogDescription>
                     </DialogHeader>
 
-                    {/* Only when there is somewhere to move stock TO. On a
-                        single-branch business, or an offline device that could
-                        not fetch the roster, a transfer is not a thing that can
-                        be described. */}
                     {others.length > 0 && (
                         <div className="grid gap-2">
-                            <Label>What is happening</Label>
-                            <ToggleGroup
-                                type="single"
-                                value={kind}
-                                onValueChange={(value) => value && setKind(value as Kind)}
-                                className="justify-start"
-                            >
-                                <ToggleGroupItem value="adjust">Adjust stock</ToggleGroupItem>
-                                <ToggleGroupItem value="transfer">Move to another branch</ToggleGroupItem>
-                            </ToggleGroup>
-                        </div>
-                    )}
-
-                    {others.length > 0 && (
-                        <div className="grid gap-2">
-                            <Label htmlFor="adjust-branch">{transferring ? 'From' : 'Branch'}</Label>
+                            <Label htmlFor="adjust-branch">Branch</Label>
                             <Select value={target} onValueChange={setTarget}>
                                 <SelectTrigger id="adjust-branch">
                                     <SelectValue />
@@ -253,40 +209,17 @@ export default function StockAdjustDialog({
                                     ))}
                                 </SelectContent>
                             </Select>
-                            <InputError message={errors.branch_id ?? errors.from_branch_id} />
-                        </div>
-                    )}
-
-                    {transferring && (
-                        <div className="grid gap-2">
-                            <Label htmlFor="adjust-destination">To</Label>
-                            <Select value={destination} onValueChange={setDestination}>
-                                <SelectTrigger id="adjust-destination">
-                                    <SelectValue placeholder="Pick the receiving branch" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    {branches
-                                        .filter((branch) => (target === HERE ? !branch.is_this_branch : branch.id !== target))
-                                        .map((branch) => (
-                                            <SelectItem key={branch.id} value={branch.id}>
-                                                {branch.code} — {branch.name}
-                                            </SelectItem>
-                                        ))}
-                                </SelectContent>
-                            </Select>
-                            <InputError message={errors.to_branch_id} />
+                            <InputError message={errors.branch_id} />
                         </div>
                     )}
 
                     <p className="text-muted-foreground text-sm">
-                        {transferring
-                            ? 'Nothing moves yet. The sending branch confirms what actually left, and that asks the receiving branch what actually arrived — either can approve part of it.'
-                            : elsewhere
-                              ? 'This asks that branch to move the stock. Somebody there confirms it before anything changes, and can approve part of it or turn it down.'
-                              : 'This asks for the stock to move. Confirm it under Pending stock adjustments on Stock History to apply it.'}
+                        {elsewhere
+                            ? 'This asks that branch to move the stock. Somebody there confirms it before anything changes, and can approve part of it or turn it down.'
+                            : 'This asks for the stock to move. Confirm it under Pending stock adjustments on Stock History to apply it.'}
                     </p>
 
-                    {!elsewhere && !transferring && (
+                    {!elsewhere && (
                         <div className="grid gap-2">
                             <Label>Mode</Label>
                             <ToggleGroup
@@ -303,9 +236,7 @@ export default function StockAdjustDialog({
                     )}
 
                     <div className="grid gap-2">
-                        <Label htmlFor="adjust-value">
-                            {transferring ? 'How many are moving' : mode === 'set' ? 'Counted quantity' : 'Change (+ add, − remove)'}
-                        </Label>
+                        <Label htmlFor="adjust-value">{mode === 'set' ? 'Counted quantity' : 'Change (+ add, − remove)'}</Label>
                         <Input
                             id="adjust-value"
                             type="number"
@@ -356,7 +287,7 @@ export default function StockAdjustDialog({
                         </Button>
                         <Button disabled={processing || !canSubmit}>
                             {processing && <LoaderCircle className="h-4 w-4 animate-spin" />}
-                            {transferring ? 'Request transfer' : 'Request adjustment'}
+                            Request adjustment
                         </Button>
                     </DialogFooter>
                 </form>

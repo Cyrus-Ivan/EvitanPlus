@@ -290,6 +290,43 @@ class StockTransferTest extends TestCase
         $this->assertSame(0, $remote->table('inventory_update_queue')->count());
     }
 
+    /**
+     * The rule was here from the start and nothing could reach it.
+     *
+     * `IssueTransferRequest` has always said `min:1`, but the dialog shared its
+     * number field with the stock adjustment — where a sign is meaningful — and
+     * absoluted whatever was typed on the way out. Somebody entering -3 to mean
+     * "send three away" got a three-unit transfer and no sign that their minus had
+     * been dropped. The field is its own dialog now and refuses a negative itself,
+     * so this is the rule it defers to.
+     *
+     * It is load-bearing rather than cosmetic. `InventoryQueueController::transfer()`
+     * negates the quantity to write the sending leg, and `AdjustmentResolver::secondLeg()`
+     * takes `abs()` of it to write the receiving one — so a positive sending leg
+     * would make BOTH legs positive and the transfer would create stock rather
+     * than move it.
+     */
+    public function test_a_transfer_of_nothing_or_less_is_refused(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $this->seedRoster($remote);
+        $variant = Variant::factory()->create();
+        $admin = User::factory()->admin()->create();
+
+        foreach ([-3, 0] as $quantity) {
+            $this->actingAs($admin)
+                ->post(route('stock-transfers.store'), [
+                    'from_branch_id' => self::HERE,
+                    'to_branch_id' => self::THERE,
+                    'variant_id' => $variant->id,
+                    'quantity' => $quantity,
+                ])
+                ->assertSessionHasErrors('quantity');
+        }
+
+        $this->assertSame(0, $remote->table('inventory_update_queue')->count());
+    }
+
     public function test_a_cashier_cannot_start_a_transfer(): void
     {
         $remote = $this->fakeBusinessQueue();

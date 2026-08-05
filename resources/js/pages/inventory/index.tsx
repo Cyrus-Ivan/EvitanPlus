@@ -1,6 +1,7 @@
 import { useConfirm } from '@/components/confirm-dialog';
 import EmptyState from '@/components/empty-state';
 import StockAdjustDialog from '@/components/inventory/stock-adjust-dialog';
+import StockTransferDialog from '@/components/inventory/stock-transfer-dialog';
 import { OfflineNotice } from '@/components/offline-notice';
 import Pagination from '@/components/pagination';
 import { Badge } from '@/components/ui/badge';
@@ -12,7 +13,7 @@ import { usePermissions } from '@/hooks/use-permissions';
 import AppLayout from '@/layouts/app-layout';
 import type { BreadcrumbItem, Category, Item, Paginated, Variant } from '@/types';
 import { Head, Link, router } from '@inertiajs/react';
-import { ChevronRight, FileSpreadsheet, FolderCog, History, Package, Pencil, SlidersHorizontal } from 'lucide-react';
+import { ArrowLeftRight, ChevronRight, FileSpreadsheet, FolderCog, History, Package, Pencil, SlidersHorizontal } from 'lucide-react';
 import { Fragment, useEffect, useRef, useState } from 'react';
 
 const breadcrumbs: BreadcrumbItem[] = [{ title: 'Inventory', href: '/inventory' }];
@@ -56,6 +57,10 @@ export default function InventoryIndex({
     const [expandedId, setExpandedId] = useState<string | null>(null);
     // The variant currently open in the stock-adjust dialog (with its item name).
     const [adjustTarget, setAdjustTarget] = useState<{ variant: Variant; itemName: string } | null>(null);
+    // The same, for the transfer dialog. Two pieces of state rather than one with
+    // a mode, because they are two dialogs — a transfer is a quantity and a
+    // direction, an adjustment is a signed change to one shelf.
+    const [transferTarget, setTransferTarget] = useState<{ variant: Variant; itemName: string } | null>(null);
     const isFirstRender = useRef(true);
 
     const toggleExpanded = (id: string) => setExpandedId((prev) => (prev === id ? null : id));
@@ -273,16 +278,18 @@ export default function InventoryIndex({
                                                 <TableRow className="hover:bg-transparent">
                                                     <TableCell colSpan={columnCount} className="bg-muted/30 p-0">
                                                         <div className="px-4 py-3">
-                                                            <Table className="w-auto">
+                                                            {/* Full width: the panel is the whole row's worth of
+                                                                space, and the variant actions need it. */}
+                                                            <Table className="w-full">
                                                                 <TableHeader>
                                                                     <TableRow className="hover:bg-transparent">
-                                                                        <TableHead className="pr-8">Variant</TableHead>
-                                                                        <TableHead className="pr-8">SKU</TableHead>
-                                                                        <TableHead className="pr-8">Barcode</TableHead>
-                                                                        <TableHead className="pr-8 text-right">Price</TableHead>
-                                                                        {canViewCost && <TableHead className="pr-8 text-right">Cost</TableHead>}
-                                                                        <TableHead className="pr-8 text-right">Stock</TableHead>
-                                                                        <TableHead className="pr-8 text-right">Low-stock alert</TableHead>
+                                                                        <TableHead>Variant</TableHead>
+                                                                        <TableHead>SKU</TableHead>
+                                                                        <TableHead>Barcode</TableHead>
+                                                                        <TableHead className="text-right">Price</TableHead>
+                                                                        {canViewCost && <TableHead className="text-right">Cost</TableHead>}
+                                                                        <TableHead className="text-right">Stock</TableHead>
+                                                                        <TableHead className="text-right">Low-stock alert</TableHead>
                                                                         {canManage && <TableHead className="text-right">Actions</TableHead>}
                                                                     </TableRow>
                                                                 </TableHeader>
@@ -299,24 +306,22 @@ export default function InventoryIndex({
                                                                                         : 'hover:bg-transparent'
                                                                                 }
                                                                             >
-                                                                                <TableCell className="pr-8 font-medium">
+                                                                                <TableCell className="font-medium">
                                                                                     {variant.name || item.name}
                                                                                 </TableCell>
-                                                                                <TableCell className="pr-8 tabular-nums">
-                                                                                    {variant.sku ?? '—'}
-                                                                                </TableCell>
-                                                                                <TableCell className="pr-8 tabular-nums">
+                                                                                <TableCell className="tabular-nums">{variant.sku ?? '—'}</TableCell>
+                                                                                <TableCell className="tabular-nums">
                                                                                     {variant.barcode ?? '—'}
                                                                                 </TableCell>
-                                                                                <TableCell className="pr-8 text-right tabular-nums">
+                                                                                <TableCell className="text-right tabular-nums">
                                                                                     {Number(variant.selling_price).toFixed(2)}
                                                                                 </TableCell>
                                                                                 {canViewCost && (
-                                                                                    <TableCell className="pr-8 text-right tabular-nums">
+                                                                                    <TableCell className="text-right tabular-nums">
                                                                                         {variant.cost != null ? Number(variant.cost).toFixed(2) : '—'}
                                                                                     </TableCell>
                                                                                 )}
-                                                                                <TableCell className="pr-8 text-right">
+                                                                                <TableCell className="text-right">
                                                                                     <span className="inline-flex items-center gap-2 tabular-nums">
                                                                                         {stock}
                                                                                         {isLow && (
@@ -326,7 +331,7 @@ export default function InventoryIndex({
                                                                                         )}
                                                                                     </span>
                                                                                 </TableCell>
-                                                                                <TableCell className="pr-8 text-right tabular-nums">
+                                                                                <TableCell className="text-right tabular-nums">
                                                                                     {variant.low_stock_threshold}
                                                                                 </TableCell>
                                                                                 {canManage && (
@@ -339,7 +344,19 @@ export default function InventoryIndex({
                                                                                                     setAdjustTarget({ variant, itemName: item.name })
                                                                                                 }
                                                                                             >
-                                                                                                <SlidersHorizontal className="size-4" /> Adjust
+                                                                                                <SlidersHorizontal className="size-4" /> Adjust stocks
+                                                                                            </Button>
+                                                                                            <Button
+                                                                                                variant="ghost"
+                                                                                                size="sm"
+                                                                                                onClick={() =>
+                                                                                                    setTransferTarget({
+                                                                                                        variant,
+                                                                                                        itemName: item.name,
+                                                                                                    })
+                                                                                                }
+                                                                                            >
+                                                                                                <ArrowLeftRight className="size-4" /> Transfer
                                                                                             </Button>
                                                                                             <Button variant="ghost" size="sm" asChild>
                                                                                                 <Link
@@ -374,12 +391,20 @@ export default function InventoryIndex({
             </div>
 
             {canManage && (
-                <StockAdjustDialog
-                    open={adjustTarget !== null}
-                    onOpenChange={(open) => !open && setAdjustTarget(null)}
-                    variant={adjustTarget?.variant ?? null}
-                    itemName={adjustTarget?.itemName}
-                />
+                <>
+                    <StockAdjustDialog
+                        open={adjustTarget !== null}
+                        onOpenChange={(open) => !open && setAdjustTarget(null)}
+                        variant={adjustTarget?.variant ?? null}
+                        itemName={adjustTarget?.itemName}
+                    />
+                    <StockTransferDialog
+                        open={transferTarget !== null}
+                        onOpenChange={(open) => !open && setTransferTarget(null)}
+                        variant={transferTarget?.variant ?? null}
+                        itemName={transferTarget?.itemName}
+                    />
+                </>
             )}
         </AppLayout>
     );

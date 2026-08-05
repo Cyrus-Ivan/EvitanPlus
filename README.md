@@ -17,9 +17,9 @@
 - **Reports** — daily / weekly / monthly / yearly sales on one page with drill-down buckets, a stacked-by-item net-sales chart, and PDF export. Totals are always recomputed from sales minus returns minus defects; COGS and profit are Owner-only.
 - **Roles & permissions** — Owner > Admin > Cashier, enforced at routes, actions, and UI. **Item cost is Owner-only** everywhere, including reports and API responses.
 - **Admin & ops** — user management (create / archive / reset password / change role), login history (login, logout, crash, forced logout, power loss), an immutable audit log of every significant action (Admin+ view, cost redacted for non-Owners).
-- **Multi-branch sync** — every local write is enqueued in an outbox and carried upward by a five-step sync cycle (version gate → push → inventory queue → pull → heartbeat), which also brings down catalog, staff and settings changes made at other branches. The header shows the unsynced count and a **Sync now** button on every screen; receipt serials are branch-prefixed (`MNL-0000000001`).
+- **Multi-branch sync** — every local write is enqueued in an outbox and carried upward by a four-step sync cycle (version gate → push → pull → heartbeat), which also brings down catalog, staff and settings changes made at other branches. The header shows the unsynced count and a **Sync now** button on every screen; receipt serials are branch-prefixed (`MNL-0000000001`).
 - **Branch scope on reports and login history** — `local` (this branch, works offline), `all`, or a single branch. Consolidated scopes are an online read and fall back to the branch-local view, saying so, rather than presenting one branch under an "All branches" heading. Reports are Owner-only beyond `local`; login history is Admin+.
-- **Cross-branch stock updates** — an Owner or Admin can aim a stock adjustment at another branch; it lands in a queue that the *target* branch answers during its own sync cycle, accepting only when the result cannot go negative. `/inventory/stock-updates` shows every request and its answer.
+- **Pending stock adjustments** — no stock moves because somebody typed a number. A recount, a CSV import, an adjustment aimed at another branch and both legs of a branch transfer all become *pending* until a person at the affected branch confirms it happened, from a dialog on Stock History. They can approve, approve part of it, or turn it down with a reason; **Approve all** clears the hundreds of rows one CSV import makes. Answering is open to every role — whoever is in the shop is who knows whether the delivery arrived — while asking stays Admin+.
 - **Developer-run setup** — a fresh install is connected to its business by importing the credentials JSON the Provisioning Console emits. One atomic submit connects, hydrates the branch's catalog, staff, stock and history into local SQLite, and seals the credential under a per-install `APP_KEY`. Replacing dead hardware is the same flow.
 
 ## Tech stack
@@ -428,7 +428,7 @@ Deeper documentation lives in the repo:
 
 **How it works, and how to work on it:**
 
-- [`docs/sync-architecture.md`](docs/sync-architecture.md) — the multi-branch machinery **as built**: hydration, the five-step sync cycle, online writes and reads, the inventory queue, the version gate, monitoring, the grant matrix and the risk it accepts
+- [`docs/sync-architecture.md`](docs/sync-architecture.md) — the multi-branch machinery **as built**: hydration, the four-step sync cycle, online writes and reads, pending stock adjustments, the version gate, monitoring, the grant matrix and the risk it accepts
 - [`docs/developer-workflows.md`](docs/developer-workflows.md) — every command a developer runs, what each gate proves, how to inspect a device, and the traps that produce a wrong reading
 - [`docs/glossary.md`](docs/glossary.md) — **normative** on terminology; outranks every other document on what a word means
 
@@ -446,9 +446,11 @@ Deeper documentation lives in the repo:
 
 **Evitan POS shipped as `v1.0.0`** (see [`RELEASE-NOTES.md`](RELEASE-NOTES.md)) with all 19 [`ROADMAP.md`](ROADMAP.md) phases complete: the full commerce chain (Setup, DB schema, Auth, Authorization, Settings, Inventory, Ledger, CSV Import/Export, POS, Transactions, Returns/Defects, Printing, Reports), the full admin/ops track (User Management, Login History, Audit Logs), UI polish, the Phase 18 final review (DB-level immutability triggers) and release preparation.
 
-**Evitan Plus** has since taken that through `M0–M11.6` of the [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md) initiative: the Provisioning Console, per-business Postgres schemas and least-privilege branch roles, the connect-and-hydrate setup wizard, the five-step sync cycle (push, inventory queue, pull, heartbeat), atomic online writes for shared data, the schema version gate, branch monitoring, consolidated cross-branch reports and login history, and the removal of Database Backup in favour of rebuilding a device from its credential. `M12` remains.
+**Evitan Plus** has since taken that through `M0–M11.7` of the [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md) initiative: the Provisioning Console, per-business Postgres schemas and least-privilege branch roles, the connect-and-hydrate setup wizard, the four-step sync cycle (push, pull, heartbeat), atomic online writes for shared data, the schema version gate, branch monitoring, consolidated cross-branch reports and login history, the removal of Database Backup in favour of rebuilding a device from its credential, and human-confirmed stock adjustments with branch-to-branch transfers. `M12` remains.
 
-The suite currently runs `composer verify` offline plus 7 Playwright E2E specs, with `composer verify:console` and `composer verify:hydrate` covering the Supabase-dependent halves.
+The suite currently runs `composer verify` offline plus 7 Playwright E2E spec files, with `composer verify:console` and `composer verify:hydrate` covering the Supabase-dependent halves.
+
+> **Upgrading to the schema-21 build.** `M11.7` raised `MIN_APP_VERSION` to `1.1.0` — the first raise in the project. **Migrate the schema before installing the build**, and run `schema:reapply-grants`: an older build still runs the sync step that auto-approved pending adjustments, and stamping the floor first freezes those tills before they can reach it. They keep selling offline throughout.
 
 This summary is approximate — confirm current progress against `git log` and the code. [`docs/sync-architecture.md`](docs/sync-architecture.md) is the as-built account of the multi-branch machinery.
 

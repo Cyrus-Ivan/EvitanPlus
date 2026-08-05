@@ -16,7 +16,7 @@ const DESTINATIONS: Array<[path: string, title: RegExp]> = [
     ['/inventory', /^Inventory -/],
     ['/inventory/categories', /^Categories -/],
     ['/inventory/stock-history', /^Stock History -/],
-    ['/inventory/stock-updates', /^Pending Stock Adjustments -/],
+    ['/inventory/stock-updates', /^Pending Stocks -/],
     // The same case from the other direction (M11): this URL asks for figures
     // from every branch, which the device cannot fetch for want of a credential.
     // It must still render a correct report of what it CAN see, rather than
@@ -66,7 +66,7 @@ test('pending adjustments says it is offline rather than showing an empty queue'
     await login(page, 'owner');
     await page.goto('/inventory/stock-updates');
 
-    await expect(page.getByRole('heading', { name: 'Pending stock adjustments' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Pending Stocks' })).toBeVisible();
     await expect(page.getByRole('alert')).toContainText('Selling is unaffected');
 });
 

@@ -9,7 +9,6 @@ use App\Models\Item;
 use App\Models\Setting;
 use App\Models\User;
 use App\Models\Variant;
-use App\Support\Inventory\AdjustmentResolver;
 use App\Support\Inventory\InventoryCsvSchema;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -18,6 +17,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
+use Tests\Concerns\ApprovesEveryPendingRow;
 use Tests\Integration\Concerns\ProvisionsABusiness;
 use Tests\TestCase;
 
@@ -38,7 +38,7 @@ use Tests\TestCase;
 #[Group('supabase')]
 class OnlineWriteTest extends TestCase
 {
-    use ProvisionsABusiness, RefreshDatabase;
+    use ApprovesEveryPendingRow, ProvisionsABusiness, RefreshDatabase;
 
     /** Each test sets its devices up for itself, through the real wizard. */
     protected bool $hydrated = false;
@@ -289,7 +289,7 @@ class OnlineWriteTest extends TestCase
             (int) $this->remote("select count(*) as n from inventory_update_queue where reference_type = 'csv_import'")[0]['n'],
         );
 
-        app(AdjustmentResolver::class)->approveAll(User::query()->where('username', self::OWNER_USERNAME)->sole());
+        $this->approveEverythingPending(User::query()->where('username', self::OWNER_USERNAME)->sole());
 
         // The stock_adjustment ledger rows — the class of row that had NO writer
         // at all before M6.5. M6's outbox does not carry them (§5.1 calls them

@@ -67,9 +67,25 @@ class MovementKind
      */
     public static function apply(Builder $query, string $kind): void
     {
-        foreach (self::KINDS[$kind] as $column => $value) {
+        foreach (self::conditions($kind) as $column => $value) {
             $query->where($column, $value);
         }
+    }
+
+    /**
+     * The columns that identify one kind, for a caller that cannot take an
+     * Eloquent builder.
+     *
+     * Stock History reads the ledger from Postgres in its wider branch scopes
+     * (M11.8) through a plain query builder, and must filter it by exactly the
+     * same predicate the local Eloquent path uses — a second copy of this map is
+     * how the two views would come to disagree about what a "transfer" is.
+     *
+     * @return array<string, string>
+     */
+    public static function conditions(string $kind): array
+    {
+        return self::KINDS[$kind] ?? [];
     }
 
     /**

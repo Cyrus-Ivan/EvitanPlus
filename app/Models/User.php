@@ -13,6 +13,16 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 
+/**
+ * A person who signs in.
+ *
+ * `role` is annotated because static analysis cannot read it off `casts()`: that
+ * method returns the cast CLASS name, so `role: class-string<UserRole>` is a
+ * true statement about the array and a false one about the attribute, and every
+ * `$user->role->value` in the app reads as "property on a string" without this.
+ *
+ * @property UserRole $role
+ */
 class User extends Authenticatable
 {
     /** @use HasFactory<UserFactory> */

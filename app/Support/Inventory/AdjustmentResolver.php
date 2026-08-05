@@ -27,6 +27,24 @@ use stdClass;
  * three writers (the CSV import, the manual adjust screen, and the sync cycle's
  * step 2), which is exactly the shape single-writer-per-table exists to prevent.
  *
+ * ## A rejection writes a ledger row of ZERO (M11.8)
+ *
+ * It used to write nothing, on the reading that the ledger records movement and
+ * a refusal is the absence of one. Correct about the ledger and wrong about the
+ * business: the branch that ASKED never found out. `Puller` filters
+ * `inventory_ledger` to one branch, so even a row written here could not travel
+ * to them; the queue row could, but only while the Pending Stocks page kept a
+ * section for other branches' answered work, which is a list nobody can see
+ * their own work in.
+ *
+ * So a refusal is now a movement of nothing, carrying the queue row's own id,
+ * the counterparty code, and a sentence saying what was asked for and that it did
+ * not happen. Branch-scoped Stock History is what makes it reachable from the
+ * branch that asked. Nothing about ledger-derived stock changes — zero sums to
+ * zero, in `StockReconciler`, in `RemoteStock::recompute()` and in
+ * `StockLedger::reconcile()` alike — and zero-quantity rows are not new here
+ * either: defect audit entries have written them since Phase 11.
+ *
  * Until schema 21 the sync cycle answered these by arithmetic, accepting
  * anything that fit. That answered the wrong question. Whether stock CAN come
  * off the shelf is a sum; whether it DID is not, and the till holding the
@@ -142,22 +160,28 @@ class AdjustmentResolver
                 $outcome = $decision['outcome'];
                 $reason = $decision['reason'] ?? null;
 
-                if ($outcome === 'reject') {
-                    $individual[] = ['id' => (string) $row->id, 'quantity' => null, 'reason' => $reason, 'accepted' => false];
+                $approved = match ($outcome) {
+                    // A refusal is a movement of nothing, and it is still written.
+                    // See the class docblock.
+                    'reject' => 0,
+                    'partial' => $this->partialQuantity($row, $decision['quantity'] ?? null),
+                    default => (int) $row->quantity,
+                };
 
-                    continue;
-                }
+                $entries[] = $this->apply($row, $approved, $outcome, $reason, $variants, $actor);
 
-                $approved = $outcome === 'partial'
-                    ? $this->partialQuantity($row, $decision['quantity'] ?? null)
-                    : (int) $row->quantity;
-
-                $entries[] = $this->apply($row, $approved, $reason, $variants, $actor);
-
-                if ($approved === (int) $row->quantity) {
+                if ($outcome === 'approve') {
                     $fullyApproved[] = (string) $row->id;
                 } else {
-                    $individual[] = ['id' => (string) $row->id, 'quantity' => $approved, 'reason' => $reason, 'accepted' => true];
+                    $individual[] = [
+                        'id' => (string) $row->id,
+                        // Null on a rejection: `approved_quantity` means "what was
+                        // agreed", and nothing was. The zero is on the ledger row,
+                        // where it means "this movement did not happen".
+                        'quantity' => $outcome === 'reject' ? null : $approved,
+                        'reason' => $reason,
+                        'accepted' => $outcome !== 'reject',
+                    ];
                 }
 
                 if ($second = $this->secondLeg($row, $approved, $actor)) {
@@ -206,36 +230,6 @@ class AdjustmentResolver
     }
 
     /**
-     * Approve every row currently waiting on this branch.
-     *
-     * The bulk case exists because a CSV import is one action that produces
-     * hundreds of pending rows, and answering them one at a time is not a
-     * workflow. It is a full approval of each: partials and rejections are
-     * per-row judgements and stay per-row.
-     */
-    public function approveAll(User $actor): int
-    {
-        $branchId = (string) Instance::current()?->branch_id;
-
-        $ids = $this->read->run(
-            fn (Connection $remote): array => $remote->table('inventory_update_queue')
-                ->where('branch_id', $branchId)
-                ->where('status', 'pending')
-                ->orderBy('created_at')
-                ->orderBy('id')
-                ->pluck('id')
-                ->map(fn ($id): string => (string) $id)
-                ->all(),
-            'Pending stock adjustments',
-        );
-
-        return $this->resolve(
-            array_fill_keys($ids, ['outcome' => 'approve']),
-            $actor,
-        );
-    }
-
-    /**
      * A transfer's receiving leg, spawned by approving its sending leg.
      *
      * ## Why a transfer is two rows and not one
@@ -265,6 +259,13 @@ class AdjustmentResolver
     private function secondLeg(stdClass $row, int $approved, User $actor): ?array
     {
         if ((string) $row->reference_type !== 'transfer' || $row->parent_id !== null) {
+            return null;
+        }
+
+        // A refused transfer asks nobody anything. Only a rejection reaches here
+        // with nothing approved — `partialQuantity()` forbids zero, and a request
+        // for zero is refused long before it is queued.
+        if ($approved === 0) {
             return null;
         }
 
@@ -315,11 +316,15 @@ class AdjustmentResolver
     }
 
     /**
-     * Write the agreed movement as a real ledger entry on this device.
+     * Write the answer as a real ledger entry on this device.
+     *
+     * `$approved` is 0 for a rejection, which {@see StockLedger::record()} accepts
+     * — it has taken zero-quantity rows since defect audit entries needed them —
+     * and which the negative-stock guard cannot trip on.
      *
      * @param  Collection<string, Variant>  $variants
      */
-    private function apply(stdClass $row, int $approved, ?string $reason, Collection $variants, User $actor): InventoryLedger
+    private function apply(stdClass $row, int $approved, string $outcome, ?string $reason, Collection $variants, User $actor): InventoryLedger
     {
         $variant = $variants->get((string) $row->variant_id);
 
@@ -341,7 +346,7 @@ class AdjustmentResolver
                 // row, which is how a movement traces back to the file it came from.
                 referenceId: $row->reference_id ?? (string) $row->id,
                 performedBy: $actor,
-                notes: $this->notes($row, $approved, $reason),
+                notes: $this->notes($row, $approved, $outcome, $reason),
                 id: (string) $row->id,
                 counterpartyBranchCode: $row->counterparty_branch_code,
             );
@@ -362,20 +367,27 @@ class AdjustmentResolver
     /**
      * What the ledger row says about itself.
      *
-     * A partial approval is the one case where the request and the movement
-     * disagree, so the row has to carry both numbers — otherwise the history
-     * shows two arriving and nothing anywhere says three were sent.
+     * A partial approval and a rejection are the two cases where the request and
+     * the movement disagree, so the row has to carry both numbers — otherwise the
+     * history shows two arriving and nothing anywhere says three were sent.
+     *
+     * This is also the whole of what a rejection says OFFLINE. The structured
+     * account lives on the queue row and the stock entry dialog fetches it, but
+     * that needs a connection; a sentence on the ledger row does not, and Stock
+     * History is a screen that has to render with none.
      */
-    private function notes(stdClass $row, int $approved, ?string $reason): ?string
+    private function notes(stdClass $row, int $approved, string $outcome, ?string $reason): ?string
     {
+        $verdict = match ($outcome) {
+            'reject' => sprintf('Turned down: %+d was asked for and none of it happened.', (int) $row->quantity),
+            'partial' => sprintf('Partially approved: %+d of %+d asked for.', $approved, (int) $row->quantity),
+            default => null,
+        };
+
         $parts = array_filter([
             $row->notes,
-            $approved === (int) $row->quantity ? null : sprintf(
-                'Partially approved: %+d of %+d asked for.',
-                $approved,
-                (int) $row->quantity,
-            ),
-            $approved === (int) $row->quantity ? null : $reason,
+            $verdict,
+            $verdict === null ? null : $reason,
         ]);
 
         return $parts === [] ? null : implode(' ', $parts);
@@ -452,7 +464,10 @@ class AdjustmentResolver
                     'resolved_by' => $actor->getKey(),
                     'resolution_reason' => $row['reason'],
                     'approved_quantity' => $row['quantity'],
-                    'ledger_entry_id' => $row['accepted'] ? $row['id'] : null,
+                    // Set on a rejection too, since M11.8: every answer writes a
+                    // ledger row now, and this is the link the stock entry dialog
+                    // follows back to find what was originally asked for.
+                    'ledger_entry_id' => $row['id'],
                 ]);
         }
     }

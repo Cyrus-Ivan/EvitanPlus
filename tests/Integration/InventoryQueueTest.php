@@ -4,10 +4,10 @@ namespace Tests\Integration;
 
 use App\Models\Category;
 use App\Models\Instance;
+use App\Models\InventoryLedger;
 use App\Models\SyncStatus;
 use App\Models\User;
 use App\Models\Variant;
-use App\Support\Inventory\AdjustmentResolver;
 use App\Support\Inventory\StockLedger;
 use App\Support\Sync\SyncCycle;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
+use Tests\Concerns\ApprovesEveryPendingRow;
 use Tests\Integration\Concerns\ProvisionsABusiness;
 use Tests\TestCase;
 use Throwable;
@@ -45,7 +46,7 @@ use Throwable;
 #[Group('supabase')]
 class InventoryQueueTest extends TestCase
 {
-    use ProvisionsABusiness, RefreshDatabase;
+    use ApprovesEveryPendingRow, ProvisionsABusiness, RefreshDatabase;
 
     /** Each test sets its devices up for itself, through the real wizard. */
     protected bool $hydrated = false;
@@ -170,8 +171,10 @@ class InventoryQueueTest extends TestCase
         $this->assertNotNull($answered['resolved_at']);
         $this->assertSame('Nothing was ever taken off the shelf here.', $answered['resolution_reason']);
         $this->assertSame($this->owner()->getKey(), $answered['resolved_by']);
+        // Null: `approved_quantity` means "what was agreed", and nothing was.
         $this->assertNull($answered['approved_quantity']);
-        $this->assertNull($answered['ledger_entry_id']);
+        // Set (M11.8), because a refusal now writes a ledger row of its own.
+        $this->assertSame($answered['id'], $answered['ledger_entry_id']);
 
         // Stock is untouched on both sides, and never went negative anywhere.
         $this->assertSame(10, (int) $this->remote(
@@ -181,11 +184,81 @@ class InventoryQueueTest extends TestCase
 
         $this->assertSame(10, app(StockLedger::class)->currentStock(Variant::query()->where('sku', 'QUEUE1')->sole()));
 
-        // And no ledger entry was invented for a rejected request.
-        $this->assertSame(
-            0,
-            (int) $this->remote("select count(*) as c from inventory_ledger where notes = 'Written off at QBB'")[0]['c'],
+        // A ledger entry of ZERO was written for the refusal (M11.8), locally
+        // and upstream. It moves nothing — the two snapshot assertions above are
+        // what says so — and it exists purely so the branch that ASKED can read
+        // the outcome: the pull filters this table to one branch, so nothing
+        // else could ever carry it to them.
+        $refusal = $this->remote(
+            'select quantity, branch_id, notes from inventory_ledger where id = ?',
+            [$answered['id']],
         );
+
+        $this->assertCount(1, $refusal);
+        $this->assertSame(0, (int) $refusal[0]['quantity']);
+        $this->assertSame(self::$documentB['branch']['id'], $refusal[0]['branch_id']);
+        $this->assertStringContainsString('Turned down', (string) $refusal[0]['notes']);
+        $this->assertStringContainsString('Nothing was ever taken off the shelf here.', (string) $refusal[0]['notes']);
+
+        $this->assertSame(0, InventoryLedger::query()->findOrFail($answered['id'])->quantity);
+    }
+
+    public function test_a_refusal_at_one_branch_is_readable_from_the_branch_that_asked(): void
+    {
+        // The whole reason M11.8 moved the record: A asks B for something, B says
+        // no, and before this A had nowhere at all to find that out. `Puller`
+        // filters `inventory_ledger` to one branch, so the refusal B wrote will
+        // never reach A's own SQLite — A has to read B's rows upstream, which is
+        // what branch scope on Stock History is for.
+        $this->hydrateAs(self::$documentA);
+        $this->createProduct('QUEUE9', '12.00');
+
+        $this->hydrateAs(self::$documentB);
+        $this->stockUp('QUEUE9', 4);
+
+        $this->hydrateAs(self::$documentA);
+        $this->issue(self::$documentB, 'QUEUE9', -4, 'Spoiled at QBB');
+
+        $this->hydrateAs(self::$documentB);
+        $queued = $this->queued('Spoiled at QBB');
+        $this->resolve($queued['id'], 'reject', reason: 'They are all still on the shelf.');
+
+        $this->hydrateAs(self::$documentA);
+
+        // A's own history does not have it, and must not: the row is B's.
+        $this->assertNull(InventoryLedger::query()->find($queued['id']));
+
+        // Scoped to B, read live, it is there — as a movement of nothing.
+        $props = $this->actingAs($this->owner())
+            ->get(route('stock-history.index', ['scope' => self::$documentB['branch']['id']]))
+            ->assertOk()
+            ->viewData('page')['props'];
+
+        $this->assertTrue($props['consolidatedOnline']);
+
+        $refusal = collect($props['entries']['data'])->firstWhere('id', $queued['id']);
+
+        $this->assertNotNull($refusal);
+        $this->assertSame(0, $refusal['quantity']);
+        $this->assertSame(self::BRANCH_B, $refusal['branch']);
+        $this->assertStringContainsString('They are all still on the shelf.', (string) $refusal['notes']);
+
+        // And the structured account behind it, which is what the row's dialog
+        // fetches: the ledger id IS the queue row's id, so this is a lookup.
+        $request = $this->actingAs($this->owner())
+            ->getJson(route('stock-history.request', $queued['id']))
+            ->assertOk()
+            ->json('request');
+
+        $this->assertSame('rejected', $request['status']);
+        $this->assertSame(-4, $request['requested']);
+        $this->assertNull($request['approved']);
+        $this->assertSame('They are all still on the shelf.', $request['resolution_reason']);
+        $this->assertSame(self::BRANCH_B, $request['branch']['code']);
+        // Schema 22: where the person who asked was standing.
+        $this->assertSame(self::BRANCH_A, $request['issued_by']['branch']['code']);
+        // Rejected, and this viewer is the Owner, so it can be asked for again.
+        $this->assertTrue($request['can_reissue']);
     }
 
     public function test_an_approved_adjustment_becomes_a_ledger_entry_on_both_sides(): void
@@ -331,25 +404,17 @@ class InventoryQueueTest extends TestCase
         // asserted is one row out of a list whose length this test does not fix.
         $props = $response->viewData('page')['props'];
 
-        // Every row here is aimed at branch B, so from A they are all in
-        // `elsewhere` — the section that exists precisely so an issuer can see
-        // one was turned down. A rejection writes no ledger row, so this is the
-        // only place it ever appears.
-        $rows = collect($props['elsewhere']);
-        $turned_down = $rows->firstWhere('notes', 'Too many');
+        // The turned-down row is NOT on this page any more (M11.8): it is
+        // finished, and a finished request leaves. Where it lives now is the
+        // refusal's own ledger row, proved by
+        // test_a_refusal_at_one_branch_is_readable_from_the_branch_that_asked.
+        $this->assertNull(
+            collect($props['requests'])->first(fn (array $request): bool => $request['notes'] === 'Too many'),
+        );
 
-        $this->assertNotNull($turned_down);
-        $this->assertSame('rejected', $turned_down['status']);
-        $this->assertSame(self::BRANCH_B, $turned_down['branch']);
-        $this->assertSame('Product QUEUE4', $turned_down['item']);
-        $this->assertSame(-9, $turned_down['quantity']);
-        $this->assertSame('We never had nine of these.', $turned_down['resolution_reason']);
-
-        // And nothing is waiting on A itself, which is the other half of the
-        // split: these are rows A ASKED FOR, not rows A owes an answer to.
-        $this->assertSame([], $props['inbox']);
-
-        $rejected = $turned_down['id'];
+        $rejected = $this->remote(
+            "select id from inventory_update_queue where notes = 'Too many' and status = 'rejected'",
+        )[0]['id'];
 
         // Re-issued for an amount that fits: a NEW pending row, leaving the
         // rejection standing as the record of what happened.
@@ -544,7 +609,7 @@ class InventoryQueueTest extends TestCase
             ])
             ->assertSessionHasNoErrors();
 
-        app(AdjustmentResolver::class)->approveAll($this->owner());
+        $this->approveEverythingPending($this->owner());
     }
 
     private function createProduct(string $sku, string $price): void

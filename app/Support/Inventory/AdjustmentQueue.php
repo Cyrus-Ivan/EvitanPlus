@@ -64,7 +64,9 @@ class AdjustmentQueue
             return;
         }
 
-        $this->online->afterMirroring(function (Connection $remote) use ($rows, $issuedBy): void {
+        $issuerBranch = $this->thisBranch();
+
+        $this->online->afterMirroring(function (Connection $remote) use ($rows, $issuedBy, $issuerBranch): void {
             $remote->table('inventory_update_queue')->insert(array_map(
                 fn (array $row): array => [
                     'id' => (string) Str::uuid(),
@@ -82,6 +84,14 @@ class AdjustmentQueue
                     'notes' => $row['notes'] ?? null,
                     'status' => 'pending',
                     'issued_by' => $issuedBy->getKey(),
+                    // A person at a place, and the place is not in any of the
+                    // other columns: `branch_id` is who must ANSWER, and a
+                    // transfer can be arranged by a branch that is neither end of
+                    // it. Stamped from `instance` here rather than passed in, so
+                    // no caller can get it wrong or forget it. Null only on a
+                    // device that has not been hydrated, which cannot reach this
+                    // code — the online write needs the sealed credential.
+                    'issued_by_branch_id' => $issuerBranch,
                     // Postgres's clock, not PHP's: these are `timestamptz`, and
                     // this app's convention everywhere else is a naive local
                     // string. Stamping one with the other is the eight-hour drift

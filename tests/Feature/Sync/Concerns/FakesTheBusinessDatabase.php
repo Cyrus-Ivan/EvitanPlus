@@ -80,7 +80,8 @@ trait FakesTheBusinessDatabase
                                      "reference_type" varchar, "reference_id" varchar,
                                      "notes" varchar, "status" varchar,
                                      "resolution_reason" varchar, "ledger_entry_id" varchar,
-                                     "issued_by" varchar, "resolved_by" varchar, "resolved_at" datetime,
+                                     "issued_by" varchar, "issued_by_branch_id" varchar,
+                                     "resolved_by" varchar, "resolved_at" datetime,
                                      "created_at" datetime, "updated_at" datetime',
     ];
 

@@ -34,6 +34,15 @@ export function movementLabel(entry: StockLedgerEntry): string {
         return MOVEMENT_LABEL[entry.sale_type ?? ''] ?? entry.sale_type ?? 'Sale';
     }
 
+    // A refusal (M11.8): somebody was asked for stock to move and said it did
+    // not. It is written to the ledger — as a movement of nothing — so the branch
+    // that asked can read the outcome, which no other record could carry to them.
+    // This branch has to come FIRST: zero is not negative, so the transfer rule
+    // below would call every refused outgoing leg a "Transfer in".
+    if (entry.quantity === 0) {
+        return 'Turned down';
+    }
+
     if (entry.reference_type === 'transfer') {
         return entry.quantity < 0 ? 'Transfer out' : 'Transfer in';
     }

@@ -351,11 +351,15 @@ null))`; `App\Support\Inventory\AdjustmentQueue` writes them,
 `App\Support\Inventory\AdjustmentResolver` answers them,
 `App\Http\Controllers\Inventory\InventoryQueueController` displays them.
 ✗ **Not** the outbox. See §5.
-✗ **Not** a ledger entry, and a rejected one never becomes anything else — it writes no ledger
-row at all. The queue row IS the record of a refusal, which is why resolved rows are hidden
-rather than deleted, and why the page has a "Sent to other branches" section: `Puller` filters
-`inventory_ledger` to one branch, so a rejection recorded at the target could never reach the
-branch that asked.
+✗ **Not** a ledger entry *while it is pending*. Every answer now becomes one, including a
+refusal, which writes a row of **quantity 0** (M11.8). It used to write nothing, and the branch
+that asked never found out: `Puller` filters `inventory_ledger` to one branch, so the queue row
+was the only record of a refusal anywhere and the page needed a "Sent to other branches" section
+to show it. A movement of nothing plus §"Branch scope" on Stock History replaced both.
+✗ **Not** kept on the page once answered. `/inventory/stock-updates` ("Pending Stocks") shows
+**unfinished work only**: rows are grouped into *requests* by `parent_id ?? id`, and a request is
+shown while any leg is still pending. The record of what happened is the ledger row, read in
+Stock History.
 ✗ **Not** only for other branches, which is what M8 built and what schema 21 widened. The
 narrow version mediated the cross-branch case because the issuer cannot see the target's unsynced
 sales — an argument about arithmetic. The wider rule rests on something arithmetic cannot settle:
@@ -368,7 +372,8 @@ Answering a pending stock adjustment. Three outcomes, and only the first two mov
 - **Approve** — all of it happened.
 - **Partial approve** — some of it did. Records `approved_quantity` (same sign as `quantity`,
   smaller in magnitude, never zero) plus a required reason.
-- **Reject** — none of it did. Requires a reason.
+- **Reject** — none of it did. Requires a reason. Moves no stock and still writes a ledger row,
+  of quantity 0 (M11.8) — see the entry above for why.
 *Anchor:* `AdjustmentResolver::resolve()`; `ResolveAdjustmentRequest`;
 `BranchGrants::UPDATE_COLUMNS` — the **six** columns a resolution touches
 (`status, resolved_at, resolution_reason, ledger_entry_id, approved_quantity, resolved_by`).
@@ -501,8 +506,9 @@ for a non-Owner here exactly as everywhere else.
 Which branches a screen covers: **`local`** (this device's SQLite mirror — the default, works
 offline), **`all`**, or a **branch id**. Echoed back to the screen *after* normalisation, so it
 always names what was actually read rather than what was asked for.
-*Anchor:* the `scope` query parameter on `ReportsController` (M11) and `LoginHistoryController`
-(M11.5); `BranchScope` in `resources/js/types/index.ts`; the picker
+*Anchor:* the `scope` query parameter on `ReportsController` (M11), `LoginHistoryController`
+(M11.5), `Inventory\StockHistoryController` and `Inventory\InventoryQueueController` (both
+M11.8); `BranchScope` in `resources/js/types/index.ts`; the picker
 `resources/js/components/branch-scope-select.tsx` and
 `App\Http\Controllers\Concerns\OffersBranchScope`, which fills it.
 ✗ **Not** a filter over one dataset. `local` and the other two read different databases.
@@ -515,11 +521,17 @@ than a second answer.
 says so (`consolidatedOnline: false`); presenting one branch's rows under an "All branches"
 heading is the failure this design refuses.
 ✗ **Not** one permission. Reports restrict the wider scopes to the **Owner** (they carry cost
-and profit); login history allows **Admin+**, per `MULTIBRANCH-BRAINSTORM.md` §6. A viewer who
-may not widen it is snapped back to `local` on the login-history screen, since the local view is
-theirs by right and sits on the same route.
+and profit); login history and stock history allow **Admin+**, per `MULTIBRANCH-BRAINSTORM.md`
+§6; Pending Stocks gates it on nothing at all, because every row it lists was already visible to
+every role and what bounds *answering* one is the branch rather than the role
+(§"Resolution"). A viewer who may not widen it is snapped back to `local` rather than
+refused, since the local view is theirs by right and sits on the same route.
 > Called **report scope** until M11.5, when a second screen took the same parameter with the
 > same meaning. One word, because a synonym is exactly what §0 forbids.
+> Stock History took it in M11.8 for a reason the other three did not have: not "the Owner would
+> like to see everything" but that a **refusal is unreadable without it**. The pull filters the
+> ledger to one branch, so the branch that asked another branch to move stock can only ever read
+> the answer upstream.
 
 ### Pull
 Fetching **deltas** of pulled tables by `updated_at`, plus the recomputed stock baseline.

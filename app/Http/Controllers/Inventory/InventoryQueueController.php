@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Inventory;
 
+use App\Http\Controllers\Concerns\OffersBranchScope;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Inventory\IssueStockAdjustmentRequest;
 use App\Http\Requests\Inventory\IssueTransferRequest;
@@ -22,11 +23,13 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
 
 /**
- * Pending stock adjustments (§10, M8).
+ * Pending Stocks (§10, M8; reworked M11.8).
  *
  * `/inventory/stock-updates` is a page in its own right, reached from the
  * sidebar. It spent one milestone as a dialog on Stock History, on the reasoning
@@ -68,8 +71,20 @@ use Inertia\Response;
  */
 class InventoryQueueController extends Controller
 {
-    /** Enough history to review; this is not an audit log. */
+    use OffersBranchScope;
+
+    /** Enough work to review; this is not an audit log. */
     private const LIMIT = 200;
+
+    /** The shared branch scope vocabulary. See normalizeScope(). */
+    private const SCOPE_LOCAL = 'local';
+
+    private const SCOPE_ALL = 'all';
+
+    /** A request is a transfer, or it is not. See normalizeKind(). */
+    private const KIND_TRANSFER = 'transfer';
+
+    private const KIND_ADJUSTMENT = 'adjustment';
 
     public function __construct(
         private readonly OnlineRead $read,
@@ -78,7 +93,7 @@ class InventoryQueueController extends Controller
     ) {}
 
     /**
-     * The pending list.
+     * Unfinished work, as requests rather than rows (M11.8).
      *
      * Props rather than a fetch, which is what makes the write paths free: every
      * one of them already ends in `back()`, so answering a row re-renders this
@@ -88,54 +103,69 @@ class InventoryQueueController extends Controller
      * for {@see branches()}: that roster hangs off a dialog on the screen a
      * cashier lives on).
      *
-     * ## Two sections, because they answer two different questions
+     * ## One list, and what it contains is decided by "is anybody still waiting"
      *
-     * - `inbox` — rows aimed at THIS branch and still pending. These are the ones
-     *   somebody here has to answer, so they are ordered OLDEST FIRST: that is the
-     *   order they should be worked, and two subtractions that fit one at a time
-     *   may not fit together.
-     * - `elsewhere` — rows aimed at other branches, newest first. Informational.
-     *   This is the whole of what the old page showed, and it is the only place an
-     *   issuer ever learns their adjustment was turned down: a rejection writes no
-     *   ledger row, and could not reach them if it did, because `Puller` filters
-     *   `inventory_ledger` to this branch.
+     * The query is every `pending` row in the business, and a REQUEST is a group
+     * of rows sharing `parent_id ?? id` — which is one row for an adjustment and
+     * two for a transfer. A group is here because at least one of its rows is
+     * pending, and that single rule produces the whole of what the page shows:
      *
-     * `?resolved=1` swaps the inbox for this branch's already-answered rows. They
-     * are hidden by default — an answered row's movement is in Stock History, and
-     * a list that keeps them is a list nobody can see the work in. On the URL and
-     * not in client state, so `back()` from an answer returns to the list the
-     * person was looking at.
+     * - an answered adjustment leaves;
+     * - a transfer whose sender has confirmed stays, with the sender's answer
+     *   shown, until the receiver answers too;
+     * - a transfer refused by its sender leaves, because refusing it spawns no
+     *   receiving leg and so leaves nobody waiting.
+     *
+     * Answered work is not hidden behind a toggle any more, it is somewhere else:
+     * every answer now writes a ledger row (a rejection writes one of zero — see
+     * {@see AdjustmentResolver}), and branch-scoped Stock History is where a
+     * branch reads the outcome of what it asked another branch for. This page had
+     * carried a "Sent to other branches" section purely because that was
+     * impossible; it is possible now, and the section is gone.
+     *
+     * ## Oldest first, unchanged
+     *
+     * That is the order the work should be done in, and two subtractions that each
+     * fit alone may not fit together.
      */
     public function index(Request $request): Response
     {
         $branchId = $this->branchId();
-        $resolved = $request->boolean('resolved');
+        $scope = $this->normalizeScope($request->query('scope'));
+        $kind = $this->normalizeKind($request->query('kind'));
+        $filters = ['scope' => $scope, 'kind' => $kind];
 
         // The `null` is the rescue's fallback, not this closure's: a read that
         // failed is a device with no connection, which is a different answer from
         // a queue with nothing in it.
-        $data = rescue(fn (): array => $this->read->run(function (Connection $remote) use ($branchId, $resolved): array {
+        $data = rescue(fn (): array => $this->read->run(function (Connection $remote) use ($kind): array {
+            $pending = $this->pending($remote, $kind);
+
             return [
                 'branches' => BranchRoster::read($remote),
-                'inbox' => $this->inbox($remote, $branchId, $resolved),
-                'elsewhere' => $this->elsewhere($remote, $branchId),
+                'rows' => [...$pending, ...$this->parents($remote, $pending)],
             ];
         }, 'Branch stock updates'), null, report: false);
 
         if ($data === null) {
             return Inertia::render('inventory/stock-updates', [
-                'inbox' => [],
-                'elsewhere' => [],
+                'requests' => [],
+                'branches' => [],
                 'online' => false,
-                'resolved' => $resolved,
+                'filters' => $filters,
             ]);
         }
 
+        $requests = $this->describe($data['rows'], $data['branches'], $branchId);
+
         return Inertia::render('inventory/stock-updates', [
-            'inbox' => $this->describe($data['inbox'], $data['branches']),
-            'elsewhere' => $this->describe($data['elsewhere'], $data['branches']),
+            'requests' => $this->inScope($requests, $scope === self::SCOPE_LOCAL ? $branchId : $scope),
+            // Every branch but this one: the picker's first entry is already this
+            // branch, as `local` (see OffersBranchScope). Reused from the read
+            // just made rather than fetched again.
+            'branches' => $this->pickerBranches($this->read, array_values($data['branches']), true),
             'online' => true,
-            'resolved' => $resolved,
+            'filters' => $filters,
         ]);
     }
 
@@ -323,6 +353,19 @@ class InventoryQueueController extends Controller
      * permission floor here would mean stock waiting on somebody who is not
      * there. Issuing one is still Admin+, because deciding what SHOULD move is a
      * different question from reporting what did.
+     *
+     * ## "Approve all" comes through here too, and no longer has a route of its own
+     *
+     * It used to be a server-side sweep of every pending row at this branch,
+     * which was right when the page showed exactly that. The page now filters, so
+     * a sweep would answer rows nobody could see — the button says "all" and the
+     * only honest reading of it is "all of what is on screen". The client sends
+     * those ids as ordinary approvals ({@see ResolveAdjustmentRequest} caps a
+     * submit at 500, and a page holds at most 200).
+     *
+     * That is no less safe than the sweep it replaces: this path re-reads every
+     * id from Postgres filtered to this branch's still-pending rows before it
+     * writes anything, so a stale list resolves fewer rows rather than wrong ones.
      */
     public function resolve(ResolveAdjustmentRequest $request, AdjustmentResolver $resolver, AuditRecorder $audit): RedirectResponse
     {
@@ -330,20 +373,6 @@ class InventoryQueueController extends Controller
         $resolved = $resolver->resolve($decisions, $request->user());
 
         return $this->resolved($resolved, count($decisions), $audit, $request->user());
-    }
-
-    /**
-     * Approve everything currently waiting on this branch.
-     *
-     * Exists because a CSV import is one action that produces hundreds of rows.
-     * Guarded by a confirmation dialog on the client — it moves real stock, and
-     * the count is the whole of what somebody is agreeing to.
-     */
-    public function resolveAll(Request $request, AdjustmentResolver $resolver, AuditRecorder $audit): RedirectResponse
-    {
-        $resolved = $resolver->approveAll($request->user());
-
-        return $this->resolved($resolved, $resolved, $audit, $request->user());
     }
 
     /**
@@ -427,57 +456,81 @@ class InventoryQueueController extends Controller
     }
 
     /**
-     * Rows this branch has to answer — or, with $resolved, the ones it already has.
+     * Every row in the business still waiting on somebody.
+     *
+     * Business-wide and not branch-scoped: which branch's work a person is
+     * looking at is the `scope` filter's job, applied after grouping, because a
+     * transfer's involvement spans two rows and SQL would have to see both to
+     * decide it.
      *
      * @return list<object>
      */
-    private function inbox(Connection $remote, string $branchId, bool $resolved): array
+    private function pending(Connection $remote, ?string $kind): array
     {
         return $remote->table('inventory_update_queue')
-            ->where('branch_id', $branchId)
-            ->when($resolved,
-                fn ($query) => $query->where('status', '!=', 'pending')->orderByDesc('resolved_at'),
-                // Oldest first: see the pending() docblock.
-                fn ($query) => $query->where('status', 'pending')->orderBy('created_at')->orderBy('id'),
-            )
+            ->where('status', 'pending')
+            // A kind IS `reference_type = 'transfer'` or the absence of it, so
+            // this one filter can stay in SQL. Both legs of a transfer carry the
+            // same value, so it never splits a group in half.
+            ->when($kind === self::KIND_TRANSFER, fn ($query) => $query->where('reference_type', 'transfer'))
+            ->when($kind === self::KIND_ADJUSTMENT, fn ($query) => $query->where('reference_type', '!=', 'transfer'))
+            ->orderBy('created_at')
+            ->orderBy('id')
             ->limit(self::LIMIT)
             ->get()
             ->all();
     }
 
     /**
-     * Rows aimed at some other branch, whatever their status.
+     * The already-answered sending legs behind any pending receiving legs.
      *
+     * The only rows a group can be missing. A transfer's receiving leg exists
+     * ONLY because its sending leg was approved ({@see AdjustmentResolver}), so a
+     * pending child always has a resolved parent, and a pending parent has no
+     * child at all. Nothing else in the queue has a sibling.
+     *
+     * Fetched because the card is about the transfer rather than about one leg of
+     * it: the branch being asked to receive stock needs to see how much the
+     * sender confirmed actually left, who confirmed it and when.
+     *
+     * @param  list<object>  $pending
      * @return list<object>
      */
-    private function elsewhere(Connection $remote, string $branchId): array
+    private function parents(Connection $remote, array $pending): array
     {
-        return $remote->table('inventory_update_queue')
-            ->where('branch_id', '!=', $branchId)
-            ->orderByDesc('created_at')
-            ->limit(self::LIMIT)
-            ->get()
-            ->all();
+        $ids = array_values(array_unique(array_filter(array_map(
+            fn (object $row): ?string => $row->parent_id === null ? null : (string) $row->parent_id,
+            $pending,
+        ))));
+
+        if ($ids === []) {
+            return [];
+        }
+
+        return $remote->table('inventory_update_queue')->whereIn('id', $ids)->get()->all();
     }
 
     /**
-     * Put names on the rows, from the LOCAL mirror.
+     * Group the rows into requests and put names on them, from the LOCAL mirror.
      *
      * The catalog and every user are mirrored on this device already, so the
-     * remote query stays one flat select with no joins — and a row whose variant
-     * or issuer has since been archived still renders, because both lookups
-     * include the archived.
+     * remote query stays one flat select with no joins — and a request whose
+     * variant or issuer has since been archived still renders, because both
+     * lookups include the archived.
      *
      * Branch names come from {@see BranchRoster} rather than the picker's roster,
      * because that one hides disabled branches: a branch disabled after it was
      * sent an adjustment cannot be offered a new one, but the row it was already
      * sent still has to say whose it is.
      *
+     * A group is keyed by `parent_id ?? id`, so a transfer's two legs meet under
+     * the sending leg's id and everything else is a group of one.
+     *
      * @param  list<object>  $rows
      * @param  array<string, array{id: string, code: string, name: string}>  $branches
      * @return list<array<string, mixed>>
      */
-    private function describe(array $rows, array $branches): array
+    private function describe(array $rows, array $branches, string $branchId): array
     {
         if ($rows === []) {
             return [];
@@ -489,48 +542,211 @@ class InventoryQueueController extends Controller
             ->get()
             ->keyBy('id');
 
-        // Names only, and `withTrashed()`: the person who issued an adjustment —
-        // or answered it — may since have been archived, and the row still has to
-        // say who. Both columns in one lookup; `resolved_by` is null until
-        // somebody answers.
+        // Name AND role, and `withTrashed()`: the person who issued a request —
+        // or answered it — may since have been archived, and the card still has
+        // to say who they were. Both columns in one lookup; `resolved_by` is null
+        // until somebody answers.
         $users = User::query()
             ->withTrashed()
             ->whereIn('id', array_filter(array_merge(
                 array_map(fn (object $row): string => (string) $row->issued_by, $rows),
                 array_map(fn (object $row): ?string => $row->resolved_by === null ? null : (string) $row->resolved_by, $rows),
             )))
-            ->pluck('name', 'id');
+            ->get(['id', 'name', 'role'])
+            ->keyBy('id')
+            ->all();
 
-        return array_map(function (object $row) use ($variants, $users, $branches): array {
-            $variant = $variants->get((string) $row->variant_id);
+        /** @var array<string, list<object>> $groups */
+        $groups = [];
 
-            return [
-                'id' => (string) $row->id,
-                'branch' => $branches[(string) $row->branch_id]['code'] ?? 'Unknown branch',
-                'item' => $variant?->item->name ?? 'Unknown product',
-                'variant' => $variant?->name,
-                'quantity' => (int) $row->quantity,
-                'approved_quantity' => $row->approved_quantity === null ? null : (int) $row->approved_quantity,
-                'reference_type' => (string) $row->reference_type,
-                // The branch on the other end, when there is one. Null on most
-                // rows: a branch adjusting its own stock has no counterparty.
-                'counterparty_branch' => $row->counterparty_branch_id === null
-                    ? null
-                    : ($branches[(string) $row->counterparty_branch_id]['code'] ?? 'Unknown branch'),
-                'notes' => $row->notes,
-                'status' => (string) $row->status,
-                'resolution_reason' => $row->resolution_reason,
-                'resolved_by' => $row->resolved_by === null
-                    ? null
-                    : ($users[(string) $row->resolved_by] ?? 'Unknown user'),
+        foreach ($rows as $row) {
+            $groups[(string) ($row->parent_id ?? $row->id)][] = $row;
+        }
+
+        $requests = [];
+
+        foreach ($groups as $id => $legs) {
+            // The sending leg first, which is also the only leg of everything
+            // that is not a transfer. `parents()` can only ever return it, so a
+            // group whose first row has a parent is one whose parent was filtered
+            // out by `kind` — impossible today, and cheap to be right about.
+            usort($legs, fn (object $a, object $b): int => ($a->parent_id === null ? 0 : 1) <=> ($b->parent_id === null ? 0 : 1));
+
+            $request = $this->request($id, $legs, $branches, $variants, $users, $branchId);
+
+            if ($request !== null) {
+                $requests[] = $request;
+            }
+        }
+
+        return $requests;
+    }
+
+    /**
+     * One card's worth: the request, its branches, and a leg per answer needed.
+     *
+     * @param  list<object>  $legs
+     * @param  array<string, array{id: string, code: string, name: string}>  $branches
+     * @param  Collection<string, Variant>  $variants
+     * @param  array<string, User>  $users
+     * @return array<string, mixed>|null
+     */
+    private function request(string $id, array $legs, array $branches, Collection $variants, array $users, string $branchId): ?array
+    {
+        $first = $legs[0] ?? null;
+
+        if ($first === null) {
+            return null;
+        }
+
+        $variant = $variants->get((string) $first->variant_id);
+        $issuer = $users[(string) $first->issued_by] ?? null;
+        $transfer = (string) $first->reference_type === 'transfer';
+
+        return [
+            'id' => $id,
+            'kind' => $transfer ? self::KIND_TRANSFER : self::KIND_ADJUSTMENT,
+            // How it was asked for: manual_adjustment | csv_import | transfer.
+            'source' => (string) $first->reference_type,
+            'item' => $variant?->item->name ?? 'Unknown product',
+            'variant' => $variant?->name,
+            'notes' => $first->notes,
+            // Signed, and always the FIRST leg's: what was originally asked for.
+            // A receiving leg carries what the sender confirmed instead, which is
+            // on the leg and is a different number on purpose.
+            'requested' => (int) $first->quantity,
+            'issued_by' => [
                 // The queue is read from Postgres and the names come from this
                 // device's mirror, so the two can legitimately disagree for one
                 // cycle — a user created at another branch minutes ago.
-                'issued_by' => $users[(string) $row->issued_by] ?? 'Unknown user',
-                'created_at' => $this->localTime($row->created_at),
-                'resolved_at' => $this->localTime($row->resolved_at),
-            ];
-        }, $rows);
+                'name' => $issuer === null ? 'Unknown user' : $issuer->name,
+                'role' => $issuer?->role->value,
+                // Null on rows written before schema 22, which is what the column
+                // being nullable means here.
+                'branch' => $this->branchRef($first->issued_by_branch_id ?? null, $branches),
+                'at' => $this->localTime($first->created_at),
+            ],
+            // A transfer names both ends; an adjustment names the one branch whose
+            // stock is going to move. Both come off the first leg, which for a
+            // transfer is the sending one.
+            'sender' => $transfer ? $this->branchRef($first->branch_id, $branches) : null,
+            'receiver' => $transfer ? $this->branchRef($first->counterparty_branch_id, $branches) : null,
+            'target' => $transfer ? null : $this->branchRef($first->branch_id, $branches),
+            'legs' => array_map(
+                fn (object $leg): array => $this->leg($leg, $transfer, $branches, $users, $branchId),
+                $legs,
+            ),
+        ];
+    }
+
+    /**
+     * One answer somebody owes, or has given.
+     *
+     * @param  array<string, array{id: string, code: string, name: string}>  $branches
+     * @param  array<string, User>  $users
+     * @return array<string, mixed>
+     */
+    private function leg(object $leg, bool $transfer, array $branches, array $users, string $branchId): array
+    {
+        $resolver = $leg->resolved_by === null ? null : ($users[(string) $leg->resolved_by] ?? null);
+
+        return [
+            'id' => (string) $leg->id,
+            'role' => match (true) {
+                ! $transfer => 'target',
+                $leg->parent_id === null => 'send',
+                default => 'receive',
+            },
+            'branch' => $this->branchRef($leg->branch_id, $branches),
+            'quantity' => (int) $leg->quantity,
+            'approved_quantity' => $leg->approved_quantity === null ? null : (int) $leg->approved_quantity,
+            'status' => (string) $leg->status,
+            'resolution_reason' => $leg->resolution_reason,
+            'resolved_by' => $resolver === null ? null : [
+                'name' => $resolver->name,
+                'role' => $resolver->role->value,
+            ],
+            'resolved_at' => $this->localTime($leg->resolved_at),
+            // Whether THIS device may answer it. The same rule the resolver
+            // enforces authoritatively — it re-reads every row filtered to this
+            // branch — restated here only so the buttons appear in the right
+            // place. Role is deliberately not part of it: see resolve().
+            'actionable' => (string) $leg->branch_id === $branchId && (string) $leg->status === 'pending',
+        ];
+    }
+
+    /**
+     * A branch id as the {id, code, name} the cards print.
+     *
+     * @param  array<string, array{id: string, code: string, name: string}>  $branches
+     * @return array{id: string, code: string, name: string}|null
+     */
+    private function branchRef(mixed $id, array $branches): ?array
+    {
+        if ($id === null) {
+            return null;
+        }
+
+        return $branches[(string) $id] ?? ['id' => (string) $id, 'code' => '??', 'name' => 'Unknown branch'];
+    }
+
+    /**
+     * Keep only the requests one branch is part of.
+     *
+     * "Part of" is deliberately wide: the branch that asked, the branch whose
+     * stock moves, and both ends of a transfer. Anything narrower would hide a
+     * transfer from the branch that arranged it, or an adjustment from the branch
+     * that asked for it — which are exactly the people who want to know.
+     *
+     * @param  list<array<string, mixed>>  $requests
+     * @return list<array<string, mixed>>
+     */
+    private function inScope(array $requests, string $scope): array
+    {
+        if ($scope === self::SCOPE_ALL) {
+            return $requests;
+        }
+
+        return array_values(array_filter($requests, function (array $request) use ($scope): bool {
+            /** @var list<array<string, mixed>> $legs */
+            $legs = $request['legs'];
+
+            $involved = array_merge(
+                [$request['issued_by']['branch']['id'] ?? null, $request['receiver']['id'] ?? null],
+                array_map(fn (array $leg): ?string => $leg['branch']['id'] ?? null, $legs),
+            );
+
+            return in_array($scope, $involved, true);
+        }));
+    }
+
+    /**
+     * `local` (this branch), `all`, or a branch id — the shared branch scope
+     * vocabulary (docs/glossary.md), as Reports, Login History and Stock History
+     * use it.
+     *
+     * No role gate, unlike those three. Nothing here is a figure: it is a list of
+     * work that has not happened, every row of which was already visible to every
+     * role on the page this replaces. What still bounds ANSWERING one is the
+     * branch, and that is enforced in {@see AdjustmentResolver}, not here.
+     */
+    private function normalizeScope(mixed $value): string
+    {
+        $scope = (string) $value;
+
+        if ($scope === '' || $scope === self::SCOPE_LOCAL || $this->isThisBranch($scope)) {
+            return self::SCOPE_LOCAL;
+        }
+
+        return $scope === self::SCOPE_ALL || Str::isUuid($scope) ? $scope : self::SCOPE_LOCAL;
+    }
+
+    /** `transfer`, `adjustment`, or null for both. */
+    private function normalizeKind(mixed $value): ?string
+    {
+        $kind = (string) $value;
+
+        return in_array($kind, [self::KIND_TRANSFER, self::KIND_ADJUSTMENT], true) ? $kind : null;
     }
 
     /**

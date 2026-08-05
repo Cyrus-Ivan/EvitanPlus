@@ -59,7 +59,7 @@ final class SchemaVersion
      * Asserted against {@see migrationCount()}, so this is not a number you
      * choose — it is one you keep in step, and the test says so when you don't.
      */
-    public const SCHEMA_VERSION = 21;
+    public const SCHEMA_VERSION = 22;
 
     /**
      * Raise ONLY for a breaking change. See the class docblock.
@@ -78,6 +78,8 @@ final class SchemaVersion
      * Nothing detects that, because from the schema's side it looks exactly like
      * a branch doing its job. Freezing those builds is the only defence, which is
      * what this number does.
+     *
+     * Schema 22 left it here: one nullable column nothing older reads.
      */
     public const MIN_APP_VERSION = '1.1.0';
 

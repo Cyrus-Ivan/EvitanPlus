@@ -47,10 +47,10 @@ const mainNavGroups: NavGroup[] = [
             // Ungated ON PURPOSE, unlike everything else that touches stock:
             // answering one is reporting what physically happened, and the
             // person who knows is whoever is in the shop. See routes/web.php.
-            // Shortened for the rail only. The page, its breadcrumb and every
-            // document that names it are still "Pending stock adjustments" —
-            // that is the term of art (docs/glossary.md), and this is a label.
-            { title: 'Pending Stock', url: '/inventory/stock-updates', icon: ClipboardCheck },
+            // "Pending Stocks" is the page's own name (M11.8). The rows on it
+            // are still *pending stock adjustments* — that is the term of art
+            // (docs/glossary.md) and it outranks the label on a screen.
+            { title: 'Pending Stocks', url: '/inventory/stock-updates', icon: ClipboardCheck },
             // No dedicated ability backs the import/export routes, so this one
             // gates by role floor; the routes are `role:admin` server-side.
             { title: 'Import / Export', url: '/inventory/import', icon: FileSpreadsheet, minRole: 'admin' },

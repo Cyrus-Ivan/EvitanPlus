@@ -1,3 +1,4 @@
+import { BranchScopeSelect } from '@/components/branch-scope-select';
 import EmptyState from '@/components/empty-state';
 import { StockEntryDialog } from '@/components/inventory/stock-entry-dialog';
 import Pagination from '@/components/pagination';
@@ -7,9 +8,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import AppLayout from '@/layouts/app-layout';
 import { MOVEMENT_LABEL, movementLabel, movementVariant } from '@/lib/stock-movement';
-import type { BreadcrumbItem, Paginated, StockLedgerEntry } from '@/types';
+import type { BranchScope, BreadcrumbItem, Paginated, RosterBranch, StockLedgerEntry } from '@/types';
 import { Head, router } from '@inertiajs/react';
-import { ScrollText } from 'lucide-react';
+import { ScrollText, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
 
 const breadcrumbs: BreadcrumbItem[] = [
@@ -46,16 +47,40 @@ interface Filters {
     date_to: string | null;
 }
 
+/**
+ * Stock History — the append-only ledger, as read.
+ *
+ * ## The branch scope (M11.8)
+ *
+ * `local` is this device's SQLite and works offline; `all` or a branch id is the
+ * business database, read live, Admin+ only. It exists because a branch that
+ * asks ANOTHER branch to move stock has never been able to see what came of it:
+ * the pull filters the ledger to one branch. Now that a refusal writes a
+ * zero-quantity ledger row rather than nothing at all, there is something
+ * upstream to go and read, and this is the reading of it.
+ *
+ * A wider scope that could not be reached falls back to this branch and SAYS SO
+ * — presenting one branch's movements under an "All branches" heading is the one
+ * outcome worse than an error.
+ */
 export default function StockHistory({
     entries,
     variants,
     movements,
     filters,
+    scope,
+    canViewAll,
+    branches,
+    consolidatedOnline,
 }: {
     entries: Paginated<StockLedgerEntry>;
     variants: VariantOption[];
     movements: string[];
     filters: Filters;
+    scope: BranchScope;
+    canViewAll: boolean;
+    branches: RosterBranch[];
+    consolidatedOnline: boolean | null;
 }) {
     const [detail, setDetail] = useState<StockLedgerEntry | null>(null);
     const [variantSearch, setVariantSearch] = useState('');
@@ -72,7 +97,7 @@ export default function StockHistory({
           )
         : variants;
 
-    const applyFilters = (next: Partial<Filters>) => {
+    const applyFilters = (next: Partial<Filters> & { scope?: string }) => {
         const merged = { ...filters, ...next };
         router.get(
             route('stock-history.index'),
@@ -81,10 +106,22 @@ export default function StockHistory({
                 movement: merged.movement && merged.movement !== ALL ? merged.movement : undefined,
                 date_from: merged.date_from || undefined,
                 date_to: merged.date_to || undefined,
+                scope: (next.scope ?? scope) === 'local' ? undefined : (next.scope ?? scope),
             },
-            { preserveState: true, preserveScroll: true, replace: true, only: ['entries', 'filters'] },
+            {
+                preserveState: true,
+                preserveScroll: true,
+                replace: true,
+                // `branches` is deliberately out of this list: the roster costs an
+                // online read, and stepping a date filter must not pay for it.
+                only: ['entries', 'filters', 'scope', 'consolidatedOnline'],
+            },
         );
     };
+
+    // A wider scope names the branch on every row; in the local scope every row
+    // is this device's by construction and the column would say one thing.
+    const showBranch = scope !== 'local';
 
     // Nothing on this page reads the pending queue any more: that list is its own
     // screen (`/inventory/stock-updates`), which is where a movement that has not
@@ -166,7 +203,25 @@ export default function StockHistory({
                             className="w-40"
                         />
                     </div>
+                    {canViewAll && (
+                        <BranchScopeSelect
+                            scope={scope}
+                            branches={branches}
+                            onChange={(next) => applyFilters({ scope: next })}
+                            label="Branches shown"
+                        />
+                    )}
                 </div>
+
+                {consolidatedOnline === false && (
+                    <div role="alert" className="flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+                        <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+                        <span>
+                            The business database could not be reached, so this is this branch&rsquo;s own stock history rather than the branches you
+                            asked for.
+                        </span>
+                    </div>
+                )}
 
                 {entries.data.length === 0 ? (
                     <EmptyState
@@ -180,6 +235,7 @@ export default function StockHistory({
                             <TableHeader>
                                 <TableRow>
                                     <TableHead>When</TableHead>
+                                    {showBranch && <TableHead>Branch</TableHead>}
                                     <TableHead>Variant</TableHead>
                                     <TableHead>Movement</TableHead>
                                     <TableHead className="text-right">Change</TableHead>
@@ -195,6 +251,7 @@ export default function StockHistory({
                                         aria-label={`Movement details for ${entry.variant?.item ?? 'this product'}`}
                                     >
                                         <TableCell className="tabular-nums">{formatWhen(entry.created_at)}</TableCell>
+                                        {showBranch && <TableCell className="font-medium">{entry.branch ?? '—'}</TableCell>}
                                         <TableCell>
                                             {entry.variant ? (
                                                 <>

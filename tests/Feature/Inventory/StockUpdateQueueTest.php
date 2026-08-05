@@ -69,10 +69,10 @@ class StockUpdateQueueTest extends TestCase
             ->assertOk()
             ->assertInertia(fn ($page) => $page
                 ->component('inventory/stock-updates', false)
-                ->where('inbox', [])
-                ->where('elsewhere', [])
+                ->where('requests', [])
+                ->where('branches', [])
                 ->where('online', false)
-                ->where('resolved', false)
+                ->where('filters.scope', 'local')
             );
     }
 

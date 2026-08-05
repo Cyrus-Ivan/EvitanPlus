@@ -146,7 +146,10 @@ final class BranchGrants
      *    nothing until someone writes it down here;
      *  - DELETE on nothing, anywhere — note there is no DELETE constant in this
      *    class at all, and adding one would mean wiring it into BranchRole too;
-     *  - inventory_update_queue stays COLUMN-level UPDATE on its four columns;
+     *  - inventory_update_queue stays COLUMN-level UPDATE on the six columns
+     *    UPDATE_COLUMNS names (four until schema 21 widened it), and a new
+     *    COLUMN on that table needs no grant of its own — INSERT and SELECT are
+     *    table-level, which is why schema 22 changed nothing here;
      *  - any future widening states its reason in that phase's note, the way
      *    M6.5 and M8 both did.
      *

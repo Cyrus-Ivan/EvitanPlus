@@ -131,51 +131,117 @@ export interface Branch {
     is_this_branch: boolean;
 }
 
-/** A row of `inventory_update_queue`, named and localised server-side. */
-export interface QueuedAdjustment {
+/** One branch as a pending request names it. */
+export interface BranchRef {
     id: string;
-    // Branch CODE, not id — the roster resolves it before this reaches the client.
-    branch: string;
-    item: string;
-    variant: string | null;
-    // Signed: positive adds stock at that branch, negative removes it.
-    quantity: number;
-    // What was actually agreed, once somebody has answered. Equal to `quantity`
-    // on a plain approval, smaller in magnitude on a partial one, null while the
-    // row is pending and on a rejection. There is no `partial` status: it IS this
-    // number disagreeing with the one above.
-    approved_quantity: number | null;
-    // How the movement was asked for: manual_adjustment | csv_import | transfer.
-    reference_type: string;
-    // The branch on the other end, by CODE, when there is one — who asked, or the
-    // far end of a transfer. Null when a branch is adjusting its own stock.
-    counterparty_branch: string | null;
-    notes: string | null;
-    status: 'pending' | 'accepted' | 'rejected';
-    // Why it was turned down, or why only part of it was approved. Written by
-    // whoever answered, and read by the branch that asked.
-    resolution_reason: string | null;
-    issued_by: string;
-    resolved_by: string | null;
-    created_at: string;
-    resolved_at: string | null;
+    code: string;
+    name: string;
+}
+
+/** A person as a pending request names them: who, and in what role. */
+export interface RequestActor {
+    name: string;
+    role: UserRole | null;
 }
 
 /**
- * The props behind the Pending stock adjustments page.
+ * One answer somebody owes on a pending request, or has already given.
  *
- * Two sections because a queue row means opposite things at its two ends:
- * `inbox` is what this branch has been asked to agree to, `elsewhere` is what has
- * been asked of everyone else and what came of it. `online` is false when the
- * read failed — everything here is Postgres-only, so there is then nothing to
- * show rather than an empty list. `resolved` says which half of the inbox is in
- * hand: the rows still waiting, or the ones this branch has already answered.
+ * An adjustment has exactly one (`target`). A transfer has two — `send` at the
+ * branch the stock leaves and `receive` at the branch it arrives at — because
+ * stock going out of one door and arriving at another are two physical claims
+ * made by two different people, and either can be false on its own.
  */
-export interface PendingAdjustments {
-    inbox: QueuedAdjustment[];
-    elsewhere: QueuedAdjustment[];
+export interface RequestLeg {
+    id: string;
+    role: 'target' | 'send' | 'receive';
+    // The branch that must answer this leg, and whose stock moves when it does.
+    branch: BranchRef | null;
+    // Signed. On a receiving leg this is what the sender confirmed actually
+    // left, which is not always what was originally asked for.
+    quantity: number;
+    // What was agreed, once answered. Equal to `quantity` on a plain approval,
+    // smaller in magnitude on a partial one, null while pending AND on a
+    // rejection — nothing was agreed, so there is no number.
+    approved_quantity: number | null;
+    status: 'pending' | 'accepted' | 'rejected';
+    // Why it was turned down, or why only part of it was approved.
+    resolution_reason: string | null;
+    resolved_by: RequestActor | null;
+    resolved_at: string | null;
+    // Whether THIS device may answer it: the leg is aimed at this branch and is
+    // still pending. The server decides it; the client only draws the buttons.
+    actionable: boolean;
+}
+
+/**
+ * One card on the Pending Stocks page: a stock movement that has been asked for
+ * and has not happened, with every answer it is still waiting on.
+ *
+ * A request is a GROUP of `inventory_update_queue` rows sharing `parent_id ?? id`
+ * — one row for an adjustment, two for a transfer. It is on the page because at
+ * least one of its legs is pending; when the last one is answered it leaves, and
+ * the record of what happened is on the ledger, in Stock History.
+ */
+export interface PendingRequest {
+    id: string;
+    kind: 'transfer' | 'adjustment';
+    // How it was asked for: manual_adjustment | csv_import | transfer.
+    source: string;
+    item: string;
+    variant: string | null;
+    notes: string | null;
+    // Signed, and always what was ORIGINALLY asked for.
+    requested: number;
+    issued_by: RequestActor & { branch: BranchRef | null; at: string };
+    // A transfer names both ends; an adjustment names the one branch whose stock
+    // is going to move. Exactly one of these shapes is filled.
+    sender: BranchRef | null;
+    receiver: BranchRef | null;
+    target: BranchRef | null;
+    legs: RequestLeg[];
+}
+
+/**
+ * The props behind the Pending Stocks page.
+ *
+ * `online` is false when the read failed — everything here is Postgres-only, so
+ * there is then nothing to show rather than an empty list. `branches` is every
+ * branch but this one, for the scope picker.
+ */
+export interface PendingRequests {
+    requests: PendingRequest[];
+    branches: RosterBranch[];
     online: boolean;
-    resolved: boolean;
+    filters: {
+        scope: BranchScope;
+        kind: 'transfer' | 'adjustment' | null;
+    };
+}
+
+/**
+ * What was ASKED for behind one ledger row, fetched when its dialog opens
+ * (M11.8).
+ *
+ * The ledger entry and the queue row it came from share an id, so this is a
+ * lookup rather than a join. Null for a sale, a return or a defect — which never
+ * went through the queue — and null offline, where the row's own `notes` carry
+ * the sentence version instead.
+ */
+export interface MovementRequest {
+    id: string;
+    status: 'pending' | 'accepted' | 'rejected';
+    kind: 'transfer' | 'adjustment';
+    source: string;
+    requested: number;
+    approved: number | null;
+    resolution_reason: string | null;
+    issued_by: RequestActor & { branch: BranchRef | null; at: string };
+    resolved_by: RequestActor | null;
+    resolved_at: string | null;
+    branch: BranchRef | null;
+    counterparty_branch: BranchRef | null;
+    can_reissue: boolean;
 }
 
 export interface Item {
@@ -223,6 +289,9 @@ export interface AuditLogEntry {
 // A row from the append-only inventory ledger (Phase 6, stock history view).
 export interface StockLedgerEntry {
     id: string;
+    // Branch CODE (M11.8). In the local scope it is this device's, from
+    // `instance`; in a wider scope the roster resolves it server-side.
+    branch: string | null;
     quantity: number;
     resulting_snapshot: number;
     type: 'sale' | 'stock_adjustment';

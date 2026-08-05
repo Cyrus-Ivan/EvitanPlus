@@ -78,6 +78,14 @@ Route::middleware(['auth'])->group(function () {
     // {item} wildcard writes below.
     Route::get('inventory/stock-history', [StockHistoryController::class, 'index'])->name('stock-history.index');
 
+    // What was ASKED for behind one ledger row, fetched when its dialog opens
+    // (M11.8). A separate online read rather than a prop, for the same reason as
+    // stock-updates.branches: Stock History renders offline and must not put a
+    // Postgres connection behind every page view. Literal segment, and declared
+    // ahead of the {item} wildcard along with the page itself.
+    Route::get('inventory/stock-history/{entry}/request', [StockHistoryController::class, 'request'])
+        ->name('stock-history.request');
+
     // Pending stock adjustments, and answering one. Cashier-level ON PURPOSE:
     // whether stock actually arrived is known by whoever is standing in the
     // shop, not by a role, and a floor here would leave deliveries waiting on
@@ -86,8 +94,10 @@ Route::middleware(['auth'])->group(function () {
     // Issuing one is still Admin+, below. Literal segment, ahead of the {item}
     // wildcard.
     Route::get('inventory/stock-updates', [InventoryQueueController::class, 'index'])->name('stock-updates.index');
+    // Approve all comes through the same route, as a batch of ordinary
+    // approvals: the page filters now, so "all" can only honestly mean "all of
+    // what is on screen", which is a list only the client has.
     Route::post('inventory/stock-updates/resolve', [InventoryQueueController::class, 'resolve'])->name('stock-updates.resolve');
-    Route::post('inventory/stock-updates/resolve-all', [InventoryQueueController::class, 'resolveAll'])->name('stock-updates.resolve-all');
 
     // Admin-level: Admins and the Owner.
     Route::middleware('role:admin')->group(function () {

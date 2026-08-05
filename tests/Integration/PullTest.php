@@ -10,7 +10,6 @@ use App\Models\SyncCursor;
 use App\Models\SyncStatus;
 use App\Models\User;
 use App\Models\Variant;
-use App\Support\Inventory\AdjustmentResolver;
 use App\Support\Inventory\StockLedger;
 use App\Support\Sync\CredentialVault;
 use App\Support\Sync\StockReconciler;
@@ -22,6 +21,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
+use Tests\Concerns\ApprovesEveryPendingRow;
 use Tests\Integration\Concerns\ProvisionsABusiness;
 use Tests\TestCase;
 
@@ -48,7 +48,7 @@ use Tests\TestCase;
 #[Group('supabase')]
 class PullTest extends TestCase
 {
-    use ProvisionsABusiness, RefreshDatabase;
+    use ApprovesEveryPendingRow, ProvisionsABusiness, RefreshDatabase;
 
     /** Each test sets its devices up for itself, through the real wizard. */
     protected bool $hydrated = false;
@@ -351,7 +351,7 @@ class PullTest extends TestCase
             (int) $this->remote("select count(*) as c from inventory_ledger where type = 'stock_adjustment'")[0]['c'],
         );
 
-        app(AdjustmentResolver::class)->approveAll($this->owner());
+        $this->approveEverythingPending($this->owner());
 
         $ledger = $this->remote("select quantity, type, reference_type from inventory_ledger where type = 'stock_adjustment'");
 
@@ -423,7 +423,7 @@ class PullTest extends TestCase
             ->post(route('stock.adjust', $variant->id), ['mode' => 'add', 'value' => $quantity, 'notes' => 'Opening'])
             ->assertSessionHasNoErrors();
 
-        app(AdjustmentResolver::class)->approveAll($this->owner());
+        $this->approveEverythingPending($this->owner());
     }
 
     private function createProduct(string $sku, string $price): void

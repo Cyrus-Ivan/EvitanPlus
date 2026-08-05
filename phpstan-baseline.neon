@@ -55,34 +55,10 @@ parameters:
 			path: app/Http/Controllers/SalesController.php
 
 		-
-			message: '#^Cannot access property \$value on string\.$#'
-			identifier: property.nonObject
-			count: 5
-			path: app/Http/Controllers/UserController.php
-
-		-
-			message: '#^Cannot call method assignableRoles\(\) on string\.$#'
-			identifier: method.nonObject
-			count: 1
-			path: app/Http/Controllers/UserController.php
-
-		-
-			message: '#^Parameter \#1 \$callback of method Illuminate\\Pagination\\AbstractPaginator\<int,Illuminate\\Database\\Eloquent\\Model\>\:\:through\(\) expects callable\(Illuminate\\Database\\Eloquent\\Model, int\)\: array\{id\: string, name\: string\|null, username\: string, role\: string, deleted_at\: Carbon\\Carbon\|null, created_at\: Carbon\\Carbon\|null\}, Closure\(App\\Models\\User\)\: array\{id\: string, name\: string\|null, username\: string, role\: string, deleted_at\: Carbon\\Carbon\|null, created_at\: Carbon\\Carbon\|null\} given\.$#'
+			message: '#^Parameter \#1 \$callback of method Illuminate\\Pagination\\AbstractPaginator\<int,Illuminate\\Database\\Eloquent\\Model\>\:\:through\(\) expects callable\(Illuminate\\Database\\Eloquent\\Model, int\)\: array\{id\: string, name\: string\|null, username\: string, role\: App\\Enums\\UserRole, deleted_at\: Carbon\\Carbon\|null, created_at\: Carbon\\Carbon\|null\}, Closure\(App\\Models\\User\)\: array\{id\: string, name\: string\|null, username\: string, role\: App\\Enums\\UserRole, deleted_at\: Carbon\\Carbon\|null, created_at\: Carbon\\Carbon\|null\} given\.$#'
 			identifier: argument.type
 			count: 1
 			path: app/Http/Controllers/UserController.php
-
-		-
-			message: '#^Cannot call method assignableRoles\(\) on string\.$#'
-			identifier: method.nonObject
-			count: 1
-			path: app/Http/Requests/Users/StoreUserRequest.php
-
-		-
-			message: '#^Cannot call method assignableRoles\(\) on string\.$#'
-			identifier: method.nonObject
-			count: 1
-			path: app/Http/Requests/Users/UpdateUserRoleRequest.php
 
 		-
 			message: '#^Using nullsafe property access "\?\-\>name" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
@@ -91,22 +67,10 @@ parameters:
 			path: app/Models/TransactionItem.php
 
 		-
-			message: '#^Cannot call method atLeast\(\) on string\.$#'
-			identifier: method.nonObject
-			count: 1
-			path: app/Models/User.php
-
-		-
 			message: '#^Using nullsafe property access "\?\-\>quantity" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
 			identifier: nullsafe.neverNull
 			count: 1
 			path: app/Models/Variant.php
-
-		-
-			message: '#^Cannot call method level\(\) on string\.$#'
-			identifier: method.nonObject
-			count: 2
-			path: app/Policies/UserPolicy.php
 
 		-
 			message: '#^Parameter &\$cache by\-ref type of method App\\Support\\Inventory\\CsvInventoryImporter\:\:resolveCategoryId\(\) expects array\<string, string\>, array\<string, mixed\> given\.$#'

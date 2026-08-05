@@ -160,16 +160,27 @@ class AdjustmentResolutionTest extends TestCase
 
         $this->assertSame(5, app(StockLedger::class)->currentStock($variant));
 
-        // No ledger row, deliberately. A rejection is not a movement, and one
-        // written here could never reach the branch that asked: the pull filters
-        // the ledger to a single branch. The queue row is the record.
-        $this->assertNull(InventoryLedger::query()->find($id));
+        // A ledger row of ZERO (M11.8), not no ledger row. It moves nothing, and
+        // it is the only thing that can carry the refusal to the branch that
+        // asked: the pull filters the ledger to a single branch, so a rejection
+        // that lived only on the queue row was unreachable from there.
+        $written = InventoryLedger::query()->find($id);
+        $this->assertNotNull($written);
+        $this->assertSame(0, $written->quantity);
+        $this->assertSame(5, $written->resulting_snapshot);
+        // The sentence is what makes it readable OFFLINE, where the structured
+        // account on the queue row cannot be fetched.
+        $this->assertStringContainsString('Turned down: -5 was asked for', $written->notes);
+        $this->assertStringContainsString('No delivery ever came here.', $written->notes);
 
         $answered = $remote->table('inventory_update_queue')->find($id);
         $this->assertSame('rejected', $answered->status);
         $this->assertSame('No delivery ever came here.', $answered->resolution_reason);
+        // Null: `approved_quantity` means "what was agreed", and nothing was.
+        // The zero is on the ledger row, where it means "did not happen".
         $this->assertNull($answered->approved_quantity);
-        $this->assertNull($answered->ledger_entry_id);
+        // Set, so the stock entry dialog can follow it back to the request.
+        $this->assertSame($id, $answered->ledger_entry_id);
     }
 
     public function test_turning_one_down_needs_a_reason(): void
@@ -252,19 +263,28 @@ class AdjustmentResolutionTest extends TestCase
         $second = $this->stocked();
         $elsewhere = $this->stocked();
 
-        $this->pending($remote, $first, 10, ['reference_type' => 'csv_import']);
-        $this->pending($remote, $second, 4, ['reference_type' => 'csv_import']);
+        $first_id = $this->pending($remote, $first, 10, ['reference_type' => 'csv_import']);
+        $second_id = $this->pending($remote, $second, 4, ['reference_type' => 'csv_import']);
         $mine = $this->pending($remote, $elsewhere, 7, ['branch_id' => self::OTHER_BRANCH]);
 
+        // What the page's "Approve all" sends: the ids on screen, as an ordinary
+        // batch. There is no server-side sweep any more — the page filters, so
+        // "all" can only honestly mean all of what is being shown.
         $this->actingAs($admin)
-            ->post(route('stock-updates.resolve-all'))
+            ->post(route('stock-updates.resolve'), ['adjustments' => [
+                ['id' => $first_id, 'outcome' => 'approve'],
+                ['id' => $second_id, 'outcome' => 'approve'],
+                // Aimed at another branch, and included on purpose: the resolver
+                // re-reads every id filtered to THIS branch, so it must drop.
+                ['id' => $mine, 'outcome' => 'approve'],
+            ]])
             ->assertSessionHasNoErrors();
 
         $this->assertSame(10, app(StockLedger::class)->currentStock($first));
         $this->assertSame(4, app(StockLedger::class)->currentStock($second));
 
-        // Another branch's row is untouched — approve-all means "everything
-        // waiting on ME", not "everything".
+        // Another branch's row is untouched, even though its id was submitted:
+        // what bounds a resolution is the branch, not the request body.
         $this->assertSame('pending', $remote->table('inventory_update_queue')->find($mine)->status);
         $this->assertSame(0, app(StockLedger::class)->currentStock($elsewhere));
     }
@@ -277,11 +297,14 @@ class AdjustmentResolutionTest extends TestCase
         $fine = $this->stocked(20);
         $short = $this->stocked(1);
 
-        $this->pending($remote, $fine, -5);
-        $this->pending($remote, $short, -9, ['notes' => 'too much']);
+        $fine_id = $this->pending($remote, $fine, -5);
+        $short_id = $this->pending($remote, $short, -9, ['notes' => 'too much']);
 
         $this->actingAs($admin)
-            ->post(route('stock-updates.resolve-all'))
+            ->post(route('stock-updates.resolve'), ['adjustments' => [
+                ['id' => $fine_id, 'outcome' => 'approve'],
+                ['id' => $short_id, 'outcome' => 'approve'],
+            ]])
             ->assertSessionHasErrors('adjustments');
 
         // All-or-nothing, matching what a CSV import has always done: half an
@@ -294,34 +317,121 @@ class AdjustmentResolutionTest extends TestCase
         $this->assertSame(0, InventoryLedger::where('quantity', '<', 0)->count());
     }
 
-    public function test_the_pending_list_separates_what_this_branch_owes_from_what_it_asked(): void
+    public function test_the_list_shows_every_branch_s_unfinished_work_and_says_which_rows_are_this_one_s(): void
     {
         $remote = $this->fakeBusinessQueue();
         $mine = $this->stocked();
         $theirs = $this->stocked();
 
-        $this->pending($remote, $mine, 3);
-        $this->pending($remote, $theirs, -2, ['branch_id' => self::OTHER_BRANCH, 'status' => 'rejected',
-            'resolved_at' => now()->toDateTimeString(), 'resolution_reason' => 'Nothing to take off.']);
+        // Explicit timestamps: the list is oldest-first, and two rows written in
+        // the same second fall through to a tiebreak on a random uuid.
+        $this->pending($remote, $mine, 3, ['created_at' => now()->subMinute()->toDateTimeString()]);
+        $this->pending($remote, $theirs, -2, ['branch_id' => self::OTHER_BRANCH]);
+
+        // One section, both branches' work — but only a row aimed HERE carries
+        // buttons, and that is the server's call rather than the page's.
+        $this->actingAs(User::factory()->admin()->create())
+            ->get(route('stock-updates.index', ['scope' => 'all']))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->component('inventory/stock-updates', false)
+                ->where('online', true)
+                ->has('requests', 2)
+                ->where('filters.scope', 'all')
+                ->where('requests.0.kind', 'adjustment')
+                ->where('requests.0.requested', 3)
+                ->where('requests.0.legs.0.role', 'target')
+                ->where('requests.0.legs.0.actionable', true)
+                ->where('requests.1.legs.0.actionable', false)
+            );
+    }
+
+    public function test_the_default_scope_is_this_branch_s_own_work(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+
+        $this->pending($remote, $this->stocked(), 3);
+        $this->pending($remote, $this->stocked(), -2, ['branch_id' => self::OTHER_BRANCH]);
 
         $this->actingAs(User::factory()->admin()->create())
             ->get(route('stock-updates.index'))
             ->assertOk()
             ->assertInertia(fn ($page) => $page
-                ->component('inventory/stock-updates', false)
-                ->where('online', true)
-                ->has('inbox', 1)
-                ->where('inbox.0.quantity', 3)
-                // The section that exists so a rejection is visible at all: it
-                // writes no ledger row, so this is the only place the branch
-                // that asked ever sees it.
-                ->has('elsewhere', 1)
-                ->where('elsewhere.0.status', 'rejected')
-                ->where('elsewhere.0.resolution_reason', 'Nothing to take off.')
+                ->where('filters.scope', 'local')
+                ->has('requests', 1)
+                ->where('requests.0.requested', 3)
             );
     }
 
-    public function test_answered_rows_leave_the_list_and_come_back_on_request(): void
+    public function test_the_kind_filter_splits_transfers_from_adjustments(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+
+        $this->pending($remote, $this->stocked(), 3);
+        $this->pending($remote, $this->stocked(5), -2, [
+            'reference_type' => 'transfer',
+            'counterparty_branch_id' => self::OTHER_BRANCH,
+        ]);
+
+        $admin = User::factory()->admin()->create();
+
+        $this->actingAs($admin)->get(route('stock-updates.index', ['kind' => 'transfer']))
+            ->assertInertia(fn ($page) => $page->has('requests', 1)->where('requests.0.kind', 'transfer'));
+
+        $this->actingAs($admin)->get(route('stock-updates.index', ['kind' => 'adjustment']))
+            ->assertInertia(fn ($page) => $page->has('requests', 1)->where('requests.0.kind', 'adjustment'));
+    }
+
+    public function test_a_transfer_is_one_card_carrying_the_sender_s_answer(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $variant = $this->stocked();
+        $admin = User::factory()->admin()->create();
+
+        // The sending leg, already answered at the OTHER branch: three were
+        // asked for and two went out of the door.
+        $sent = $this->pending($remote, $variant, -3, [
+            'branch_id' => self::OTHER_BRANCH,
+            'counterparty_branch_id' => self::HERE,
+            'reference_type' => 'transfer',
+            'status' => 'accepted',
+            'approved_quantity' => -2,
+            'resolution_reason' => 'One was crushed in transit.',
+            'resolved_by' => User::query()->value('id'),
+            'resolved_at' => now()->toDateTimeString(),
+        ]);
+
+        // The receiving leg it spawned, waiting on this branch for what was
+        // ACTUALLY sent.
+        $this->pending($remote, $variant, 2, [
+            'parent_id' => $sent,
+            'counterparty_branch_id' => self::OTHER_BRANCH,
+            'reference_type' => 'transfer',
+        ]);
+
+        // One card, not two: the receiving branch is answering for what the
+        // sender said left, so what the sender said has to be on it. The
+        // already-answered parent is fetched even though it is not pending.
+        $this->actingAs($admin)
+            ->get(route('stock-updates.index'))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->has('requests', 1)
+                ->where('requests.0.kind', 'transfer')
+                ->where('requests.0.requested', -3)
+                ->has('requests.0.legs', 2)
+                ->where('requests.0.legs.0.role', 'send')
+                ->where('requests.0.legs.0.status', 'accepted')
+                ->where('requests.0.legs.0.approved_quantity', -2)
+                ->where('requests.0.legs.0.resolution_reason', 'One was crushed in transit.')
+                ->where('requests.0.legs.0.actionable', false)
+                ->where('requests.0.legs.1.role', 'receive')
+                ->where('requests.0.legs.1.quantity', 2)
+                ->where('requests.0.legs.1.actionable', true)
+            );
+    }
+
+    public function test_a_fully_answered_request_leaves_the_list(): void
     {
         $remote = $this->fakeBusinessQueue();
         $variant = $this->stocked();
@@ -331,18 +441,10 @@ class AdjustmentResolutionTest extends TestCase
         $this->actingAs($admin)
             ->post(route('stock-updates.resolve'), ['adjustments' => [['id' => $id, 'outcome' => 'approve']]]);
 
-        // Gone by default — its movement is in Stock History now, and a list that
-        // keeps everything is a list nobody can see the work in.
+        // Gone, and not behind a toggle: the record of what happened is the
+        // ledger row it just wrote, read in Stock History.
         $this->actingAs($admin)->get(route('stock-updates.index'))
             ->assertOk()
-            ->assertInertia(fn ($page) => $page->has('inbox', 0)->where('resolved', false));
-
-        $this->actingAs($admin)->get(route('stock-updates.index', ['resolved' => 1]))
-            ->assertOk()
-            ->assertInertia(fn ($page) => $page
-                ->has('inbox', 1)
-                ->where('inbox.0.status', 'accepted')
-                ->where('resolved', true)
-            );
+            ->assertInertia(fn ($page) => $page->has('requests', 0));
     }
 }

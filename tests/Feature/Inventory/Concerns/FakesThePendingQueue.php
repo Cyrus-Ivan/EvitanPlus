@@ -3,14 +3,13 @@
 namespace Tests\Feature\Inventory\Concerns;
 
 use App\Models\Instance;
-use App\Models\User;
-use App\Support\Inventory\AdjustmentResolver;
 use App\Support\Sync\OnlineRead;
 use App\Support\Sync\OnlineWrite;
 use Closure;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
+use Tests\Concerns\ApprovesEveryPendingRow;
 use Tests\Feature\Sync\Concerns\FakesTheBusinessDatabase;
 
 /**
@@ -51,7 +50,7 @@ use Tests\Feature\Sync\Concerns\FakesTheBusinessDatabase;
  */
 trait FakesThePendingQueue
 {
-    use FakesTheBusinessDatabase;
+    use ApprovesEveryPendingRow, FakesTheBusinessDatabase;
 
     /**
      * Install the stand-in and rebind both online classes onto it.
@@ -140,17 +139,5 @@ trait FakesThePendingQueue
         });
 
         return $remote;
-    }
-
-    /**
-     * Answer every row waiting on this branch, as $actor would from the dialog.
-     *
-     * A shortcut for the many tests whose subject is what a stock movement DOES
-     * once confirmed, not the confirming — they used to get that for free,
-     * because the movement happened at the moment it was asked for.
-     */
-    private function approveEverythingPending(User $actor): int
-    {
-        return app(AdjustmentResolver::class)->approveAll($actor);
     }
 }

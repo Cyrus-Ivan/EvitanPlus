@@ -22,7 +22,8 @@ use Illuminate\Support\Facades\Schema;
  * and flag it for the Owner to re-issue. The row only becomes authoritative on
  * acceptance, so neither side can ever go negative.
  *
- * A branch role may UPDATE FOUR columns here, not `status` alone as §7's prose
+ * A branch role may UPDATE SEVERAL columns here (four at this migration, six
+ * from schema 21), not `status` alone as §7's prose
  * says: `inventory_update_queue_resolved_at` below ties `status` to
  * `resolved_at`, so a grant on `status` by itself permits nothing. See
  * BranchGrants::UPDATE_COLUMNS, which is the operative matrix.

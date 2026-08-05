@@ -307,8 +307,32 @@ M8 mediated only the cross-branch case, on the grounds that the issuer cannot se
 unsynced sales. True, and not the point: arithmetic was never what was in doubt. Stock that
 moved on paper and stock that moved on a shelf are different things, and only somebody standing
 in the shop can tell them apart. Three answers, and only the first two move stock: **approve**,
-**partial approve** (`approved_quantity`, plus a reason), **reject** (a reason, and no ledger
-row at all).
+**partial approve** (`approved_quantity`, plus a reason), **reject** (a reason).
+
+### A rejection writes a ledger row of ZERO (M11.8)
+
+It used to write nothing, on the reading that the ledger records movement and a refusal is the
+absence of one. Correct about the ledger and wrong about the business: the branch that **asked**
+never found out. `Puller` filters `inventory_ledger` to one branch, so even a row written at the
+target could not travel to them.
+
+So a refusal is a movement of nothing, carrying the queue row's own id, the counterparty code and
+a sentence saying what was asked for and that it did not happen. **Branch-scoped Stock History**
+(§9) is what makes it reachable from the branch that asked. Ledger-derived stock is untouched —
+zero sums to zero in `StockReconciler`, `RemoteStock::recompute()` and `StockLedger::reconcile()`
+alike — and zero-quantity rows are not new: defect audit entries have written them since Phase 11.
+
+### The page shows unfinished work only
+
+`/inventory/stock-updates` ("Pending Stocks") groups rows into **requests** by `parent_id ?? id`
+— one row for an adjustment, two for a transfer — and shows a request while **any** leg is still
+pending. An answered adjustment leaves; a transfer stays, with the sender's answer on the card,
+until the receiver answers too; a transfer its sender refused leaves, because refusing it spawns
+no receiving leg. Where the record goes afterwards is §9.
+
+`issued_by_branch_id` (schema 22) says where the person who asked was standing. It cannot be
+derived: `IssueTransferRequest` takes both branch ids as free choices, so an Owner at head office
+can arrange a move between two branches that are neither of them theirs.
 
 ### The resolver reads before it writes, and the filter is not defensive
 

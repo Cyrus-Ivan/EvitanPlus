@@ -353,7 +353,7 @@ null))`; `App\Support\Inventory\AdjustmentQueue` writes them,
 ✗ **Not** the outbox. See §5.
 ✗ **Not** a ledger entry, and a rejected one never becomes anything else — it writes no ledger
 row at all. The queue row IS the record of a refusal, which is why resolved rows are hidden
-rather than deleted, and why the dialog has a "Sent to other branches" section: `Puller` filters
+rather than deleted, and why the page has a "Sent to other branches" section: `Puller` filters
 `inventory_ledger` to one branch, so a rejection recorded at the target could never reach the
 branch that asked.
 ✗ **Not** only for other branches, which is what M8 built and what schema 21 widened. The

@@ -53,21 +53,27 @@ class StockUpdateQueueTest extends TestCase
         // list is Cashier-level, because whether a delivery arrived is known by
         // whoever is in the shop (AdjustmentResolutionTest). Deciding what SHOULD
         // move — especially at another branch — is still Admin+.
-        $this->actingAs($cashier)->getJson(route('stock-updates.pending'))->assertOk();
+        $this->actingAs($cashier)->get(route('stock-updates.index'))->assertOk();
         $this->actingAs($cashier)->post(route('stock-updates.store'), $this->payload($variant))->assertForbidden();
     }
 
     public function test_an_admin_can_read_the_pending_list(): void
     {
         // No credential is sealed on a test device, so the online read cannot
-        // happen — and the endpoint says so rather than failing. Everything it
-        // returns lives in the business database, so there is genuinely nothing
-        // to show, and `online: false` is what makes the dialog say that instead
+        // happen — and the page says so rather than failing. Everything it
+        // renders lives in the business database, so there is genuinely nothing
+        // to show, and `online: false` is what makes the page say that instead
         // of claiming the queue is empty.
         $this->actingAs(User::factory()->admin()->create())
-            ->getJson(route('stock-updates.pending'))
+            ->get(route('stock-updates.index'))
             ->assertOk()
-            ->assertExactJson(['inbox' => [], 'elsewhere' => [], 'online' => false]);
+            ->assertInertia(fn ($page) => $page
+                ->component('inventory/stock-updates', false)
+                ->where('inbox', [])
+                ->where('elsewhere', [])
+                ->where('online', false)
+                ->where('resolved', false)
+            );
     }
 
     public function test_issuing_leaves_this_device_untouched(): void

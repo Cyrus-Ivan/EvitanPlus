@@ -3,15 +3,20 @@ import InputError from '@/components/input-error';
 import { OfflineNotice } from '@/components/offline-notice';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
-import type { PendingAdjustments, QueuedAdjustment } from '@/types';
-import { router, useForm } from '@inertiajs/react';
+import AppLayout from '@/layouts/app-layout';
+import type { BreadcrumbItem, PendingAdjustments, QueuedAdjustment } from '@/types';
+import { Head, router, useForm } from '@inertiajs/react';
 import { LoaderCircle } from 'lucide-react';
 import { Fragment, useState } from 'react';
+
+const breadcrumbs: BreadcrumbItem[] = [
+    { title: 'Inventory', href: '/inventory' },
+    { title: 'Pending Stock Adjustments', href: '/inventory/stock-updates' },
+];
 
 const STATUS: Record<QueuedAdjustment['status'], { label: string; variant: 'secondary' | 'outline' | 'destructive'; hint: string }> = {
     pending: { label: 'Pending', variant: 'secondary', hint: 'Waiting for that branch to answer.' },
@@ -49,17 +54,18 @@ function statusLabel(row: QueuedAdjustment): string {
 }
 
 /**
- * Pending stock adjustments, as a dialog on Stock History.
+ * Pending stock adjustments.
  *
- * This was `/inventory/stock-updates` until the two screens turned out to be the
- * same screen: a queue row is a stock movement that has not happened yet, and a
- * ledger row is one that has, so they belong in one place with the pending ones
- * on top of the history they are about to join.
+ * A page in the sidebar, and it spent a milestone as a dialog on Stock History
+ * on the reasoning that a queue row is a stock movement that has not happened
+ * yet, so it belonged on top of the history it was about to join. That is still
+ * true and no longer the point: since schema 21 EVERY stock movement starts
+ * here, so this is the screen somebody has to visit before stock moves at all,
+ * and a screen like that is not a modal on another one.
  *
  * ## Why there are two sections
  *
- * A queue row means opposite things depending on which end you are standing at,
- * and the old page only showed one of them:
+ * A queue row means opposite things depending on which end you are standing at:
  *
  * - **Awaiting this branch** — somebody asked for stock here to move. Nothing has
  *   happened yet; a person at this branch has to say whether it did. Every role
@@ -70,37 +76,24 @@ function statusLabel(row: QueuedAdjustment): string {
  *   a rejection writes no ledger row, and could not travel to the branch that
  *   issued it if it did, because the pull filters the ledger to one branch.
  *
- * Answered rows leave the first section — their movement is in the history behind
- * this dialog — and the toggle brings them back when somebody asks what happened.
+ * Answered rows leave the first section — their movement is in Stock History —
+ * and the toggle brings them back when somebody asks what happened. It is a URL
+ * parameter rather than client state so that `back()` from an answer returns to
+ * the list the person was looking at.
  *
  * Everything here is read live from the business database and none of it is
  * stored on this device, so with no connection there is genuinely nothing to
  * show. That is the same precondition as issuing one in the first place.
  */
-export function PendingAdjustmentsDialog({
-    open,
-    onOpenChange,
-    data,
-    loading,
-    resolved,
-    onResolvedChange,
-    onReload,
-}: {
-    open: boolean;
-    onOpenChange: (open: boolean) => void;
-    data: PendingAdjustments | null;
-    loading: boolean;
-    resolved: boolean;
-    onResolvedChange: (resolved: boolean) => void;
-    onReload: () => void;
-}) {
+export default function StockUpdates({ inbox, elsewhere, online, resolved }: PendingAdjustments) {
     const confirm = useConfirm();
     const [approvingAll, setApprovingAll] = useState(false);
 
-    const inbox = data?.inbox ?? [];
-    const elsewhere = data?.elsewhere ?? [];
-    const offline = data !== null && !data.online;
     const actionable = !resolved && inbox.length > 0;
+
+    const showResolved = (next: boolean) => {
+        router.get(route('stock-updates.index'), next ? { resolved: 1 } : {}, { preserveScroll: true });
+    };
 
     const approveAll = async () => {
         const agreed = await confirm({
@@ -116,42 +109,28 @@ export function PendingAdjustmentsDialog({
         }
 
         setApprovingAll(true);
-        router.post(
-            route('stock-updates.resolve-all'),
-            {},
-            {
-                preserveScroll: true,
-                onSuccess: onReload,
-                onFinish: () => setApprovingAll(false),
-            },
-        );
+        router.post(route('stock-updates.resolve-all'), {}, { preserveScroll: true, onFinish: () => setApprovingAll(false) });
     };
 
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="max-w-5xl">
-                <DialogHeader>
-                    <DialogTitle>Pending stock adjustments</DialogTitle>
-                    <DialogDescription>
+        <AppLayout breadcrumbs={breadcrumbs}>
+            <Head title="Pending Stock Adjustments" />
+            <div className="flex min-h-full flex-1 flex-col gap-4 p-4">
+                <div>
+                    <h1 className="text-lg font-semibold">Pending stock adjustments</h1>
+                    <p className="text-muted-foreground text-sm">
                         Stock changes that have been asked for but have not moved yet. Nothing here is on the ledger until somebody confirms it
                         happened.
-                    </DialogDescription>
-                </DialogHeader>
-
-                {offline && <OfflineNotice what="Pending stock adjustments" />}
-
-                {loading && (
-                    <p className="text-muted-foreground flex items-center gap-2 py-6 text-sm">
-                        <LoaderCircle className="size-4 animate-spin" />
-                        Loading…
                     </p>
-                )}
+                </div>
 
-                {!loading && !offline && (
+                {!online && <OfflineNotice what="Pending stock adjustments" />}
+
+                {online && (
                     <div className="space-y-6">
                         <section className="space-y-2">
                             <div className="flex flex-wrap items-center justify-between gap-2">
-                                <h3 className="text-sm font-semibold">{resolved ? 'Answered by this branch' : 'Awaiting this branch'}</h3>
+                                <h2 className="text-sm font-semibold">{resolved ? 'Answered by this branch' : 'Awaiting this branch'}</h2>
                                 <div className="flex items-center gap-2">
                                     {actionable && (
                                         <Button size="sm" onClick={approveAll} disabled={approvingAll}>
@@ -159,7 +138,7 @@ export function PendingAdjustmentsDialog({
                                             Approve all ({inbox.length})
                                         </Button>
                                     )}
-                                    <Button variant="ghost" size="sm" onClick={() => onResolvedChange(!resolved)}>
+                                    <Button variant="ghost" size="sm" onClick={() => showResolved(!resolved)}>
                                         {resolved ? 'Show pending' : 'Show answered'}
                                     </Button>
                                 </div>
@@ -169,36 +148,26 @@ export function PendingAdjustmentsDialog({
                                     {resolved ? 'Nothing has been answered here yet.' : 'Nothing is waiting on this branch.'}
                                 </p>
                             ) : (
-                                <AdjustmentTable rows={inbox} showBranch={false} answerable={actionable} onReload={onReload} />
+                                <AdjustmentTable rows={inbox} showBranch={false} answerable={actionable} />
                             )}
                         </section>
 
                         <section className="space-y-2">
-                            <h3 className="text-sm font-semibold">Sent to other branches</h3>
+                            <h2 className="text-sm font-semibold">Sent to other branches</h2>
                             {elsewhere.length === 0 ? (
                                 <p className="text-muted-foreground text-sm">Nothing has been sent to another branch.</p>
                             ) : (
-                                <AdjustmentTable rows={elsewhere} showBranch answerable={false} onReload={onReload} />
+                                <AdjustmentTable rows={elsewhere} showBranch answerable={false} />
                             )}
                         </section>
                     </div>
                 )}
-            </DialogContent>
-        </Dialog>
+            </div>
+        </AppLayout>
     );
 }
 
-function AdjustmentTable({
-    rows,
-    showBranch,
-    answerable,
-    onReload,
-}: {
-    rows: QueuedAdjustment[];
-    showBranch: boolean;
-    answerable: boolean;
-    onReload: () => void;
-}) {
+function AdjustmentTable({ rows, showBranch, answerable }: { rows: QueuedAdjustment[]; showBranch: boolean; answerable: boolean }) {
     const [answering, setAnswering] = useState<string | null>(null);
     const columnCount = (showBranch ? 1 : 0) + 7;
 
@@ -247,16 +216,13 @@ function AdjustmentTable({
                                             row={row}
                                             expanded={answering === row.id}
                                             onExpand={() => setAnswering(answering === row.id ? null : row.id)}
-                                            onReload={onReload}
                                         />
                                     )}
                                     {row.status === 'rejected' && !answerable && (
                                         <Button
                                             variant="outline"
                                             size="sm"
-                                            onClick={() =>
-                                                router.post(route('stock-updates.reissue', row.id), {}, { preserveScroll: true, onSuccess: onReload })
-                                            }
+                                            onClick={() => router.post(route('stock-updates.reissue', row.id), {}, { preserveScroll: true })}
                                         >
                                             Ask again
                                         </Button>
@@ -266,13 +232,7 @@ function AdjustmentTable({
                             {answering === row.id && (
                                 <TableRow>
                                     <TableCell colSpan={columnCount} className="bg-muted/30">
-                                        <AnswerForm
-                                            row={row}
-                                            onDone={() => {
-                                                setAnswering(null);
-                                                onReload();
-                                            }}
-                                        />
+                                        <AnswerForm row={row} onDone={() => setAnswering(null)} />
                                     </TableCell>
                                 </TableRow>
                             )}
@@ -284,23 +244,18 @@ function AdjustmentTable({
     );
 }
 
-/** Approve outright, or open the form for the two answers that need a reason. */
-function AnswerButtons({
-    row,
-    expanded,
-    onExpand,
-    onReload,
-}: {
-    row: QueuedAdjustment;
-    expanded: boolean;
-    onExpand: () => void;
-    onReload: () => void;
-}) {
+/**
+ * Approve outright, or open the form for the two answers that need a reason.
+ *
+ * Neither path reloads anything by hand: every write here redirects `back()`, so
+ * the list this row is in re-renders from the queue as it now stands.
+ */
+function AnswerButtons({ row, expanded, onExpand }: { row: QueuedAdjustment; expanded: boolean; onExpand: () => void }) {
     const form = useForm({});
 
     const approve = () => {
         form.transform(() => ({ adjustments: [{ id: row.id, outcome: 'approve' }] }));
-        form.post(route('stock-updates.resolve'), { preserveScroll: true, onSuccess: onReload });
+        form.post(route('stock-updates.resolve'), { preserveScroll: true });
     };
 
     return (

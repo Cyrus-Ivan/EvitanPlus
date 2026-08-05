@@ -1,18 +1,16 @@
 import EmptyState from '@/components/empty-state';
-import { PendingAdjustmentsDialog } from '@/components/inventory/pending-adjustments-dialog';
 import { StockEntryDialog } from '@/components/inventory/stock-entry-dialog';
 import Pagination from '@/components/pagination';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import AppLayout from '@/layouts/app-layout';
 import { MOVEMENT_LABEL, movementLabel, movementVariant } from '@/lib/stock-movement';
-import type { BreadcrumbItem, Paginated, PendingAdjustments, StockLedgerEntry } from '@/types';
+import type { BreadcrumbItem, Paginated, StockLedgerEntry } from '@/types';
 import { Head, router } from '@inertiajs/react';
 import { ScrollText } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
 
 const breadcrumbs: BreadcrumbItem[] = [
     { title: 'Inventory', href: '/inventory' },
@@ -60,11 +58,6 @@ export default function StockHistory({
     filters: Filters;
 }) {
     const [detail, setDetail] = useState<StockLedgerEntry | null>(null);
-    const [pending, setPending] = useState<PendingAdjustments | null>(null);
-    const [pendingOpen, setPendingOpen] = useState(false);
-    const [pendingLoading, setPendingLoading] = useState(false);
-    const [pendingCount, setPendingCount] = useState<number | null>(null);
-    const [resolved, setResolved] = useState(false);
     const [variantSearch, setVariantSearch] = useState('');
 
     // The whole catalogue is already in the browser, so the search is a filter
@@ -93,41 +86,9 @@ export default function StockHistory({
         );
     };
 
-    /**
-     * The queue is Postgres-only, so there is no local count at any price — the
-     * badge costs one short online read per visit to this page, the same trade
-     * `/reports` and `/login-history` already make for a cross-branch scope. A
-     * failed read means no badge, never a wrong one.
-     */
-    const loadPending = useCallback((showResolved: boolean) => {
-        const offline: PendingAdjustments = { inbox: [], elsewhere: [], online: false };
-
-        setPendingLoading(true);
-        fetch(route('stock-updates.pending', showResolved ? { resolved: 1 } : {}), { headers: { Accept: 'application/json' } })
-            .then((response) => (response.ok ? (response.json() as Promise<PendingAdjustments>) : offline))
-            .catch(() => offline)
-            .then((data) => {
-                setPending(data);
-                // Only a pending read may move the badge: with the toggle on,
-                // `inbox` holds answered rows and counting them would be a lie.
-                if (!showResolved) {
-                    setPendingCount(data.online ? data.inbox.length : null);
-                }
-            })
-            .finally(() => setPendingLoading(false));
-    }, []);
-
-    // Every role, deliberately. Answering an adjustment is reporting what
-    // physically happened, and the person who knows is whoever is in the shop —
-    // see the route comment and ResolveAdjustmentRequest.
-    useEffect(() => {
-        loadPending(false);
-    }, [loadPending]);
-
-    const showResolved = (next: boolean) => {
-        setResolved(next);
-        loadPending(next);
-    };
+    // Nothing on this page reads the pending queue any more: that list is its own
+    // screen (`/inventory/stock-updates`), which is where a movement that has not
+    // happened yet is answered. This one is the ledger — what did.
 
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
@@ -205,15 +166,6 @@ export default function StockHistory({
                             className="w-40"
                         />
                     </div>
-
-                    <Button variant="outline" className="ml-auto" onClick={() => setPendingOpen(true)}>
-                        Pending stock adjustments
-                        {pendingCount !== null && pendingCount > 0 && (
-                            <Badge variant="secondary" className="ml-2">
-                                {pendingCount}
-                            </Badge>
-                        )}
-                    </Button>
                 </div>
 
                 {entries.data.length === 0 ? (
@@ -279,16 +231,6 @@ export default function StockHistory({
             </div>
 
             <StockEntryDialog entry={detail} open={detail !== null} onOpenChange={(open) => !open && setDetail(null)} />
-
-            <PendingAdjustmentsDialog
-                open={pendingOpen}
-                onOpenChange={setPendingOpen}
-                data={pending}
-                loading={pendingLoading}
-                resolved={resolved}
-                onResolvedChange={showResolved}
-                onReload={() => loadPending(resolved)}
-            />
         </AppLayout>
     );
 }

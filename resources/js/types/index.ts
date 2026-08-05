@@ -162,18 +162,20 @@ export interface QueuedAdjustment {
 }
 
 /**
- * The payload behind the Pending stock adjustments dialog.
+ * The props behind the Pending stock adjustments page.
  *
  * Two sections because a queue row means opposite things at its two ends:
  * `inbox` is what this branch has been asked to agree to, `elsewhere` is what has
  * been asked of everyone else and what came of it. `online` is false when the
  * read failed — everything here is Postgres-only, so there is then nothing to
- * show rather than an empty list.
+ * show rather than an empty list. `resolved` says which half of the inbox is in
+ * hand: the rows still waiting, or the ones this branch has already answered.
  */
 export interface PendingAdjustments {
     inbox: QueuedAdjustment[];
     elsewhere: QueuedAdjustment[];
     online: boolean;
+    resolved: boolean;
 }
 
 export interface Item {

@@ -301,7 +301,7 @@ push, the next baseline contains them and the correction converges to zero on it
 CSV import, an adjustment aimed at another branch, and both legs of a transfer all write a
 `pending` row into `inventory_update_queue` (`App\Support\Inventory\AdjustmentQueue`) and
 stop. It becomes a ledger entry when a person at the affected branch says it really happened
-(`App\Support\Inventory\AdjustmentResolver`), from the dialog on `/inventory/stock-history`.
+(`App\Support\Inventory\AdjustmentResolver`), from `/inventory/stock-updates`.
 
 M8 mediated only the cross-branch case, on the grounds that the issuer cannot see the target's
 unsynced sales. True, and not the point: arithmetic was never what was in doubt. Stock that

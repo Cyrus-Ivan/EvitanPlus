@@ -22,13 +22,18 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Inertia\Inertia;
+use Inertia\Response;
 
 /**
  * Pending stock adjustments (§10, M8).
  *
- * There is no page here any more. This used to render
- * `/inventory/stock-updates`; the list is now a dialog on Stock History, so what
- * is left is JSON for that dialog plus the two write paths that fill the queue.
+ * `/inventory/stock-updates` is a page in its own right, reached from the
+ * sidebar. It spent one milestone as a dialog on Stock History, on the reasoning
+ * that a queue row is a movement that has not happened yet and belongs on top of
+ * the history it is about to join — true, and beside the point once every stock
+ * movement in the system starts here: this is the screen somebody has to visit
+ * before stock moves at all, and a screen like that is not a modal on another one.
  *
  * ## Why all of it is online-only, and why that is not a limitation
  *
@@ -73,13 +78,15 @@ class InventoryQueueController extends Controller
     ) {}
 
     /**
-     * The pending list, as JSON for the dialog on Stock History.
+     * The pending list.
      *
-     * JSON and not an Inertia page because there is no page any more: this used
-     * to be `/inventory/stock-updates`, and it is now a modal opened from Stock
-     * History, which every role can reach. Fetching on open (and on that page's
-     * mount, for the count badge) keeps the read off every other render — the
-     * same reason {@see branches()} is a JSON route.
+     * Props rather than a fetch, which is what makes the write paths free: every
+     * one of them already ends in `back()`, so answering a row re-renders this
+     * page with the queue as it now stands. Nothing on this device is read here —
+     * the online read is the whole of the page — so there is no render-path cost
+     * to spread out, which is the one thing that would argue for JSON (and does,
+     * for {@see branches()}: that roster hangs off a dialog on the screen a
+     * cashier lives on).
      *
      * ## Two sections, because they answer two different questions
      *
@@ -95,9 +102,11 @@ class InventoryQueueController extends Controller
      *
      * `?resolved=1` swaps the inbox for this branch's already-answered rows. They
      * are hidden by default — an answered row's movement is in Stock History, and
-     * a list that keeps them is a list nobody can see the work in.
+     * a list that keeps them is a list nobody can see the work in. On the URL and
+     * not in client state, so `back()` from an answer returns to the list the
+     * person was looking at.
      */
-    public function pending(Request $request): JsonResponse
+    public function index(Request $request): Response
     {
         $branchId = $this->branchId();
         $resolved = $request->boolean('resolved');
@@ -114,13 +123,19 @@ class InventoryQueueController extends Controller
         }, 'Branch stock updates'), null, report: false);
 
         if ($data === null) {
-            return response()->json(['inbox' => [], 'elsewhere' => [], 'online' => false]);
+            return Inertia::render('inventory/stock-updates', [
+                'inbox' => [],
+                'elsewhere' => [],
+                'online' => false,
+                'resolved' => $resolved,
+            ]);
         }
 
-        return response()->json([
+        return Inertia::render('inventory/stock-updates', [
             'inbox' => $this->describe($data['inbox'], $data['branches']),
             'elsewhere' => $this->describe($data['elsewhere'], $data['branches']),
             'online' => true,
+            'resolved' => $resolved,
         ]);
     }
 

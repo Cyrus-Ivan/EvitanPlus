@@ -78,13 +78,14 @@ Route::middleware(['auth'])->group(function () {
     // {item} wildcard writes below.
     Route::get('inventory/stock-history', [StockHistoryController::class, 'index'])->name('stock-history.index');
 
-    // Pending stock adjustments — the dialog on Stock History, and answering
-    // one. Cashier-level ON PURPOSE: whether stock actually arrived is known by
-    // whoever is standing in the shop, not by a role, and a floor here would
-    // leave deliveries waiting on somebody who is not there. What bounds it is
-    // the branch, not the role — AdjustmentResolver re-reads every row filtered
-    // to this device's own. Issuing one is still Admin+, below.
-    Route::get('inventory/stock-updates/pending', [InventoryQueueController::class, 'pending'])->name('stock-updates.pending');
+    // Pending stock adjustments, and answering one. Cashier-level ON PURPOSE:
+    // whether stock actually arrived is known by whoever is standing in the
+    // shop, not by a role, and a floor here would leave deliveries waiting on
+    // somebody who is not there. What bounds it is the branch, not the role —
+    // AdjustmentResolver re-reads every row filtered to this device's own.
+    // Issuing one is still Admin+, below. Literal segment, ahead of the {item}
+    // wildcard.
+    Route::get('inventory/stock-updates', [InventoryQueueController::class, 'index'])->name('stock-updates.index');
     Route::post('inventory/stock-updates/resolve', [InventoryQueueController::class, 'resolve'])->name('stock-updates.resolve');
     Route::post('inventory/stock-updates/resolve-all', [InventoryQueueController::class, 'resolveAll'])->name('stock-updates.resolve-all');
 

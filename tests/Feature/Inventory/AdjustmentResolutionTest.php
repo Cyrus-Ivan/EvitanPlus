@@ -304,19 +304,21 @@ class AdjustmentResolutionTest extends TestCase
         $this->pending($remote, $theirs, -2, ['branch_id' => self::OTHER_BRANCH, 'status' => 'rejected',
             'resolved_at' => now()->toDateTimeString(), 'resolution_reason' => 'Nothing to take off.']);
 
-        $response = $this->actingAs(User::factory()->admin()->create())
-            ->getJson(route('stock-updates.pending'))
+        $this->actingAs(User::factory()->admin()->create())
+            ->get(route('stock-updates.index'))
             ->assertOk()
-            ->assertJsonPath('online', true);
-
-        $this->assertCount(1, $response->json('inbox'));
-        $this->assertSame(3, $response->json('inbox.0.quantity'));
-
-        // The section that exists so a rejection is visible at all: it writes no
-        // ledger row, so this is the only place the branch that asked ever sees it.
-        $this->assertCount(1, $response->json('elsewhere'));
-        $this->assertSame('rejected', $response->json('elsewhere.0.status'));
-        $this->assertSame('Nothing to take off.', $response->json('elsewhere.0.resolution_reason'));
+            ->assertInertia(fn ($page) => $page
+                ->component('inventory/stock-updates', false)
+                ->where('online', true)
+                ->has('inbox', 1)
+                ->where('inbox.0.quantity', 3)
+                // The section that exists so a rejection is visible at all: it
+                // writes no ledger row, so this is the only place the branch
+                // that asked ever sees it.
+                ->has('elsewhere', 1)
+                ->where('elsewhere.0.status', 'rejected')
+                ->where('elsewhere.0.resolution_reason', 'Nothing to take off.')
+            );
     }
 
     public function test_answered_rows_leave_the_list_and_come_back_on_request(): void
@@ -331,13 +333,16 @@ class AdjustmentResolutionTest extends TestCase
 
         // Gone by default — its movement is in Stock History now, and a list that
         // keeps everything is a list nobody can see the work in.
-        $this->actingAs($admin)->getJson(route('stock-updates.pending'))
+        $this->actingAs($admin)->get(route('stock-updates.index'))
             ->assertOk()
-            ->assertJsonCount(0, 'inbox');
+            ->assertInertia(fn ($page) => $page->has('inbox', 0)->where('resolved', false));
 
-        $this->actingAs($admin)->getJson(route('stock-updates.pending', ['resolved' => 1]))
+        $this->actingAs($admin)->get(route('stock-updates.index', ['resolved' => 1]))
             ->assertOk()
-            ->assertJsonCount(1, 'inbox')
-            ->assertJsonPath('inbox.0.status', 'accepted');
+            ->assertInertia(fn ($page) => $page
+                ->has('inbox', 1)
+                ->where('inbox.0.status', 'accepted')
+                ->where('resolved', true)
+            );
     }
 }

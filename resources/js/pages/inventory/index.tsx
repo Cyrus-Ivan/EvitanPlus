@@ -13,7 +13,7 @@ import { usePermissions } from '@/hooks/use-permissions';
 import AppLayout from '@/layouts/app-layout';
 import type { BreadcrumbItem, Category, Item, Paginated, Variant } from '@/types';
 import { Head, Link, router } from '@inertiajs/react';
-import { ArrowLeftRight, ChevronRight, FileSpreadsheet, FolderCog, History, Package, Pencil, SlidersHorizontal } from 'lucide-react';
+import { ArrowLeftRight, ChevronRight, History, Package, Pencil, SlidersHorizontal } from 'lucide-react';
 import { Fragment, useEffect, useRef, useState } from 'react';
 
 const breadcrumbs: BreadcrumbItem[] = [{ title: 'Inventory', href: '/inventory' }];
@@ -147,30 +147,16 @@ export default function InventoryIndex({
                         </Select>
                     </div>
 
-                    <div className="flex items-center gap-2">
-                        <Button variant="outline" asChild>
-                            <Link href={route('stock-history.index')}>
-                                <History className="size-4" /> Stock history
-                            </Link>
+                    {/* One button, because it is the only one that acts on this
+                        page. Stock History, Categories and Import / Export were
+                        here until they got their own sidebar entries — they are
+                        destinations, and a list of products is not where you
+                        navigate from. */}
+                    {canManage && (
+                        <Button asChild>
+                            <Link href={route('items.create')}>New item</Link>
                         </Button>
-                        {canManage && (
-                            <>
-                                <Button variant="outline" asChild>
-                                    <Link href={route('inventory.import')}>
-                                        <FileSpreadsheet className="size-4" /> Import / Export
-                                    </Link>
-                                </Button>
-                                <Button variant="outline" asChild>
-                                    <Link href={route('categories.index')}>
-                                        <FolderCog className="size-4" /> Manage categories
-                                    </Link>
-                                </Button>
-                                <Button asChild>
-                                    <Link href={route('items.create')}>New item</Link>
-                                </Button>
-                            </>
-                        )}
-                    </div>
+                    )}
                 </div>
 
                 {items.data.length === 0 ? (

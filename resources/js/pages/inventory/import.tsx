@@ -75,7 +75,7 @@ export default function InventoryImport({ history, online }: { history: Paginate
             await confirm({
                 title: 'Import this CSV?',
                 description:
-                    'New categories, products and variants will be created. For a row matching an existing SKU, only price, cost, low-stock threshold and category are updated — name, barcode, unit and description are fixed after creation. Stock does NOT move: each row becomes a pending stock adjustment for somebody at this branch to confirm under Pending stock adjustments on Stock History. If any row is invalid the entire import is rejected and nothing is saved.',
+                    'New categories, products and variants will be created. For a row matching an existing SKU, only price, cost, low-stock threshold and category are updated — name, barcode, unit and description are fixed after creation. Stock does NOT move: each row becomes a pending stock adjustment for somebody at this branch to confirm under Pending Stock Adjustments. If any row is invalid the entire import is rejected and nothing is saved.',
                 confirmLabel: 'Import',
             })
         ) {
@@ -126,7 +126,7 @@ export default function InventoryImport({ history, online }: { history: Paginate
                     </p>
                     <p className="text-muted-foreground mt-1 text-sm">
                         The catalog is written straight away; the stock is not. Every row's change waits under{' '}
-                        <span className="font-medium">Pending stock adjustments</span> on Stock History until somebody here confirms it — use{' '}
+                        <span className="font-medium">Pending Stock Adjustments</span> until somebody here confirms it — use{' '}
                         <span className="font-medium">Approve all</span> to accept the whole file at once. A new product stays at 0 until then.
                     </p>
                     {/*

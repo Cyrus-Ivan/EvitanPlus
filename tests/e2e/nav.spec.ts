@@ -16,6 +16,7 @@ const DESTINATIONS: Array<[path: string, title: RegExp]> = [
     ['/inventory', /^Inventory -/],
     ['/inventory/categories', /^Categories -/],
     ['/inventory/stock-history', /^Stock History -/],
+    ['/inventory/stock-updates', /^Pending Stock Adjustments -/],
     // The same case from the other direction (M11): this URL asks for figures
     // from every branch, which the device cannot fetch for want of a credential.
     // It must still render a correct report of what it CAN see, rather than
@@ -56,27 +57,24 @@ test('the app identifies itself as Evitan Plus', async ({ page }) => {
     await expect(page).toHaveTitle(/- Evitan Plus$/);
 });
 
-test('the pending adjustments dialog opens from stock history and says it is offline', async ({ page }) => {
-    // This list used to be its own page, and its smoke test used to be a row in
-    // DESTINATIONS above. It is a dialog now, so the case still worth proving —
-    // the device holds no branch credential, so the online read cannot happen and
-    // the list must SAY so rather than render as an empty queue — has to be
-    // driven through the button that opens it.
+test('pending adjustments says it is offline rather than showing an empty queue', async ({ page }) => {
+    // The row above proves the page boots; this proves what it says when it
+    // cannot reach the business database. Everything on it is Postgres-only and
+    // this device holds no branch credential, so the online read cannot happen —
+    // and a queue that renders empty means "nothing to answer", which is a
+    // different claim from "cannot tell you".
     await login(page, 'owner');
-    await page.goto('/inventory/stock-history');
+    await page.goto('/inventory/stock-updates');
 
-    await page.getByRole('button', { name: /Pending stock adjustments/ }).click();
-
-    const dialog = page.getByRole('dialog');
-    await expect(dialog.getByRole('heading', { name: 'Pending stock adjustments' })).toBeVisible();
-    await expect(dialog.getByRole('alert')).toContainText('Selling is unaffected');
+    await expect(page.getByRole('heading', { name: 'Pending stock adjustments' })).toBeVisible();
+    await expect(page.getByRole('alert')).toContainText('Selling is unaffected');
 });
 
 test('a consolidated report this device cannot fetch falls back and says so', async ({ page }) => {
     // The state a real shop meets whenever its internet drops, and the one the
     // M11 fallback exists for. This device is hydrated but holds no branch
-    // credential, so the online read cannot happen — the same condition as the
-    // pending adjustments dialog above.
+    // credential, so the online read cannot happen — the same condition as
+    // pending adjustments above.
     await login(page, 'owner');
     await page.goto('/reports?scope=all');
 

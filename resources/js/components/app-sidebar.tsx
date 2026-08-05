@@ -6,6 +6,7 @@ import { type NavGroup } from '@/types';
 import { Link } from '@inertiajs/react';
 import {
     ChartColumn,
+    ClipboardCheck,
     FileSpreadsheet,
     History,
     Package,
@@ -14,6 +15,7 @@ import {
     ScrollText,
     ShoppingCart,
     Store,
+    Tags,
     UsersRound,
 } from 'lucide-react';
 import AppLogo from './app-logo';
@@ -27,14 +29,31 @@ const mainNavGroups: NavGroup[] = [
         items: [
             { title: 'Point of Sale', url: '/pos', icon: ShoppingCart },
             { title: 'Sales', url: '/sales', icon: ReceiptText },
+        ],
+    },
+    // Its own group rather than five entries under Operations: the catalog, the
+    // ledger behind it and the queue in front of it are one job, and selling is
+    // another.
+    {
+        title: 'Inventory Management',
+        items: [
             { title: 'Inventory', url: '/inventory', icon: Package }, // view-only for Cashier
+            // No dedicated ability backs categories either. Admin-gated to match
+            // what every action on that page needs — the route itself is
+            // Cashier-readable, but a screen whose every button is disabled is
+            // not worth a nav entry.
+            { title: 'Categories', url: '/inventory/categories', icon: Tags, minRole: 'admin' },
             { title: 'Stock History', url: '/inventory/stock-history', icon: PackageSearch }, // read-only ledger
+            // Ungated ON PURPOSE, unlike everything else that touches stock:
+            // answering one is reporting what physically happened, and the
+            // person who knows is whoever is in the shop. See routes/web.php.
+            // Shortened for the rail only. The page, its breadcrumb and every
+            // document that names it are still "Pending stock adjustments" —
+            // that is the term of art (docs/glossary.md), and this is a label.
+            { title: 'Pending Stock', url: '/inventory/stock-updates', icon: ClipboardCheck },
             // No dedicated ability backs the import/export routes, so this one
             // gates by role floor; the routes are `role:admin` server-side.
             { title: 'Import / Export', url: '/inventory/import', icon: FileSpreadsheet, minRole: 'admin' },
-            // No entry for pending stock adjustments: they are a dialog on Stock
-            // History, because a queue row is a stock movement that has not
-            // happened yet and belongs on top of the history it is about to join.
         ],
     },
     {

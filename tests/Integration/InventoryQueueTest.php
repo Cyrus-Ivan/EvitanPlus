@@ -323,15 +323,19 @@ class InventoryQueueTest extends TestCase
         $this->hydrateAs(self::$documentA);
 
         $response = $this->actingAs($this->owner())
-            ->getJson(route('stock-updates.pending'))
+            ->get(route('stock-updates.index'))
             ->assertOk()
-            ->assertJsonPath('online', true);
+            ->assertInertia(fn ($page) => $page->component('inventory/stock-updates', false)->where('online', true));
+
+        // The props themselves, rather than a chain of `where()`s: what is being
+        // asserted is one row out of a list whose length this test does not fix.
+        $props = $response->viewData('page')['props'];
 
         // Every row here is aimed at branch B, so from A they are all in
         // `elsewhere` — the section that exists precisely so an issuer can see
         // one was turned down. A rejection writes no ledger row, so this is the
         // only place it ever appears.
-        $rows = collect($response->json('elsewhere'));
+        $rows = collect($props['elsewhere']);
         $turned_down = $rows->firstWhere('notes', 'Too many');
 
         $this->assertNotNull($turned_down);
@@ -343,7 +347,7 @@ class InventoryQueueTest extends TestCase
 
         // And nothing is waiting on A itself, which is the other half of the
         // split: these are rows A ASKED FOR, not rows A owes an answer to.
-        $this->assertSame([], $response->json('inbox'));
+        $this->assertSame([], $props['inbox']);
 
         $rejected = $turned_down['id'];
 

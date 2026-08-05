@@ -29,6 +29,7 @@ function formatWhen(value: string): string {
 interface VariantOption {
     id: string;
     name: string | null;
+    sku: string | null;
     item: string | null;
 }
 
@@ -64,6 +65,19 @@ export default function StockHistory({
     const [pendingLoading, setPendingLoading] = useState(false);
     const [pendingCount, setPendingCount] = useState<number | null>(null);
     const [resolved, setResolved] = useState(false);
+    const [variantSearch, setVariantSearch] = useState('');
+
+    // The whole catalogue is already in the browser, so the search is a filter
+    // over it. The selected variant stays mounted whatever the search says: Radix
+    // renders the trigger's text from the selected SelectItem, and hiding it
+    // blanks the trigger.
+    const needle = variantSearch.trim().toLowerCase();
+    const shownVariants = needle
+        ? variants.filter(
+              (variant) =>
+                  variant.id === filters.variant || `${variant.item ?? ''} ${variant.name ?? ''} ${variant.sku ?? ''}`.toLowerCase().includes(needle),
+          )
+        : variants;
 
     const applyFilters = (next: Partial<Filters>) => {
         const merged = { ...filters, ...next };
@@ -120,17 +134,44 @@ export default function StockHistory({
             <Head title="Stock History" />
             <div className="flex min-h-full flex-1 flex-col gap-4 p-4">
                 <div className="flex flex-wrap items-center gap-2">
-                    <Select value={filters.variant ?? ALL} onValueChange={(value) => applyFilters({ variant: value })}>
+                    <Select
+                        value={filters.variant ?? ALL}
+                        onValueChange={(value) => applyFilters({ variant: value })}
+                        onOpenChange={(open) => {
+                            if (!open) {
+                                setVariantSearch('');
+                            }
+                        }}
+                    >
                         <SelectTrigger className="w-64">
                             <SelectValue placeholder="All variants" />
                         </SelectTrigger>
                         <SelectContent>
+                            <div className="bg-popover sticky top-0 z-10 mb-1 border-b p-1">
+                                <Input
+                                    value={variantSearch}
+                                    onChange={(event) => setVariantSearch(event.target.value)}
+                                    onKeyDown={(event) => {
+                                        // Radix Select claims every keystroke for its own
+                                        // typeahead; let only the navigation keys through so
+                                        // Escape, Enter and the arrows still work.
+                                        if (!['Escape', 'Enter', 'ArrowDown', 'ArrowUp', 'Tab'].includes(event.key)) {
+                                            event.stopPropagation();
+                                        }
+                                    }}
+                                    placeholder="Search variants"
+                                    aria-label="Search variants"
+                                    className="h-8"
+                                />
+                            </div>
                             <SelectItem value={ALL}>All variants</SelectItem>
-                            {variants.map((variant) => (
+                            {shownVariants.map((variant) => (
                                 <SelectItem key={variant.id} value={variant.id}>
                                     {variantLabel(variant)}
+                                    {variant.sku && <span className="text-muted-foreground ml-2 text-xs">{variant.sku}</span>}
                                 </SelectItem>
                             ))}
+                            {shownVariants.length === 0 && <div className="text-muted-foreground px-2 py-3 text-sm">No variants match.</div>}
                         </SelectContent>
                     </Select>
                     <Select value={filters.movement ?? ALL} onValueChange={(value) => applyFilters({ movement: value })}>

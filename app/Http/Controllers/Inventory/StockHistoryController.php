@@ -67,14 +67,17 @@ class StockHistoryController extends Controller
         return Inertia::render('inventory/stock-history', [
             'entries' => $entries,
             // Variants for the filter dropdown; archived included so their history
-            // stays filterable. Item name is joined in for a readable label.
+            // stays filterable. Item name is joined in for a readable label, and
+            // the SKU rides along so the dropdown's search matches what is printed
+            // on the shelf label.
             'variants' => Variant::query()
                 ->with('item:id,name')
                 ->orderBy('name')
-                ->get(['id', 'item_id', 'name'])
+                ->get(['id', 'item_id', 'name', 'sku'])
                 ->map(fn (Variant $variant) => [
                     'id' => $variant->id,
                     'name' => $variant->name,
+                    'sku' => $variant->sku,
                     'item' => $variant->item?->name,
                 ]),
             'movements' => MovementKind::values(),

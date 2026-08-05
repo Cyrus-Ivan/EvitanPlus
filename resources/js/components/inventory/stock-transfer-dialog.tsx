@@ -32,19 +32,22 @@ const HERE = 'here';
  * Moving stock from one branch to another.
  *
  * This was a mode of {@see StockAdjustDialog} until the two turned out to be
- * different things wearing one form. An adjustment is a claim about one shelf and
- * is signed — plus adds, minus removes. A transfer is a quantity and a direction,
- * and the direction is the two branch pickers, not the number. Sharing a form
- * meant the number field carried adjust-mode affordances into a transfer: no lower
- * bound, a placeholder reading `e.g. -3 or 10`, and a submit that quietly
- * `Math.abs`'d whatever was typed. Somebody entering −3 to mean "send 3 away" got
- * a 3-unit transfer and no indication their minus sign had been ignored.
+ * different things wearing one form. An adjustment is one claim about one shelf,
+ * answered by one person; a transfer is two claims about two shelves, and the
+ * direction is the two branch pickers rather than anything about the number.
+ * Sharing a form meant the number field carried adjust-mode affordances into a
+ * transfer: no lower bound, a placeholder reading `e.g. -3 or 10`, and a submit
+ * that quietly `Math.abs`'d whatever was typed. Somebody entering −3 to mean "send
+ * 3 away" got a 3-unit transfer and no indication their minus sign had been
+ * ignored.
  *
  * So the quantity here is **positive and means "how many are moving"**. The signs
  * are the system's business: `InventoryQueueController::transfer()` writes the
  * sending leg negative and `AdjustmentResolver::secondLeg()` writes the receiving
  * leg positive, and `IssueTransferRequest` enforces `min:1` so those two can rely
- * on each other.
+ * on each other. The adjust dialog has since adopted the same rule — a positive
+ * number and a separate Add/Remove — which is why the two look alike again; what
+ * still separates them is one answer versus two.
  *
  * ## Nothing here moves stock
  *

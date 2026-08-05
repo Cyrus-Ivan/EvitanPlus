@@ -80,9 +80,9 @@ class LedgerSnapshotReconciliationTest extends TestCase
         ])->assertSessionHasNoErrors();
         $this->assertReconciled($variant, 7);
 
-        // Delta adjustment (-2).
+        // Removal of 2.
         $this->actingAs($admin)
-            ->post(route('stock.adjust', $variant), ['mode' => 'delta', 'value' => -2, 'notes' => 'shrinkage'])
+            ->post(route('stock.adjust', $variant), ['mode' => 'remove', 'value' => 2, 'notes' => 'shrinkage'])
             ->assertSessionHasNoErrors();
         $this->approveEverythingPending($admin);
         $this->assertReconciled($variant, 5);

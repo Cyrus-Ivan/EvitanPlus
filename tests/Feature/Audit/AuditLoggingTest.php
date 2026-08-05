@@ -138,7 +138,7 @@ class AuditLoggingTest extends TestCase
         $variant = Variant::factory()->create();
 
         $this->actingAs($admin)->post(route('stock.adjust', $variant), [
-            'mode' => 'delta',
+            'mode' => 'add',
             'value' => 5,
             'notes' => 'restock',
         ])->assertSessionHasNoErrors();

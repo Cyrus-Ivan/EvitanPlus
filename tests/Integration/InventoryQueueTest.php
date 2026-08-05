@@ -447,14 +447,22 @@ class InventoryQueueTest extends TestCase
         return User::query()->where('username', self::OWNER_USERNAME)->sole();
     }
 
-    /** Issue an adjustment from whichever device is currently hydrated. */
+    /**
+     * Issue an adjustment from whichever device is currently hydrated.
+     *
+     * $quantity is SIGNED here, because that is what the queue row holds and what
+     * every assertion below reads back. The endpoint takes a positive number and a
+     * direction, so this is where the two are separated — the mirror image of what
+     * `InventoryQueueController::store()` does on the way in.
+     */
     private function issue(array $target, string $sku, int $quantity, string $notes): void
     {
         $this->actingAs($this->owner())
             ->post(route('stock-updates.store'), [
                 'branch_id' => $target['branch']['id'],
                 'variant_id' => Variant::query()->where('sku', $sku)->sole()->getKey(),
-                'quantity' => $quantity,
+                'mode' => $quantity < 0 ? 'remove' : 'add',
+                'quantity' => abs($quantity),
                 'notes' => $notes,
             ])
             ->assertRedirect()
@@ -526,7 +534,7 @@ class InventoryQueueTest extends TestCase
     {
         $this->actingAs($this->owner())
             ->post(route('stock.adjust', Variant::query()->where('sku', $sku)->sole()->getKey()), [
-                'mode' => 'delta',
+                'mode' => 'add',
                 'value' => $quantity,
                 'notes' => 'Opening',
             ])

@@ -58,8 +58,8 @@ export default function InventoryIndex({
     // The variant currently open in the stock-adjust dialog (with its item name).
     const [adjustTarget, setAdjustTarget] = useState<{ variant: Variant; itemName: string } | null>(null);
     // The same, for the transfer dialog. Two pieces of state rather than one with
-    // a mode, because they are two dialogs — a transfer is a quantity and a
-    // direction, an adjustment is a signed change to one shelf.
+    // a mode, because they are two dialogs — an adjustment is one claim about one
+    // shelf, a transfer is two claims about two, answered by two people.
     const [transferTarget, setTransferTarget] = useState<{ variant: Variant; itemName: string } | null>(null);
     const isFirstRender = useRef(true);
 

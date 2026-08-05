@@ -11,7 +11,7 @@ import { useForm } from '@inertiajs/react';
 import { LoaderCircle } from 'lucide-react';
 import { FormEventHandler, useEffect, useState } from 'react';
 
-type Mode = 'set' | 'delta';
+type Mode = 'add' | 'remove' | 'set';
 
 /**
  * The local fields, plus the three the queued form is validated on — declared
@@ -32,21 +32,30 @@ type AdjustForm = {
 const HERE = 'here';
 
 /**
- * Manual stock adjustment dialog. Two modes:
- *  - "Add / Remove" (default): enter a signed change (+ add, − remove).
- *  - "Set to count": enter the true counted on-hand; the backend derives the delta.
- * Notes are optional except when setting a count, or when removing stock
- * (a negative add/remove) — both need an explanation for the ledger.
+ * Manual stock adjustment dialog. Three modes:
+ *  - "Add" (default): how many are arriving.
+ *  - "Remove": how many are leaving.
+ *  - "Set to count": the true counted on-hand; the backend derives the delta.
+ * Notes are optional except when removing stock or setting a count — both need an
+ * explanation for the ledger.
+ *
+ * ## The number is positive; the direction is the mode
+ *
+ * Add and Remove were one "Add / Remove" mode over a SIGNED field, where a minus
+ * sign meant a removal. That put the direction of a real stock movement in a
+ * character somebody had to remember to type, and omitting it does the exact
+ * opposite of what was meant — silently, since 3 is as valid an entry as −3.
+ * So the sign is now the backend's business ({@see StockAdjustmentRequest},
+ * `min:1`), which is what {@see StockTransferDialog} already did.
  *
  * ## Adjusting only. Transfers are {@see StockTransferDialog}
  *
  * This form used to carry a third destination — move it to another branch — and
- * the two do not share a shape. An adjustment is a claim about one shelf and its
- * quantity is SIGNED; a transfer is a quantity plus a direction, and the direction
- * is two branch pickers rather than a minus sign. Sharing one number field meant a
- * transfer inherited this one's affordances and quietly `Math.abs`'d what was
- * typed, so `-3` became a 3-unit transfer with no indication the sign had been
- * dropped. The signed field below is correct HERE and only here.
+ * the two do not share a shape. An adjustment is one claim about one shelf,
+ * answered by one person; a transfer is two claims about two shelves, answered by
+ * two. That they now take the same kind of number is not a reason to recombine
+ * them: the old shared field is what let a transfer quietly `Math.abs()` a typed
+ * `-3` into a 3-unit move.
  *
  * ## Nothing here moves stock any more
  *
@@ -77,7 +86,7 @@ export default function StockAdjustDialog({
     variant: Variant | null;
     itemName?: string;
 }) {
-    const form = useForm<AdjustForm>({ mode: 'delta', value: '', notes: '' });
+    const form = useForm<AdjustForm>({ mode: 'add', value: '', notes: '' });
     const { data, setData, errors, processing, reset, clearErrors } = form;
 
     const [branches, setBranches] = useState<Branch[]>([]);
@@ -86,7 +95,7 @@ export default function StockAdjustDialog({
     // Reset on open so values/errors never leak between variants.
     useEffect(() => {
         if (open) {
-            setData({ mode: 'delta', value: '', notes: '' });
+            setData({ mode: 'add', value: '', notes: '' });
             setTarget(HERE);
             clearErrors();
         }
@@ -118,10 +127,21 @@ export default function StockAdjustDialog({
 
     const elsewhere = target !== HERE;
     const current = variant?.current_stock ?? 0;
-    const mode: Mode = elsewhere ? 'delta' : data.mode;
+    const mode: Mode = data.mode;
 
-    // Notes are mandatory when setting a count or when removing stock.
-    const notesRequired = mode === 'set' || Number(data.value) < 0;
+    // Aiming at another branch drops "Set to count", so a mode already on it has
+    // to land somewhere. Normalised here rather than derived at render, so what
+    // the toggle shows and what gets posted are the same value.
+    const chooseTarget = (value: string) => {
+        setTarget(value);
+
+        if (value !== HERE && data.mode === 'set') {
+            setData('mode', 'add');
+        }
+    };
+
+    // Notes are mandatory when removing stock or setting a count.
+    const notesRequired = mode === 'remove' || mode === 'set';
 
     const submit: FormEventHandler = (e) => {
         e.preventDefault();
@@ -144,6 +164,10 @@ export default function StockAdjustDialog({
             form.transform(() => ({
                 branch_id: target,
                 variant_id: variant.id,
+                // Positive, with `mode` carrying the direction — the queue column
+                // is signed but the request is not, and the controller bridges
+                // them. See IssueStockAdjustmentRequest.
+                mode: data.mode,
                 quantity: Number(data.value),
                 notes: data.notes,
             }));
@@ -162,11 +186,13 @@ export default function StockAdjustDialog({
     // Only for this branch: another branch's on-hand is not known here.
     const parsed = Number(data.value);
     const hasValue = data.value !== '' && Number.isFinite(parsed);
-    const resulting = hasValue && !elsewhere ? (mode === 'set' ? parsed : current + parsed) : null;
+    const resulting = hasValue && !elsewhere ? (mode === 'set' ? parsed : mode === 'remove' ? current - parsed : current + parsed) : null;
 
-    // In add/remove, zero is not a change: a positive value adds, a negative removes.
-    const deltaIsZero = mode === 'delta' && hasValue && parsed === 0;
-    const canSubmit = hasValue && !deltaIsZero;
+    // Positive only, mirroring the `min:1` / `min:0` the requests enforce — a
+    // count of zero is a real answer, a movement of zero is not. Nothing here
+    // reinterprets what was typed; it just refuses to send it.
+    const quantityInvalid = hasValue && (mode === 'set' ? parsed < 0 : parsed < 1);
+    const canSubmit = hasValue && !quantityInvalid;
 
     // Only worth showing the picker when there is somewhere else to aim this.
     const others = branches.filter((branch) => !branch.is_this_branch);
@@ -196,7 +222,7 @@ export default function StockAdjustDialog({
                     {others.length > 0 && (
                         <div className="grid gap-2">
                             <Label htmlFor="adjust-branch">Branch</Label>
-                            <Select value={target} onValueChange={setTarget}>
+                            <Select value={target} onValueChange={chooseTarget}>
                                 <SelectTrigger id="adjust-branch">
                                     <SelectValue />
                                 </SelectTrigger>
@@ -219,42 +245,53 @@ export default function StockAdjustDialog({
                             : 'This asks for the stock to move. Confirm it under Pending stock adjustments on Stock History to apply it.'}
                     </p>
 
-                    {!elsewhere && (
-                        <div className="grid gap-2">
-                            <Label>Mode</Label>
-                            <ToggleGroup
-                                type="single"
-                                variant="outline"
-                                value={data.mode}
-                                onValueChange={(value) => value && setData('mode', value as Mode)}
-                                className="justify-start"
-                            >
-                                <ToggleGroupItem value="delta">Add / Remove</ToggleGroupItem>
-                                <ToggleGroupItem value="set">Set to count</ToggleGroupItem>
-                            </ToggleGroup>
-                        </div>
-                    )}
+                    <div className="grid gap-2">
+                        <Label>Mode</Label>
+                        <ToggleGroup
+                            type="single"
+                            variant="outline"
+                            value={data.mode}
+                            onValueChange={(value) => value && setData('mode', value as Mode)}
+                            className="justify-start"
+                        >
+                            <ToggleGroupItem value="add">Add</ToggleGroupItem>
+                            <ToggleGroupItem value="remove">Remove</ToggleGroupItem>
+                            {/* Hidden for another branch: deriving a delta would need
+                                that branch's on-hand, which this device only knows as
+                                a baseline missing its unsynced sales. */}
+                            {!elsewhere && <ToggleGroupItem value="set">Set to count</ToggleGroupItem>}
+                        </ToggleGroup>
+                    </div>
 
                     <div className="grid gap-2">
-                        <Label htmlFor="adjust-value">{mode === 'set' ? 'Counted quantity' : 'Change (+ add, − remove)'}</Label>
+                        <Label htmlFor="adjust-value">
+                            {mode === 'set' ? 'Counted quantity' : mode === 'remove' ? 'How many are leaving' : 'How many are arriving'}
+                        </Label>
                         <Input
                             id="adjust-value"
                             type="number"
                             inputMode="numeric"
                             step={1}
-                            min={mode === 'set' ? 0 : undefined}
+                            min={mode === 'set' ? 0 : 1}
                             value={data.value}
                             onChange={(e) => setData('value', e.target.value)}
                             required
                             autoFocus
-                            placeholder={mode === 'set' ? 'e.g. 37' : 'e.g. -3 or 10'}
+                            placeholder={mode === 'set' ? 'e.g. 37' : 'e.g. 10'}
                         />
-                        {deltaIsZero ? (
-                            <p className="text-destructive text-sm">Enter a positive number to add stock or a negative number to remove it.</p>
+                        {quantityInvalid ? (
+                            <p className="text-destructive text-sm">
+                                {mode === 'set' ? 'A counted quantity cannot be negative.' : 'Enter how many are being added or removed.'}
+                            </p>
                         ) : (
                             resulting !== null && (
                                 <p className="text-muted-foreground text-sm">
                                     New on-hand: <span className="text-foreground font-medium tabular-nums">{resulting}</span>
+                                    {/* Shown rather than blocked: asking for more than
+                                        is on the shelf is allowed, and whether it fits
+                                        is a question for whoever confirms it — by which
+                                        time a delivery may have arrived. */}
+                                    {resulting < 0 ? ' — more than there is, so this can only be partly approved.' : ''}
                                 </p>
                             )
                         )}

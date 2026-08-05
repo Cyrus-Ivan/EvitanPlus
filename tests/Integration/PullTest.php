@@ -342,7 +342,7 @@ class PullTest extends TestCase
         $variant = Variant::query()->where('sku', 'ADJUST1')->sole();
 
         $this->actingAs($this->owner())
-            ->post(route('stock.adjust', $variant->id), ['mode' => 'delta', 'value' => 15, 'notes' => 'Recount'])
+            ->post(route('stock.adjust', $variant->id), ['mode' => 'add', 'value' => 15, 'notes' => 'Recount'])
             ->assertSessionHasNoErrors();
 
         // Nothing yet, on either side.
@@ -420,7 +420,7 @@ class PullTest extends TestCase
     private function stockUp(Variant $variant, int $quantity): void
     {
         $this->actingAs($this->owner())
-            ->post(route('stock.adjust', $variant->id), ['mode' => 'delta', 'value' => $quantity, 'notes' => 'Opening'])
+            ->post(route('stock.adjust', $variant->id), ['mode' => 'add', 'value' => $quantity, 'notes' => 'Opening'])
             ->assertSessionHasNoErrors();
 
         app(AdjustmentResolver::class)->approveAll($this->owner());

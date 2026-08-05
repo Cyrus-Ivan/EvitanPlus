@@ -30,7 +30,7 @@ class OfflineStockAdjustmentTest extends TestCase
         $variant = Variant::factory()->create();
 
         $this->actingAs(User::factory()->admin()->create())
-            ->post(route('stock.adjust', $variant->id), ['mode' => 'delta', 'value' => 12, 'notes' => 'Recount'])
+            ->post(route('stock.adjust', $variant->id), ['mode' => 'add', 'value' => 12, 'notes' => 'Recount'])
             ->assertRedirect();
 
         // Not merely "no ledger row": the whole act rolls back, so the stock
@@ -45,7 +45,7 @@ class OfflineStockAdjustmentTest extends TestCase
         $variant = Variant::factory()->create();
 
         $response = $this->actingAs(User::factory()->admin()->create())
-            ->post(route('stock.adjust', $variant->id), ['mode' => 'delta', 'value' => 12]);
+            ->post(route('stock.adjust', $variant->id), ['mode' => 'add', 'value' => 12]);
 
         $toast = $response->getSession()->get('toast');
 

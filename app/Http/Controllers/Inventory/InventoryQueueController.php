@@ -165,15 +165,20 @@ class InventoryQueueController extends Controller
         $data = $request->validated();
         $variant = Variant::query()->with('item')->findOrFail($data['variant_id']);
 
-        $this->issue($data, $request->user());
+        // The operator typed how many, and picked a direction. The queue column is
+        // signed, so this is where the two become one number — the same division
+        // of labour as StockAdjustmentController and transfer() below.
+        $quantity = $data['mode'] === 'remove' ? -$data['quantity'] : $data['quantity'];
+
+        $this->issue([...$data, 'quantity' => $quantity], $request->user());
 
         $audit->record(
             action: 'inventory.stock.queued',
             auditable: $variant,
-            description: sprintf('Queued a stock adjustment of %+d for another branch.', $data['quantity']),
+            description: sprintf('Queued a stock adjustment of %+d for another branch.', $quantity),
             new: [
                 'branch_id' => $data['branch_id'],
-                'quantity' => $data['quantity'],
+                'quantity' => $quantity,
                 'notes' => $data['notes'] ?? null,
             ],
         );
@@ -364,7 +369,10 @@ class InventoryQueueController extends Controller
     /**
      * Write one pending row upstream.
      *
-     * @param  array{branch_id: string, variant_id: string, quantity: int, notes: string|null}  $data
+     * `quantity` here is the SIGNED value the queue column stores, not the
+     * positive one the request carried — {@see store()} applies the sign.
+     *
+     * @param  array{branch_id: string, variant_id: string, quantity: int, notes?: string|null}  $data
      */
     private function issue(array $data, User $issuedBy): void
     {

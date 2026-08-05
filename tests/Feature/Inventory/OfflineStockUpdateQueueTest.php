@@ -32,7 +32,8 @@ class OfflineStockUpdateQueueTest extends TestCase
             ->post(route('stock-updates.store'), [
                 'branch_id' => '00000000-0000-0000-0000-00000000e15e',
                 'variant_id' => $variant->id,
-                'quantity' => -5,
+                'mode' => 'remove',
+                'quantity' => 5,
                 'notes' => 'Written off at the other branch',
             ])
             ->assertRedirect()

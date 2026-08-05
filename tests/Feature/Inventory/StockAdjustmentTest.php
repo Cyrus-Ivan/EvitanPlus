@@ -38,7 +38,7 @@ class StockAdjustmentTest extends TestCase
         $admin = User::factory()->admin()->create();
 
         $this->actingAs($admin)
-            ->post(route('stock.adjust', $variant->id), ['mode' => 'delta', 'value' => 12, 'notes' => 'Restock'])
+            ->post(route('stock.adjust', $variant->id), ['mode' => 'add', 'value' => 12, 'notes' => 'Restock'])
             ->assertRedirect()
             ->assertSessionHasNoErrors();
 
@@ -71,7 +71,7 @@ class StockAdjustmentTest extends TestCase
         $admin = User::factory()->admin()->create();
 
         $this->actingAs($admin)
-            ->post(route('stock.adjust', $variant->id), ['mode' => 'delta', 'value' => 12, 'notes' => 'Restock'])
+            ->post(route('stock.adjust', $variant->id), ['mode' => 'add', 'value' => 12, 'notes' => 'Restock'])
             ->assertSessionHasNoErrors();
 
         $this->approveEverythingPending($admin);
@@ -93,7 +93,7 @@ class StockAdjustmentTest extends TestCase
         $admin = User::factory()->admin()->create();
 
         $this->actingAs($admin)
-            ->post(route('stock.adjust', $variant->id), ['mode' => 'delta', 'value' => 8])
+            ->post(route('stock.adjust', $variant->id), ['mode' => 'add', 'value' => 8])
             ->assertRedirect()
             ->assertSessionHasNoErrors();
 
@@ -149,7 +149,7 @@ class StockAdjustmentTest extends TestCase
         app(StockLedger::class)->record($variant, 10, 'stock_adjustment', null, 'manual_adjustment', null, $admin);
 
         $this->actingAs($admin)
-            ->post(route('stock.adjust', $variant->id), ['mode' => 'delta', 'value' => -4])
+            ->post(route('stock.adjust', $variant->id), ['mode' => 'remove', 'value' => 4])
             ->assertSessionHasErrors('notes');
 
         $this->assertSame(0, $remote->table('inventory_update_queue')->count());
@@ -168,23 +168,49 @@ class StockAdjustmentTest extends TestCase
         // moment it is confirmed, not the moment it is asked — and between the
         // two, a delivery may arrive.
         $this->actingAs($admin)
-            ->post(route('stock.adjust', $variant->id), ['mode' => 'delta', 'value' => -10, 'notes' => 'oops'])
+            ->post(route('stock.adjust', $variant->id), ['mode' => 'remove', 'value' => 10, 'notes' => 'oops'])
             ->assertSessionHasNoErrors();
 
         $this->assertSame(3, $this->stockOf($variant));
         $this->assertSame(1, $remote->table('inventory_update_queue')->count());
     }
 
-    public function test_a_no_op_zero_delta_is_rejected(): void
+    public function test_adding_or_removing_nothing_is_rejected(): void
     {
         $remote = $this->fakeBusinessQueue();
         $variant = Variant::factory()->create();
+        $admin = User::factory()->admin()->create();
 
-        $this->actingAs(User::factory()->admin()->create())
-            ->post(route('stock.adjust', $variant->id), ['mode' => 'delta', 'value' => 0, 'notes' => 'nothing'])
+        // Caught by the request's `min:1` rather than by the controller: add and
+        // remove are quantities of MOVEMENT, and there is no such thing as moving
+        // none. A negative is refused by the same rule — the direction is the
+        // mode, not the sign, and nothing here reinterprets a minus.
+        foreach ([['add', 0], ['remove', 0], ['add', -5], ['remove', -5]] as [$mode, $value]) {
+            $this->actingAs($admin)
+                ->post(route('stock.adjust', $variant->id), ['mode' => $mode, 'value' => $value, 'notes' => 'nothing'])
+                ->assertSessionHasErrors('value');
+        }
+
+        $this->assertSame(0, $remote->table('inventory_update_queue')->count());
+    }
+
+    public function test_recounting_a_shelf_to_what_is_already_on_it_is_rejected(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $variant = Variant::factory()->create();
+        $admin = User::factory()->admin()->create();
+
+        app(StockLedger::class)->record($variant, 9, 'stock_adjustment', null, 'manual_adjustment', null, $admin);
+
+        // The one remaining way to ask for a zero movement, and the only case the
+        // controller's own guard still catches: `set` is an absolute count, so 0
+        // is a legitimate entry and the no-op is only visible after subtracting.
+        $this->actingAs($admin)
+            ->post(route('stock.adjust', $variant->id), ['mode' => 'set', 'value' => 9, 'notes' => 'Recount'])
             ->assertSessionHasErrors('value');
 
         $this->assertSame(0, $remote->table('inventory_update_queue')->count());
+        $this->assertSame(9, $this->stockOf($variant));
     }
 
     public function test_cashier_cannot_ask_for_an_adjustment(): void
@@ -195,7 +221,7 @@ class StockAdjustmentTest extends TestCase
         // Deciding what SHOULD move is still Admin+. Reporting what DID is not —
         // see AdjustmentResolutionTest.
         $this->actingAs(User::factory()->cashier()->create())
-            ->post(route('stock.adjust', $variant->id), ['mode' => 'delta', 'value' => 5, 'notes' => 'nope'])
+            ->post(route('stock.adjust', $variant->id), ['mode' => 'add', 'value' => 5, 'notes' => 'nope'])
             ->assertForbidden();
 
         $this->assertSame(0, $remote->table('inventory_update_queue')->count());

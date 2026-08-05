@@ -35,7 +35,11 @@ class StockUpdateQueueTest extends TestCase
         return array_merge([
             'branch_id' => self::TARGET,
             'variant_id' => $variant->id,
-            'quantity' => -5,
+            // Positive, with the direction in `mode`. The row this becomes still
+            // stores −5; applying the sign is InventoryQueueController::store()'s
+            // job, not the caller's.
+            'mode' => 'remove',
+            'quantity' => 5,
             'notes' => 'Written off at the other branch',
         ], $overrides);
     }
@@ -90,10 +94,35 @@ class StockUpdateQueueTest extends TestCase
     public function test_a_zero_change_is_not_an_adjustment(): void
     {
         $variant = Variant::factory()->create();
+        $admin = User::factory()->admin()->create();
 
-        $this->actingAs(User::factory()->admin()->create())
+        $this->actingAs($admin)
             ->post(route('stock-updates.store'), $this->payload($variant, ['quantity' => 0]))
             ->assertSessionHasErrors('quantity');
+
+        // And a negative is refused too, rather than read as a removal. The
+        // operator picks a direction; a minus sign typed into the quantity is a
+        // mistake, and one that used to mean the opposite of what it looked like
+        // when combined with `mode`.
+        $this->actingAs($admin)
+            ->post(route('stock-updates.store'), $this->payload($variant, ['quantity' => -5]))
+            ->assertSessionHasErrors('quantity');
+    }
+
+    public function test_the_direction_is_the_mode_and_it_is_required(): void
+    {
+        $variant = Variant::factory()->create();
+        $admin = User::factory()->admin()->create();
+
+        $this->actingAs($admin)
+            ->post(route('stock-updates.store'), $this->payload($variant, ['mode' => null]))
+            ->assertSessionHasErrors('mode');
+
+        // There is no "set to count" for another branch: the only on-hand figure
+        // this device has for it is a baseline missing its unsynced sales.
+        $this->actingAs($admin)
+            ->post(route('stock-updates.store'), $this->payload($variant, ['mode' => 'set']))
+            ->assertSessionHasErrors('mode');
     }
 
     public function test_removing_stock_needs_an_explanation(): void
@@ -109,7 +138,7 @@ class StockUpdateQueueTest extends TestCase
 
         // Adding stock needs no such justification.
         $this->actingAs($admin)
-            ->post(route('stock-updates.store'), $this->payload($variant, ['quantity' => 5, 'notes' => null]))
+            ->post(route('stock-updates.store'), $this->payload($variant, ['mode' => 'add', 'notes' => null]))
             ->assertSessionHasNoErrors();
     }
 

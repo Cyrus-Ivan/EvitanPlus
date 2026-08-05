@@ -59,8 +59,14 @@ class StockAdjustmentController extends Controller
     ) {}
 
     /**
-     * Ask for a stock adjustment. Both input modes resolve to a signed delta,
-     * and a zero-delta no-op is rejected as a validation error.
+     * Ask for a stock adjustment. All three input modes resolve to a signed
+     * delta, and a zero-delta no-op is rejected as a validation error.
+     *
+     * ## The operator never types a sign
+     *
+     * `value` is positive whichever mode was picked and the direction is the mode
+     * itself — see {@see StockAdjustmentRequest}. The minus below is the only
+     * place a removal acquires one.
      *
      * ## The delta is snapshotted, and "set to count" can go stale
      *
@@ -81,8 +87,16 @@ class StockAdjustmentController extends Controller
         $data = $request->validated();
 
         $onHand = $this->ledger->currentStock($variant);
-        $delta = $data['mode'] === 'set' ? $data['value'] - $onHand : $data['value'];
 
+        $delta = match ($data['mode']) {
+            'add' => $data['value'],
+            'remove' => -$data['value'],
+            default => $data['value'] - $onHand,
+        };
+
+        // Only reachable from `set` now: `add` and `remove` are validated at
+        // `min:1`, so the one remaining way to ask for nothing is to recount a
+        // shelf to the number already on it.
         if ($delta === 0) {
             throw ValidationException::withMessages([
                 'value' => 'This adjustment would not change the stock level.',

@@ -94,26 +94,31 @@ export function AppSidebar() {
                 <NavMain groups={mainNavGroups} />
             </SidebarContent>
 
-            {/* Who is signed in, and which installation this is — one recessed
-                panel, because they are read together and neither is navigation.
-                The tint is plain black at low alpha rather than a theme token:
-                `--muted` and `--sidebar-background` are within 0.1% of each
-                other in dark mode, so a token would sink into the sidebar
-                exactly where the effect is wanted. The inset shadow is the
-                sunken cue; the border only stops it floating.
-                The user sits ON the well rather than in it: same `bg-sidebar` as
-                the surface it was lifted out of, plus a drop shadow. That is
-                what separates it from the identity beneath, so no rule is drawn
-                between them.
+            {/* Which installation this is, and who is signed in — one panel,
+                because they are read together and neither is navigation. It sits
+                at the main content's own level rather than pressed into the
+                rail: `bg-background rounded-xl shadow-sm` and NO border is
+                exactly what `SidebarInset` gives the card across the gutter, so
+                the footer is lifted off the sidebar by the same amount and by
+                the same means — a border here would be a fifth edge the main
+                container does not draw, and the two would stop matching.
+                Every class here is a theme token, so nothing needs a
+                `dark:` twin — which is also what retires an old trap, where a
+                bare `group-data-[collapsible=icon]:` reset could not outrank a
+                `dark:` one and the panel survived collapsing in dark mode,
+                invisibly.
+                The user chip is one step above the panel, and borrows the sync
+                button's treatment on purpose (`border-input` + `shadow-sm` over
+                the same fill as its parent, see `sync-indicator.tsx`): the two
+                raised controls on screen should look raised the same way. The
+                identity above it stays plain text — it is a standing label, and
+                a border would promise a click that is not there.
                 In icon mode the panel takes itself apart — a box drawn around a
-                lone avatar in a 3rem rail is worse than no box. The dark tint
-                and shadow need their own icon-mode resets: a bare
-                `group-data-[collapsible=icon]:` class does not outrank a `dark:`
-                one, so the well survived collapsing in dark mode, invisibly. */}
+                lone avatar in a 3rem rail is worse than no box. */}
             <SidebarFooter>
-                <div className="border-sidebar-border/60 rounded-lg border bg-black/[0.03] p-2 shadow-[inset_0_1px_2px_rgb(0_0_0/0.06)] group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:p-0 group-data-[collapsible=icon]:shadow-none dark:bg-black/25 dark:shadow-[inset_0_1px_3px_rgb(0_0_0/0.5)] dark:group-data-[collapsible=icon]:bg-transparent dark:group-data-[collapsible=icon]:shadow-none">
-                    <NavUser className="bg-sidebar shadow-sm group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:shadow-none" />
-                    <BranchIdentity className="px-2 pt-3 pb-1 group-data-[collapsible=icon]:hidden" />
+                <div className="bg-background rounded-xl p-2 shadow-sm group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:p-0 group-data-[collapsible=icon]:shadow-none">
+                    <BranchIdentity className="px-2 pt-1 pb-3 group-data-[collapsible=icon]:hidden" />
+                    <NavUser className="border-input bg-background border shadow-sm group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:shadow-none" />
                 </div>
             </SidebarFooter>
         </Sidebar>

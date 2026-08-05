@@ -15,7 +15,7 @@ export function AppSidebarHeader({ breadcrumbs = [] }: { breadcrumbs?: Breadcrum
                 <Breadcrumbs breadcrumbs={breadcrumbs} />
             </div>
             {/* Whether this till is behind, on every authenticated screen. WHICH
-                till it is now lives in the sidebar footer, under the user — the
+                till it is now lives in the sidebar footer, above the user — the
                 two were reading as one crowded block in this corner. */}
             <div className="ml-auto flex items-center">
                 <SyncIndicator />

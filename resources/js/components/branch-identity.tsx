@@ -6,7 +6,7 @@ import { usePage } from '@inertiajs/react';
  * Which business and which branch this device is (M11.5).
  *
  * Two homes, because there are two shells. Signed in, it sits in the sidebar
- * footer under the user: an installation's name is the same standing fact as
+ * footer above the user: an installation's name is the same standing fact as
  * whose account is open, and neither changes as you move around the app — in
  * the header it competed with {@link SyncIndicator} for one corner and read as
  * clutter. On the login screen there is no sidebar, so it keeps its place beside

@@ -7,11 +7,21 @@ use Illuminate\Database\Eloquent\Builder;
 /**
  * Substring LIKE search that treats user input literally.
  *
- * SQLite (our only DB) has no default LIKE escape character, so a user typing
- * "%" or "_" into a search box would otherwise inject wildcards (and a lone "%"
- * degrades into a full scan). These helpers escape those metacharacters and
- * pair every LIKE with an explicit `ESCAPE '\'` clause. Column names are always
- * developer-supplied, never user input, so they are interpolated directly.
+ * SQLite has no default LIKE escape character, so a user typing "%" or "_" into
+ * a search box would otherwise inject wildcards (and a lone "%" degrades into a
+ * full scan). These helpers escape those metacharacters and pair every LIKE with
+ * an explicit `ESCAPE '\'` clause. Column names are always developer-supplied,
+ * never user input, so they are interpolated directly.
+ *
+ * ## These macros are for the LOCAL mirror only
+ *
+ * They register on the ELOQUENT builder, and everything Eloquent touches in this
+ * app is SQLite. A cross-branch read runs on a Query\Builder against Postgres,
+ * where the macros do not exist and where `LIKE` is CASE-SENSITIVE — SQLite's is
+ * not, for ASCII. So a consolidated screen must inline `ilike` — SalesController
+ * does, in `remotePage()` — or the same search silently matches locally and
+ * returns nothing upstream. Only {@see escape()} is shared, and it is a plain
+ * static for that reason.
  */
 class LikeQuery
 {

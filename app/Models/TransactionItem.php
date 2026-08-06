@@ -6,6 +6,7 @@ use App\Models\Concerns\HasUuidPrimaryKey;
 use App\Models\Concerns\HidesCostFromNonOwners;
 use App\Models\Concerns\Immutable;
 use App\Models\Concerns\PushedUpward;
+use App\Support\Sales\SoldLineLabel;
 use Database\Factories\TransactionItemFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -56,10 +57,7 @@ class TransactionItem extends Model
     {
         $this->loadMissing('variant.item:id,name');
 
-        $name = $this->variant?->item?->name ?? 'Unknown product';
-        $variantName = $this->variant?->name;
-
-        return trim($name.($variantName ? $separator.$variantName : ''));
+        return SoldLineLabel::for($this->variant, $separator);
     }
 
     /**

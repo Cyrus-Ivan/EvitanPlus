@@ -1,3 +1,4 @@
+import { BranchScopeSelect } from '@/components/branch-scope-select';
 import { useConfirm } from '@/components/confirm-dialog';
 import EmptyState from '@/components/empty-state';
 import StockAdjustDialog from '@/components/inventory/stock-adjust-dialog';
@@ -11,19 +12,84 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { usePermissions } from '@/hooks/use-permissions';
 import AppLayout from '@/layouts/app-layout';
-import type { BreadcrumbItem, Category, Item, Paginated, Variant } from '@/types';
+import type { BranchScope, BreadcrumbItem, Category, Item, Paginated, RosterBranch, Variant } from '@/types';
 import { Head, Link, router } from '@inertiajs/react';
-import { ArrowLeftRight, ChevronRight, History, Package, Pencil, SlidersHorizontal } from 'lucide-react';
+import { ArrowLeftRight, ChevronRight, History, Info, Package, Pencil, SlidersHorizontal, WifiOff } from 'lucide-react';
 import { Fragment, useEffect, useRef, useState } from 'react';
 
 const breadcrumbs: BreadcrumbItem[] = [{ title: 'Inventory', href: '/inventory' }];
 
 const ALL_CATEGORIES = 'all';
 
+const LOCAL = 'local';
+
+const ALL_BRANCHES = 'all';
+
 interface Filters {
     search: string | null;
     category: string | null;
     status: string;
+}
+
+/**
+ * The one figure on this screen that is worth less than it looks.
+ *
+ * Another branch's stock is read from `stock_snapshots`, which is that branch's
+ * BASELINE — the figure that last reached the business database. Sales it has
+ * rung up and not yet pushed are not deducted, so the number reads high, and it
+ * reads high in exactly the situation where somebody is about to promise a
+ * customer that the other branch has one.
+ *
+ * The same is true of this branch's own slice under "All branches": one query
+ * reads every branch upstream, deliberately, because a total stitched from two
+ * sources at two moments is harder to explain than one that is uniformly "as of
+ * last sync".
+ */
+function BaselineNotice() {
+    return (
+        <div role="status" className="text-muted-foreground flex items-start gap-2 rounded-md border border-dashed p-3 text-sm">
+            <Info className="mt-0.5 size-4 shrink-0" />
+            <p>
+                <span className="text-foreground font-medium">These are the figures that last reached the business database.</span> A branch's sales
+                that have not synced yet are not deducted, so a number here can read higher than what is actually on that branch's shelf.
+            </p>
+        </div>
+    );
+}
+
+/**
+ * Cross-branch stock was asked for and could not be reached.
+ *
+ * A compact line rather than a banner, and it sits under the picker rather than
+ * at the top of the page, because when the device is offline the screen is
+ * *already* carrying `OfflineNotice` — two amber boxes saying "no connection"
+ * read as one warning repeated rather than as two different facts. The fact this
+ * one adds is narrow: the scope you chose is not the scope you are looking at.
+ */
+function OfflineStockNotice() {
+    return (
+        <p role="alert" className="flex items-center gap-1.5 text-sm text-amber-700 dark:text-amber-500">
+            <WifiOff className="size-3.5 shrink-0" />
+            Showing this branch's own stock — the business database could not be reached.
+        </p>
+    );
+}
+
+/**
+ * Is this variant low, on the shelf the current scope is showing?
+ *
+ * Under "All branches" the test is deliberately NOT the total against the
+ * threshold: twenty units against a threshold of five looks healthy and can be
+ * twenty at one branch and none at the other four. Any branch at or below its
+ * reorder point is the thing worth surfacing, which is what the badge means at
+ * every other scope too.
+ */
+function isLowStock(variant: Variant, scope: BranchScope): boolean {
+    if (scope === ALL_BRANCHES && variant.branch_stock && variant.branch_stock.length > 0) {
+        return variant.branch_stock.some((row) => row.quantity <= variant.low_stock_threshold);
+    }
+
+    return (variant.scoped_stock ?? variant.current_stock ?? 0) <= variant.low_stock_threshold;
 }
 
 function priceLabel(item: Item): string {
@@ -41,11 +107,21 @@ export default function InventoryIndex({
     categories,
     filters,
     online,
+    scope,
+    canViewAll,
+    branches,
+    consolidatedOnline,
 }: {
     items: Paginated<Item>;
     categories: Pick<Category, 'id' | 'name'>[];
     filters: Filters;
+    // Whether an online WRITE is possible — the catalog edits and the stock
+    // dialogs. Independent of `consolidatedOnline`, which is about one read.
     online: boolean;
+    scope: BranchScope;
+    canViewAll: boolean;
+    branches: RosterBranch[];
+    consolidatedOnline: boolean | null;
 }) {
     const { hasRoleAtLeast, can } = usePermissions();
     const confirm = useConfirm();
@@ -65,10 +141,12 @@ export default function InventoryIndex({
 
     const toggleExpanded = (id: string) => setExpandedId((prev) => (prev === id ? null : id));
 
-    // Number of columns the variant detail row must span.
+    // Number of columns the variant detail row must span. Unchanged by the branch
+    // scope on purpose: cross-branch stock is a breakdown inside the expanded
+    // variant panel's Stock cell, not a new top-level column.
     const columnCount = 6 + (canManage ? 1 : 0) + 1;
 
-    const applyFilters = (next: Partial<Filters>) => {
+    const applyFilters = (next: Partial<Filters> & { scope?: string }) => {
         const merged = { search, category: filters.category, status: filters.status, ...next };
         router.get(
             route('inventory'),
@@ -76,8 +154,20 @@ export default function InventoryIndex({
                 search: merged.search || undefined,
                 category: merged.category && merged.category !== ALL_CATEGORIES ? merged.category : undefined,
                 status: merged.status && merged.status !== 'active' ? merged.status : undefined,
+                // Carried through EVERY change. The search box is debounced onto
+                // this function, so dropping the scope here would silently walk
+                // the reader back to this branch on the next keystroke.
+                scope: (next.scope ?? scope) === LOCAL ? undefined : (next.scope ?? scope),
             },
-            { preserveState: true, preserveScroll: true, replace: true, only: ['items', 'filters'] },
+            {
+                preserveState: true,
+                preserveScroll: true,
+                replace: true,
+                // `branches` is deliberately out of this list: the roster costs an
+                // online read, and typing in the search box must not pay for it.
+                // The scoped figures ride along inside `items`.
+                only: ['items', 'filters', 'scope', 'consolidatedOnline'],
+            },
         );
     };
 
@@ -145,6 +235,14 @@ export default function InventoryIndex({
                                 <SelectItem value="all">All</SelectItem>
                             </SelectContent>
                         </Select>
+                        {canViewAll && (
+                            <BranchScopeSelect
+                                scope={scope}
+                                branches={branches}
+                                onChange={(next) => applyFilters({ scope: next })}
+                                label="Stock shown for"
+                            />
+                        )}
                     </div>
 
                     {/* One button, because it is the only one that acts on this
@@ -158,6 +256,9 @@ export default function InventoryIndex({
                         </Button>
                     )}
                 </div>
+
+                {consolidatedOnline === false && <OfflineStockNotice />}
+                {consolidatedOnline === true && <BaselineNotice />}
 
                 {items.data.length === 0 ? (
                     <EmptyState
@@ -198,7 +299,7 @@ export default function InventoryIndex({
                                     const hasVariants = variants.length > 0;
                                     // Tint the whole item row when any of its variants is at or below its
                                     // low-stock threshold, so low stock is visible without expanding.
-                                    const hasLowStock = variants.some((v) => (v.current_stock ?? 0) <= v.low_stock_threshold);
+                                    const hasLowStock = variants.some((v) => isLowStock(v, scope));
 
                                     return (
                                         <Fragment key={item.id}>
@@ -281,8 +382,13 @@ export default function InventoryIndex({
                                                                 </TableHeader>
                                                                 <TableBody>
                                                                     {variants.map((variant) => {
-                                                                        const stock = variant.current_stock ?? 0;
-                                                                        const isLow = stock <= variant.low_stock_threshold;
+                                                                        // `scoped_stock` is the figure for the branch
+                                                                        // scope on screen; `current_stock` is this
+                                                                        // device's own, and is what remains when the
+                                                                        // scope is local or the read fell back.
+                                                                        const stock = variant.scoped_stock ?? variant.current_stock ?? 0;
+                                                                        const isLow = isLowStock(variant, scope);
+                                                                        const breakdown = variant.branch_stock ?? [];
                                                                         return (
                                                                             <TableRow
                                                                                 key={variant.id}
@@ -316,6 +422,26 @@ export default function InventoryIndex({
                                                                                             </Badge>
                                                                                         )}
                                                                                     </span>
+                                                                                    {/* Which branches make up that number.
+                                                                                        A branch with no row for this variant
+                                                                                        has never handled it and is absent —
+                                                                                        which is not the same as holding none. */}
+                                                                                    {breakdown.length > 0 && (
+                                                                                        <div className="text-muted-foreground mt-0.5 text-xs tabular-nums">
+                                                                                            {breakdown.map((row) => (
+                                                                                                <span
+                                                                                                    key={row.branch}
+                                                                                                    className={`ml-2 first:ml-0 ${
+                                                                                                        row.quantity <= variant.low_stock_threshold
+                                                                                                            ? 'text-destructive font-medium'
+                                                                                                            : ''
+                                                                                                    }`}
+                                                                                                >
+                                                                                                    {row.branch} {row.quantity}
+                                                                                                </span>
+                                                                                            ))}
+                                                                                        </div>
+                                                                                    )}
                                                                                 </TableCell>
                                                                                 <TableCell className="text-right tabular-nums">
                                                                                     {variant.low_stock_threshold}

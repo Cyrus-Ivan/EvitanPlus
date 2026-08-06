@@ -58,6 +58,12 @@ Route::middleware(['auth'])->group(function () {
     // Sales history (Phase 9). Cashier-level: every user may browse all sales
     // (needed to look up a transaction for reprint/return). Item cost in the
     // detail view is Owner-only, gated inside the controller.
+    //
+    // Both take a `scope` (M12), Admin+ and refused INSIDE the controller rather
+    // than by route placement, because the same routes still serve the
+    // branch-local list and detail a Cashier is entitled to. `{transaction}` is
+    // deliberately NOT model-bound: under a wider scope it names a row that is
+    // not on this device.
     Route::get('sales', [SalesController::class, 'index'])->name('sales');
     Route::get('sales/{transaction}', [SalesController::class, 'show'])->name('sales.show');
     // Receipt reprint (Phase 11). Cashier-level: anyone who can view a sale may

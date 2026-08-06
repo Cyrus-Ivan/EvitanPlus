@@ -61,7 +61,23 @@ function Field({ label, value }: { label: string; value: string }) {
     );
 }
 
-export default function SalesShow({ transaction, canViewCost }: { transaction: TransactionDetail; canViewCost: boolean }) {
+export default function SalesShow({
+    transaction,
+    canViewCost,
+    readOnly,
+    branch,
+}: {
+    transaction: TransactionDetail;
+    canViewCost: boolean;
+    // This sale belongs to another branch and was read live from the business
+    // database (M12). Nothing on this page may act on it: the receipt is not
+    // this branch's to reprint, and the stock a return would restore is not on
+    // this branch's shelf.
+    readOnly: boolean;
+    // The branch CODE this sale was rung up at; null in the local scope, where
+    // the answer is "here".
+    branch: string | null;
+}) {
     const { hasRoleAtLeast } = usePermissions();
     const { format: money } = useCurrency();
     const [dialogType, setDialogType] = useState<SaleReturnType | null>(null);
@@ -80,7 +96,10 @@ export default function SalesShow({ transaction, canViewCost }: { transaction: T
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title={`Receipt ${transaction.transaction_number}`} />
             <div className="mx-auto flex min-h-full w-full max-w-3xl flex-1 flex-col gap-4 p-4">
-                <Link href={route('sales')} className="text-muted-foreground hover:text-foreground inline-flex w-fit items-center gap-1.5 text-sm">
+                <Link
+                    href={readOnly ? route('sales', { scope: 'all' }) : route('sales')}
+                    className="text-muted-foreground hover:text-foreground inline-flex w-fit items-center gap-1.5 text-sm"
+                >
                     <ArrowLeft className="size-4" />
                     Back to Sales
                 </Link>
@@ -90,8 +109,16 @@ export default function SalesShow({ transaction, canViewCost }: { transaction: T
                         <div>
                             <CardTitle className="tabular-nums">Receipt {transaction.transaction_number}</CardTitle>
                             <p className="text-muted-foreground mt-1 text-sm">{formatWhen(transaction.created_at)}</p>
+                            {readOnly && (
+                                <p className="text-muted-foreground mt-1 text-sm">
+                                    Read-only — this sale was rung up at another branch, so it cannot be reprinted or returned here.
+                                </p>
+                            )}
                         </div>
-                        <Badge variant="secondary">{PAYMENT_LABEL[transaction.payment_type] ?? transaction.payment_type}</Badge>
+                        <div className="flex items-center gap-2">
+                            {readOnly && <Badge variant="outline">{branch ?? 'Another branch'}</Badge>}
+                            <Badge variant="secondary">{PAYMENT_LABEL[transaction.payment_type] ?? transaction.payment_type}</Badge>
+                        </div>
                     </CardHeader>
                     <CardContent className="flex flex-col gap-6">
                         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
@@ -167,37 +194,42 @@ export default function SalesShow({ transaction, canViewCost }: { transaction: T
                             </Table>
                         </div>
 
-                        <div className="flex flex-wrap gap-2">
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                disabled={printing}
-                                onClick={() =>
-                                    router.post(
-                                        route('sales.print', transaction.id),
-                                        {},
-                                        {
-                                            preserveScroll: true,
-                                            onStart: () => setPrinting(true),
-                                            onFinish: () => setPrinting(false),
-                                        },
-                                    )
-                                }
-                            >
-                                <Printer className="size-4" />
-                                {printing ? 'Printing…' : 'Print receipt'}
-                            </Button>
-                            <Button variant="outline" size="sm" disabled={!hasReturnable} onClick={() => setDialogType('return')}>
-                                <RotateCcw className="size-4" />
-                                Return
-                            </Button>
-                            {canManageInventory && (
-                                <Button variant="outline" size="sm" disabled={!hasReturnable} onClick={() => setDialogType('defect')}>
-                                    <TriangleAlert className="size-4" />
-                                    Defect
+                        {/* Hidden, not disabled, under a wider scope: a greyed-out
+                            Print button reads as "try again later", and there is no
+                            later — the sale is not this branch's to act on. */}
+                        {!readOnly && (
+                            <div className="flex flex-wrap gap-2">
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={printing}
+                                    onClick={() =>
+                                        router.post(
+                                            route('sales.print', transaction.id),
+                                            {},
+                                            {
+                                                preserveScroll: true,
+                                                onStart: () => setPrinting(true),
+                                                onFinish: () => setPrinting(false),
+                                            },
+                                        )
+                                    }
+                                >
+                                    <Printer className="size-4" />
+                                    {printing ? 'Printing…' : 'Print receipt'}
                                 </Button>
-                            )}
-                        </div>
+                                <Button variant="outline" size="sm" disabled={!hasReturnable} onClick={() => setDialogType('return')}>
+                                    <RotateCcw className="size-4" />
+                                    Return
+                                </Button>
+                                {canManageInventory && (
+                                    <Button variant="outline" size="sm" disabled={!hasReturnable} onClick={() => setDialogType('defect')}>
+                                        <TriangleAlert className="size-4" />
+                                        Defect
+                                    </Button>
+                                )}
+                            </div>
+                        )}
                     </CardContent>
                 </Card>
 

@@ -325,6 +325,13 @@ The **figure pulled from Postgres** during a sync cycle. It reflects online entr
 already-pushed local movements — never the till's *unsynced* ones.
 *Anchor:* `App\Support\Sync\StockReconciler` reads it from Postgres's `stock_snapshots` on its
 own `sync_cursor` row (M7).
+✗ **Not** an internal number since M12. Ask `/inventory` for another branch's stock and the
+baseline is what is on screen, unreconciled — that branch's unsynced sales are not deducted, so it
+reads **high**, and it reads high in exactly the moment somebody is about to promise a customer
+that the other branch has one. The page says so (`BaselineNotice`). This branch's own slice of an
+"All branches" total is the baseline too, deliberately: one query reads every branch upstream,
+because a total stitched from two sources at two moments is harder to explain than one that is
+uniformly "as of last sync". `local` remains the only reconciled view, and is the till's default.
 
 ### Reconciled stock
 `stock baseline − local unsynced out-movements`. The number the till actually sells against.
@@ -508,10 +515,18 @@ offline), **`all`**, or a **branch id**. Echoed back to the screen *after* norma
 always names what was actually read rather than what was asked for.
 *Anchor:* the `scope` query parameter on `ReportsController` (M11), `LoginHistoryController`
 (M11.5), `Inventory\StockHistoryController` and `Inventory\InventoryQueueController` (both
-M11.8); `BranchScope` in `resources/js/types/index.ts`; the picker
+M11.8), `SalesController` and `Inventory\ItemController` (both M12); `BranchScope` in
+`resources/js/types/index.ts`; the picker
 `resources/js/components/branch-scope-select.tsx` and
 `App\Http\Controllers\Concerns\OffersBranchScope`, which fills it.
 ✗ **Not** a filter over one dataset. `local` and the other two read different databases.
+✗ **Not** necessarily a swap of the whole page's source. On Inventory (M12) it changes **stock and
+nothing else**: the item and variant list is read locally in every scope, because the catalog is
+mirrored business-wide and the local rows *are* the upstream rows, and only `stock_snapshots` is
+read live. The scoped figure lands on a key of its own (`scoped_stock`, plus a per-branch
+`branch_stock`) — never on `current_stock`, which is a get-only cached accessor over the local
+snapshot and would ignore the write while rendering this device's number under another branch's
+heading.
 ✗ **Not** three values plus a fourth for this branch. **This** branch's id *is* `local`: it is
 stripped from the picker's roster and `?scope=<own id>` snaps back to `local`, which answers the
 same question offline and includes rows this device has not pushed yet. The two coincide only
@@ -521,11 +536,15 @@ than a second answer.
 says so (`consolidatedOnline: false`); presenting one branch's rows under an "All branches"
 heading is the failure this design refuses.
 ✗ **Not** one permission. Reports restrict the wider scopes to the **Owner** (they carry cost
-and profit); login history and stock history allow **Admin+**, per `MULTIBRANCH-BRAINSTORM.md`
-§6; Pending Stocks gates it on nothing at all, because every row it lists was already visible to
-every role and what bounds *answering* one is the branch rather than the role
-(§"Resolution"). A viewer who may not widen it is snapped back to `local` rather than
-refused, since the local view is theirs by right and sits on the same route.
+and profit); login history, stock history, sales and inventory stock allow **Admin+**, per
+`MULTIBRANCH-BRAINSTORM.md` §6; Pending Stocks gates it on nothing at all, because every row it
+lists was already visible to every role and what bounds *answering* one is the branch rather than
+the role (§"Resolution"). A viewer who may not widen it is snapped back to `local` rather than
+refused, since the local view is theirs by right and sits on the same route. Sales is Admin+
+rather than Owner-only for the reason Reports is not: a sales *list* carries no cost and no
+profit. The sales **detail** still gates cost per line, in both scopes — and there the guard is
+the SELECT column list alone, because `HidesCostFromNonOwners` is a model hook and does not run on
+the query-builder rows a cross-branch read returns.
 > Called **report scope** until M11.5, when a second screen took the same parameter with the
 > same meaning. One word, because a synonym is exactly what §0 forbids.
 > Stock History took it in M11.8 for a reason the other three did not have: not "the Owner would

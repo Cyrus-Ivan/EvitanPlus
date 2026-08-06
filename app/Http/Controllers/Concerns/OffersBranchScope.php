@@ -8,9 +8,10 @@ use App\Support\Sync\OnlineRead;
 use Illuminate\Database\Connection;
 
 /**
- * The branch roster as a scope picker offers it — shared by the two screens
- * that take a `scope` parameter (`docs/glossary.md` §"Branch scope": reports
- * since M11, login history since M11.5).
+ * The branch roster as a scope picker offers it — shared by every screen that
+ * takes a `scope` parameter (`docs/glossary.md` §"Branch scope": reports since
+ * M11, login history since M11.5, stock history and pending stocks since M11.8,
+ * sales and inventory stock since M12).
  *
  * ## Why the roster is read on every render, not only a consolidated one
  *

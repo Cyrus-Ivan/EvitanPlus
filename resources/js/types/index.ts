@@ -109,9 +109,20 @@ export interface Variant {
     // Present only for the Owner — stripped server-side for everyone else.
     cost?: string | null;
     low_stock_threshold: number;
-    // Current on-hand from the stock snapshot; present where the controller
-    // eager-loads it (e.g. the inventory list). Absent elsewhere.
+    // Current on-hand from THIS device's stock snapshot; present where the
+    // controller eager-loads it (e.g. the inventory list). Absent elsewhere.
     current_stock?: number;
+    // The on-hand figure for the branch scope currently on screen (M12): one
+    // branch's, or the business-wide total under 'all'. Absent in the local
+    // scope and after a failed cross-branch read, where `current_stock` is the
+    // answer. A separate key rather than an override of `current_stock`, which
+    // is a get-only cached accessor server-side and silently ignores a write —
+    // the local figure would render under another branch's heading.
+    scoped_stock?: number;
+    // The per-branch breakdown behind `scoped_stock`, ordered by branch code.
+    // Only branches that hold a stock row appear; an absent branch has never
+    // handled this variant, which is not the same as holding none of it.
+    branch_stock?: { branch: string; quantity: number }[];
     archived_at: string | null;
     created_at: string;
     updated_at: string;
@@ -335,6 +346,10 @@ export interface StockLedgerEntry {
 // PaymentType / DiscountType are defined with the POS types below.
 export interface TransactionListRow {
     id: string;
+    // The branch CODE this sale was rung up at. In the local scope it is this
+    // device's, stamped from `instance`; in a wider one it is resolved from the
+    // roster. Null only when a branch cannot be named at all.
+    branch: string | null;
     transaction_number: string;
     payment_type: PaymentType;
     discount: string;
@@ -457,8 +472,9 @@ export interface RosterBranch {
 
 // Which branches a screen covers: 'local' = this device's own SQLite mirror
 // (works offline), 'all' = every branch, or a single branch id. Anything but
-// 'local' is online-only. Used by reports (Owner-only, M11) and login history
-// (Admin+, M11.5) — one parameter, one meaning, two screens.
+// 'local' is online-only. Used by reports (Owner-only, M11), login history
+// (Admin+, M11.5), stock history and pending stocks (M11.8), and sales and
+// inventory stock (Admin+, M12) — one parameter, one meaning, six screens.
 export type BranchScope = 'local' | 'all' | string;
 
 // The chart's series dimension: what sold, or which branch sold it.

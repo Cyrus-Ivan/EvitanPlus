@@ -1,7 +1,7 @@
 # Evitan Plus — sync architecture, as built
 
 > **Scope.** How a branch device and the business database actually behave in the code
-> that exists today (M0–M11). `MULTIBRANCH-BRAINSTORM.md` is the spec of record and
+> that exists today (M0–M12). `MULTIBRANCH-BRAINSTORM.md` is the spec of record and
 > `MULTIBRANCH-ROADMAP.md` is the phase plan; where either describes an intention this
 > document describes the implementation. On what a *word* means,
 > [`glossary.md`](glossary.md) outranks both.
@@ -83,6 +83,14 @@ Three things make the history copy correct, and each of them fails silently if g
   tables carry `BEFORE UPDATE` immutability triggers, and an upsert's `ON CONFLICT DO
   UPDATE` arm fires them. A first hydrate has no conflicts and would never notice; a
   **re-hydrate** would abort on the first row it had already copied.
+- **The baseline half upserts on the row's real identity, which is not always `id`**
+  (`Hydrator::CONFLICT_TARGET`). `stock_snapshots` is the one mirrored table whose uuid the
+  two databases mint independently — upstream in `RemoteStock::recompute()`, locally in
+  `StockLedger` and `StockReconciler` — so for any variant that reached the device through a
+  **pull** rather than through the hydrate, the two sides' ids differ. Keyed on `id` the
+  incoming row looks new, SQLite attempts an INSERT and dies on the `UNIQUE` index over
+  `variant_id`. Keyed on `variant_id` it converges the row, id included, which is what
+  `settings` (keyed on `key`) has always done for the same reason.
 - **It makes `inventory:reconcile` a no-op instead of a wipe.** `LaunchProvisioner` runs
   that command on every launch, and it rebuilds snapshots from the *local* ledger — so
   before M11.6 a freshly hydrated device had snapshots with no ledger behind them and the
@@ -100,11 +108,29 @@ regenerate UUIDs the business owns, hide the very `deleted_at` values being copi
 now that history is in reach — trip the `Immutable` trait and enqueue every pulled-back row
 into the outbox to be pushed straight up again.
 
+**Rebuilding a device that is already set up.** There is no in-app repair, re-hydrate or
+reset, and deliberately so — once `instance.hydrated_at` is set, `RequireInitialSetup`
+redirects `/setup` to login unconditionally, because a "re-sync from the business" button is
+indistinguishable from a "lose whatever I did offline" button to the person pressing it. The
+supported rebuild is to **delete the local SQLite database and relaunch**:
+`LaunchProvisioner` runs the migrations, finds no `instance` row, and the wizard runs as it
+does on a fresh install. That path needs the branch's credentials JSON again, and it does
+not restore two things: the **printer configuration** (device-local by design — it has no
+upstream row at all, and wizard step 2 re-collects it) and any **unpushed outbox backlog**.
+
 **What is still not recoverable.** Work a device did offline and never pushed dies with the
 hardware: nothing else has a copy, and after M11.6 nothing in the product claims otherwise.
-`import_history` is hydrated but will be empty in practice — it is mirrored and granted, but
-nothing pushes it (`ImportHistory` has no `PushedUpward`), which is a pre-existing gap
-rather than something M11.6 introduced.
+That window is bounded by how long the branch ran offline, and `sync_outbox`'s pending count
+is the size of it — the header shows it on every screen.
+
+`import_history` reaches Postgres by a path of its own. `ImportHistory` has no
+`PushedUpward`, so nothing enqueues it: a **successful** import mirrors its row inside the
+import's own online write (`CsvInventoryImporter::mirrorImport()`), and a **failed** one —
+recorded outside that write, where `OnlineWrite::mirror()` has nothing to attach to — is
+sent up afterwards as a separate best-effort one-row write
+(`CsvInventoryImporter::mirrorFailure()`, rescued, because a failure to record a failure
+must not become the user's error). Both are hydrated back down, so a rebuilt till shows the
+branch's Upload History rather than a blank page.
 
 ---
 
@@ -203,7 +229,7 @@ caller's options, so the page never remounts and carts, half-typed forms and on-
 validation errors all survive.
 
 The button needs the wider refresh because a **pull cannot substitute for it**. The
-consolidated `scope` views on `/reports` and `/login-history` (§11) are online reads
+consolidated `scope` views (§8) are online reads
 performed *inside* their controller, and `login_history` is not in the puller at all — so
 another branch's rows reach the screen when the controller runs again, and by no other
 mechanism. The refresh is therefore not conditional on the cycle having pushed or pulled
@@ -422,16 +448,16 @@ includes **disabled** branches by default: a disabled credential stops a branch 
 work, it does not unmake what that branch already did. The flag matters for the opposite
 case — picking a branch to send an adjustment *to*.
 
-The roster is read on **every full render** of the two scope-picker screens for a viewer who
+The roster is read on **every full render** of a scope-picker screen for a viewer who
 may widen the scope — not only when a wider scope was asked for. It used to ride inside the
 consolidated read, which is cheaper but left the picker empty in the default `local` scope, so
 naming one branch meant first asking for all of them. `App\Http\Controllers\Concerns\OffersBranchScope`
 holds that read, reuses the consolidated one when there was one, and strips **this** branch from
-the list (§"Branch scope" in the glossary). It costs one short online read per visit to
-`/reports` and `/login-history`, and it is rescued to an empty list: a picker that could not be
-filled never fails a screen whose default scope is served entirely from local SQLite. `branches`
-is deliberately absent from both pages' partial-reload prop lists, or every date filter change
-would re-read it over the network.
+the list (§"Branch scope" in the glossary). It costs one short online read per visit to any of
+them, and it is rescued to an empty list: a picker that could not be filled never fails a screen
+whose default scope is served entirely from local SQLite. `branches` is deliberately absent from
+every one of those pages' partial-reload prop lists, or each keystroke in a search box and each
+step of a date filter would re-read it over the network.
 
 ---
 
@@ -467,6 +493,50 @@ branches" heading is the one outcome worse than an error.
 
 Cost, COGS and profit stay Owner-only *here too*: the `$withCost` flag does not hide them,
 it means the cost queries are never run and the keys are absent from the payload.
+
+### The other four screens that take a scope
+
+Same parameter, same fallback, same trait — different databases underneath, and each one has a
+trap of its own worth naming.
+
+**Login history** (M11.5) and **Stock History** / **Pending Stocks** (M11.8) read
+`login_history`, `inventory_ledger` and `inventory_update_queue`. Nothing new; they are the model
+the rest copy.
+
+**Sales** (M12, `SalesController`) reads `transactions`, `transaction_items`, `sale_returns` and
+`sale_return_items`, and a remote row opens a **read-only** detail — no reprint, no return, because
+neither the receipt nor the stock is this branch's to act on. Three things bite here that the
+reports path does not:
+
+- **`like` is case-sensitive in Postgres and not in SQLite.** The `LikeQuery` macros register on
+  the *Eloquent* builder and are unavailable on the query builder anyway, so the remote search
+  inlines `ilike` with the shared `LikeQuery::escape()`. Get this wrong and a lower-case receipt
+  search matches locally and returns an empty screen upstream, with no error.
+- **`withCount` does not exist on a query builder.** The line count is a second `whereIn` inside
+  the same online read — cheaper than a joined subquery, which `paginate()`'s own `count(*)` would
+  drag along a second time.
+- **`created_at` is `timestamptz` precision 0.** Ordering needs an `id` tiebreak or a page
+  boundary inside one second repeats or drops rows. Not `transaction_number`: it is unique per
+  branch, not per business.
+
+And the one that is not a dialect difference: **`cost` is guarded by the SELECT column list and
+nothing else.** `HidesCostFromNonOwners` is a model serialization hook and never runs on a
+query-builder row, so for a non-Owner the key must be *absent*, matching the local path.
+
+**Inventory stock** (M12, `Inventory\ItemController`) is the odd one out: the scope changes
+**stock and nothing else**. The item and variant list is read locally in every scope — the catalog
+is mirrored business-wide, so the local rows *are* the upstream rows — and the online read is one
+`whereIn` over `stock_snapshots` for the variant ids already on the page. That makes the fallback
+trivial (attach nothing, and the page is byte-identical to its offline render) and means a failed
+read has no half-consolidated state to design a screen for.
+
+Two rules hold it up. The scoped figure lands on `scoped_stock`, **never** on `current_stock`:
+that is a get-only cached accessor over the local snapshot, so a write to it is silently discarded
+and the page renders this device's numbers under another branch's heading. And a branch with no
+row for a variant is **omitted** from the breakdown rather than shown as zero — "has never handled
+this" and "has run out" are different statements, and zero-filling would badge half the catalog
+low at every branch. What is on screen is that branch's *baseline* (glossary §"Stock baseline"),
+which excludes its unsynced sales and therefore reads high; the page says so.
 
 ---
 

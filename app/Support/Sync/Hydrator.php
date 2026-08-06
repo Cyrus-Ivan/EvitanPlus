@@ -110,6 +110,33 @@ class Hydrator
     ];
 
     /**
+     * Tables whose local identity is NOT `id`, and the column that is.
+     *
+     * `stock_snapshots` is the one table in the mirrored set where the two
+     * databases mint the row's uuid independently. Upstream it is written by
+     * {@see RemoteStock::recompute()}; locally by StockLedger and
+     * {@see StockReconciler}, and `inventory:reconcile` runs at every launch, so
+     * on any device that has traded the divergence covers the whole catalog. The
+     * local unique key is `variant_id` (the console schema's is
+     * `(branch_id, variant_id)`, which is the same statement once the rows are
+     * scoped to one branch), so an upsert keyed on `id` sees a brand-new id,
+     * runs the INSERT arm of its `on conflict (id)` and dies on `UNIQUE
+     * constraint failed: stock_snapshots.variant_id`. That is a QueryException,
+     * not a SetupFailedException, so it 500s past the wizard's own error
+     * handling and rolls the whole transaction back — on the one path this class
+     * exists to support.
+     *
+     * Keying on the real identity converges the row completely, id included,
+     * which is what {@see copySettings()} has always done for the same reason.
+     * Safe to rewrite the id: nothing references `stock_snapshots.id`.
+     *
+     * @var array<string, string>
+     */
+    private const CONFLICT_TARGET = [
+        'stock_snapshots' => 'variant_id',
+    ];
+
+    /**
      * The child tables Postgres does NOT give a `branch_id`, and the parent
      * column that decides which branch each row belongs to.
      *
@@ -328,7 +355,7 @@ class Hydrator
             // every row of a re-hydrate.
             $insertOnly
                 ? DB::table($table)->insertOrIgnore($rows)
-                : DB::table($table)->upsert($rows, ['id']);
+                : DB::table($table)->upsert($rows, [self::CONFLICT_TARGET[$table] ?? 'id']);
 
             $copied += count($rows);
         }

@@ -22,10 +22,12 @@ use App\Models\SaleReturn;
  *
  * ## The floor exists for exactly one day
  *
- * A device replacing an existing branch's hardware hydrates with no history, so
- * its daily counter restarts at 1 against numbers Postgres already holds for
- * today — and the push is insert-only, so those returns would be silently
- * dropped. `instance.return_number_floor` is the highest number Postgres held
+ * A device replacing an existing branch's hardware would restart its daily
+ * counter at 1 against numbers Postgres already holds for today — and the push
+ * is insert-only, so those returns would be silently dropped. (Since M11.6 the
+ * hydrate copies this branch's `sale_returns` too, so the local max usually
+ * answers on its own; the floor is read in the same breath and costs nothing.)
+ * `instance.return_number_floor` is the highest number Postgres held
  * for this branch at hydration; it only applies while it is still the same
  * calendar day, because after midnight the prefix changes and the collision
  * cannot recur.

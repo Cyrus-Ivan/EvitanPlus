@@ -324,6 +324,50 @@ class HydrationTest extends TestCase
         $this->assertEquals($sale, DB::table('transactions')->sole());
     }
 
+    public function test_a_re_hydrate_converges_a_snapshot_this_device_minted_itself(): void
+    {
+        $this->post(route('setup.store'), $this->payload())->assertSessionHasNoErrors();
+
+        $upstreamId = (string) DB::table('stock_snapshots')->where('variant_id', self::$variantId)->value('id');
+
+        // A snapshot row that did NOT arrive by hydration. Every local writer of
+        // this table mints its own uuid — StockLedger::record()'s firstOrCreate,
+        // StockReconciler::apply()'s insert, and the updateOrCreate below — so
+        // any variant that reached the device through a PULL rather than through
+        // the hydrate carries an id Postgres has never heard of. Deleting the
+        // hydrated row and letting inventory:reconcile rebuild it from the
+        // ledger is the shortest honest way to reach that state, and it is the
+        // state a device is in for every variant created at another branch.
+        DB::table('stock_snapshots')->delete();
+
+        $this->artisan('inventory:reconcile')->assertSuccessful();
+
+        $localId = (string) DB::table('stock_snapshots')->where('variant_id', self::$variantId)->value('id');
+
+        $this->assertNotSame($upstreamId, $localId, 'The local rebuild should have minted its own uuid.');
+        $this->assertSame(42, (int) DB::table('stock_snapshots')->where('variant_id', self::$variantId)->value('quantity'));
+
+        Instance::query()->update(['hydrated_at' => null]);
+
+        // Keyed on `id`, this is where the wizard died: the incoming id is new
+        // locally, so SQLite runs the INSERT arm of `on conflict (id)` and hits
+        // the UNIQUE index on variant_id instead. That is a raw QueryException
+        // rather than a SetupFailedException, so it 500s past the wizard's own
+        // error handling and rolls the whole transaction back — on the one path
+        // this class exists to support.
+        //
+        // assertSessionHasNoErrors alone would NOT catch it (a 500 fills no
+        // error bag), which is why the redirect is asserted too. Keyed on
+        // variant_id (Hydrator::CONFLICT_TARGET) the row converges, id included.
+        $this->post(route('setup.store'), $this->payload())
+            ->assertSessionHasNoErrors()
+            ->assertRedirect();
+
+        $this->assertSame(1, DB::table('stock_snapshots')->count());
+        $this->assertSame($upstreamId, (string) DB::table('stock_snapshots')->where('variant_id', self::$variantId)->value('id'));
+        $this->assertSame(42, (int) DB::table('stock_snapshots')->where('variant_id', self::$variantId)->value('quantity'));
+    }
+
     public function test_reconcile_after_hydration_is_a_no_op(): void
     {
         $this->post(route('setup.store'), $this->payload())->assertSessionHasNoErrors();

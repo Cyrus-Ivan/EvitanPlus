@@ -94,13 +94,14 @@ return new class extends Migration
         // The highest serial POSTGRES already holds for this branch, read once
         // at hydration.
         //
-        // A device replacing an EXISTING branch's hardware hydrates with no
-        // history (the Hydrator copies catalog, users, settings and stock — never
-        // transactions), so its locally generated serial would restart at 1 and
-        // collide with rows already in Postgres. The push is insert-only, so that
-        // collision would be SILENT: the sale simply never arrives. These two
-        // columns are what stop a swapped till from quietly losing its first
-        // day's takings.
+        // A device replacing an EXISTING branch's hardware would generate a
+        // serial restarting at 1 and collide with rows already in Postgres. The
+        // push is insert-only, so that collision would be SILENT: the sale
+        // simply never arrives. These two columns are what stop a swapped till
+        // from quietly losing its first day's takings. (Written before M11.6,
+        // when the hydrate skipped history entirely and these were the ONLY
+        // answer; it now copies this branch's transactions and sale_returns too,
+        // so the local max usually answers as well.)
         Schema::table('instance', function (Blueprint $table) {
             $table->string('transaction_number_floor')->nullable();
             $table->string('return_number_floor')->nullable();

@@ -1216,6 +1216,40 @@ class CsvInventoryImporter
         $import->id = $id;
         $import->save();
 
+        if ($status === 'failed') {
+            $this->mirrorFailure($import);
+        }
+
         return $import;
+    }
+
+    /**
+     * Send a FAILED import row up on its own.
+     *
+     * The success row rides {@see mirrorImport()} inside the import's online
+     * write, but every failure path records outside it — by then the write has
+     * either not started or already unwound — so {@see OnlineWrite::mirror()}
+     * has no write to attach to and would throw. This is a separate one-row
+     * write instead.
+     *
+     * Best-effort on purpose. This screen is already gated on connectivity, so
+     * it will nearly always land; but a failure to record a failure must never
+     * become the user's error, and the local row — the one Upload History reads
+     * — is already saved either way. What it buys is a REPLACEMENT device: since
+     * M11.6 hydration is the only recovery path, and a row that never reached
+     * Postgres is a row a rebuilt till cannot show.
+     *
+     * `import_history` is in {@see OnlineWrite::APPEND_ONLY}, so this lands as
+     * `on conflict do nothing` and re-running it can never rewrite history.
+     */
+    private function mirrorFailure(ImportHistory $import): void
+    {
+        rescue(
+            fn () => $this->online->run(
+                fn () => $this->online->mirror($import),
+                'A failed CSV import',
+            ),
+            report: false,
+        );
     }
 }

@@ -35,13 +35,15 @@ use App\Models\Transaction;
  * caller's bounded retry absorbs, and presents as checkouts intermittently
  * failing for no stated reason. The prefix is stripped before the cast.
  *
- * **The floor.** A device replacing an existing branch's hardware hydrates with
- * no history (the Hydrator copies catalog, users, settings and stock — never
- * transactions), so its local max is empty and it would restart at 1 against
- * serials Postgres already holds. Since the push is insert-only, those sales
- * would be quietly dropped on the way up. `instance.transaction_number_floor` is
- * the highest serial Postgres held for this branch at hydration, and the
- * sequence continues from whichever of the two is higher.
+ * **The floor.** A device replacing an existing branch's hardware would restart
+ * at 1 against serials Postgres already holds, and since the push is
+ * insert-only those sales would be quietly dropped on the way up.
+ * `instance.transaction_number_floor` is the highest serial Postgres held for
+ * this branch at hydration, and the sequence continues from whichever of the two
+ * is higher. Since M11.6 the hydrate copies this branch's `transactions` too, so
+ * the local max is no longer empty on a rebuilt till and usually answers on its
+ * own — but the floor is read in the same breath and costs nothing, and it stays
+ * correct however the copy is scoped later.
  *
  * The sequence continues from a MAX, not a row count: a count would collide
  * forever if a row were ever lost to manual SQL or a partial restore — MAX

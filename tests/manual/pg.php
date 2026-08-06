@@ -6,7 +6,9 @@ declare(strict_types=1);
  * The manual rig's Postgres half — catalog seeding and teardown.
  *
  *   php tests/manual/pg.php seed <branch-a.json> <branch-b.json>
- *   php tests/manual/pg.php drop <schema> <role> [role...]
+ *   php tests/manual/pg.php drop <schema> [role...]
+ *   php tests/manual/pg.php orphans
+ *   php tests/manual/pg.php uuid
  *
  * ## Why this is a standalone script and not artisan or tinker
  *
@@ -24,12 +26,24 @@ declare(strict_types=1);
  *
  * ## Why `drop` cannot become a reaper
  *
- * It drops only the identifiers handed to it, which the rig read out of the
- * credentials JSONs of the run it is tearing down. There is no sweep by name
- * pattern here and there must never be one: console/README.md §5 — "There is
- * no reaper, by choice" — because a `biz_%` schema is indistinguishable from a
- * real customer's. The identifier assertions below are the second guard: a
- * corrupted state file refuses rather than interpolating garbage into DDL.
+ * It drops only the schema handed to it, which the rig recorded in its state
+ * file before that schema existed. There is no sweep by name pattern here and
+ * there must never be one: console/README.md §5 — "There is no reaper, by
+ * choice" — because a `biz_%` schema is indistinguishable from a real
+ * customer's. The identifier assertions below are the second guard: a corrupted
+ * state file refuses rather than interpolating garbage into DDL.
+ *
+ * `drop` DOES read that one named schema's own `branches` rows to work out
+ * which roles belong to it, and that is a different act from sweeping. The
+ * schema is still chosen by the caller; the read only answers "what did this
+ * schema's own rows say", scoped to an identifier that already passed the
+ * assertion. Nothing outside the named schema is consulted or touched.
+ *
+ * `orphans` is the same distinction from the other side: it enumerates every
+ * `biz_%` schema, and therefore it may only ever PRINT. It cannot classify a
+ * schema safely — that is the whole reason there is no reaper — so it reports
+ * what it can see and hands the operator the exact `drop` line to run, and a
+ * human decides. Do not let it grow a `--force`.
  */
 if (PHP_SAPI !== 'cli') {
     exit(1);
@@ -42,8 +56,11 @@ try {
     match ($verb) {
         'seed' => seedCatalog($root, $argv[2] ?? '', $argv[3] ?? ''),
         'drop' => dropObjects($root, array_slice($argv, 2)),
+        'orphans' => listOrphans($root),
+        'uuid' => print uuid()."\n",
         default => throw new RuntimeException(
-            'usage: pg.php seed <a.json> <b.json> | pg.php drop <schema> <role> [role...]'
+            'usage: pg.php seed <a.json> <b.json> | pg.php drop <schema> [role...] '
+            .'| pg.php orphans | pg.php uuid'
         ),
     };
 } catch (Throwable $e) {
@@ -207,6 +224,26 @@ function seedCatalog(string $root, string $pathA, string $pathB): void
  *
  * `if exists` throughout, so re-running `rig:clean` after a partial failure is
  * a no-op rather than an error.
+ *
+ * ## The roles are DISCOVERED, not only taken on trust
+ *
+ * Roles named on the command line are honoured, but the schema is also asked
+ * which branches it holds, because the caller's list can be short of one. The
+ * rig learns a role's name from the credentials JSON, which is not readable
+ * until the provisioning command RETURNS — so a Ctrl-C during `branch:provision`
+ * used to leave the second branch's role behind with its name recorded nowhere,
+ * permanently: DROP SCHEMA ... CASCADE takes a role's grants but never the role.
+ *
+ * Reading `branches` closes that, and it is exact rather than heuristic because
+ * both provisioning paths insert the row BEFORE creating the role —
+ * BusinessProvisioner::seed then BranchRole::create (BusinessProvisioner.php:148-152),
+ * BranchIssuer::insertBranch then BranchRole::create (BranchIssuer.php:178-186).
+ * So every role that exists has a row naming it. The converse costs nothing:
+ * a row whose role was never created drops to a no-op `drop role if exists`.
+ *
+ * The read is guarded because a schema interrupted early enough has no
+ * `branches` table at all — that is the state this whole change exists for, and
+ * it correctly yields no roles rather than an error.
  */
 function dropObjects(string $root, array $identifiers): void
 {
@@ -225,12 +262,177 @@ function dropObjects(string $root, array $identifiers): void
 
     $pdo = adminConnection($root);
 
+    foreach (branchRoles($pdo, $schema) as $discovered) {
+        if (! in_array($discovered, $roles, true)) {
+            echo "found role {$discovered} in {$schema}.branches\n";
+            $roles[] = $discovered;
+        }
+    }
+
     $pdo->exec('drop schema if exists '.quoteIdentifier($schema).' cascade');
     echo "dropped schema {$schema}\n";
 
     foreach ($roles as $role) {
         $pdo->exec('drop role if exists '.quoteIdentifier($role));
         echo "dropped role {$role}\n";
+    }
+}
+
+/**
+ * The branch roles one schema's own rows account for — RoleName::forBranch
+ * applied to every `branches.id`.
+ *
+ * Derived rather than looked up in `pg_roles`: role names are cluster-global and
+ * every business's look alike, so matching them by prefix would be the sweep
+ * this file must not perform. A branch UUID belongs to exactly one schema.
+ *
+ * @return list<string>
+ */
+function branchRoles(PDO $pdo, string $schema): array
+{
+    try {
+        $ids = $pdo->query('select id from '.quoteIdentifier($schema).'.branches')
+            ->fetchAll(PDO::FETCH_COLUMN);
+    } catch (Throwable) {
+        // No such schema, or no such table in a half-migrated one. Either way
+        // there are no branches, so there are no roles.
+        return [];
+    }
+
+    $roles = [];
+
+    foreach ($ids as $id) {
+        $hex = strtolower(str_replace('-', '', (string) $id));
+
+        // Not an assertion: `branches.id` is a uuid column, so this cannot fail
+        // for a row Postgres accepted. It is the same guard the caller's
+        // identifiers get, applied to a value about to reach DDL.
+        if (preg_match('/^[0-9a-f]{32}$/', $hex)) {
+            $roles[] = 'branch_'.$hex;
+        }
+    }
+
+    return $roles;
+}
+
+/**
+ * Every surviving `biz_%` schema, annotated with what it is — READ-ONLY.
+ *
+ * The rig's safety net for the one thing its state file cannot cover: a run
+ * killed so early that no state was written, or a leak from a build of the rig
+ * that predates SCHEMA being recorded up front. It exists because `rig:clean`
+ * used to answer "nothing to clean" to a question it had no way to answer.
+ *
+ * ## What each column is actually evidence of
+ *
+ * `last_touched` / `actors` come from a LEFT JOIN onto the console's own audit
+ * trail — the same query console/README.md §7 documents for telling test litter
+ * from a real business. **A schema with no audit row at all is the strongest
+ * signal here**, and it is the signature of the exact bug this file was changed
+ * for: BusinessProvisioner records only on a terminal outcome (success, or a
+ * rollback from its `catch`), and a SIGINT produces neither. A schema created by
+ * a completed console operation always has one.
+ *
+ * `branches` and `schema_meta` are BranchDirectory::isProvisionedBusiness's own
+ * test, restated: a business that finished provisioning has both, so a schema
+ * missing either never finished. `transactions` is the question to ask before
+ * dropping anything — console/README.md §7 says so, and it is the only column
+ * here that speaks for a business rather than about it.
+ *
+ * ## Why it prints and never acts
+ *
+ * None of that CLASSIFIES a schema, it only describes one. There is no registry
+ * to ask (BusinessDirectory: "the read no table backs"), and the false positive
+ * is not hypothetical: `verify:console` and `verify:hydrate` provision real
+ * businesses through the real commands and drop them in tearDownAfterClass, so
+ * running this DURING a suite lists healthy schemas mid-build under the same
+ * flag as a leak. Observed while building this verb, which is why the printed
+ * output says so first. It hands over the exact drop line and stops.
+ */
+function listOrphans(string $root): void
+{
+    $pdo = adminConnection($root);
+
+    $rows = $pdo->query(
+        "select s.schema_name,
+                max(a.created_at)                 as last_touched,
+                string_agg(distinct a.actor, ',') as actors
+         from information_schema.schemata s
+         left join evitan_console.provisioning_audit a on a.schema_name = s.schema_name
+         where s.schema_name like 'biz\\_%'
+         group by s.schema_name
+         order by s.schema_name"
+    )->fetchAll(PDO::FETCH_ASSOC);
+
+    if ($rows === []) {
+        echo "No biz_ schemas on this project.\n";
+
+        return;
+    }
+
+    echo count($rows)." biz_ schema(s):\n\n";
+
+    $suspect = [];
+
+    foreach ($rows as $row) {
+        $schema = (string) $row['schema_name'];
+
+        $branches = countRows($pdo, $schema, 'branches');
+        $transactions = countRows($pdo, $schema, 'transactions');
+        $meta = countRows($pdo, $schema, 'schema_meta');
+
+        // Never finished provisioning: no trail entry, or no branch to be a
+        // business with. Either alone is enough to be worth a second look.
+        // `?? 0` because a MISSING table counts the same as an empty one here —
+        // a schema interrupted mid-migration has neither, and that is the case
+        // most in need of the flag.
+        $unfinished = $row['last_touched'] === null || ($branches ?? 0) === 0 || ($meta ?? 0) === 0;
+
+        if ($unfinished) {
+            $suspect[] = $schema;
+        }
+
+        printf("  %s %s\n", $unfinished ? '!' : ' ', $schema);
+        printf("      branches %s   transactions %s   schema_meta %s\n",
+            $branches ?? '?', $transactions ?? '?', $meta ?? '?');
+        printf("      trail    %s\n",
+            $row['last_touched'] === null
+                ? 'NONE — no console operation ever completed against it'
+                : $row['last_touched'].'  by '.$row['actors']);
+    }
+
+    if ($suspect === []) {
+        echo "\nEvery schema has a completed trail entry, a schema_meta row and at least one\n"
+            ."branch. Nothing here looks unfinished.\n";
+
+        return;
+    }
+
+    echo "\n".count($suspect)." marked ! have not finished provisioning.\n\n"
+        ."FIRST: is anything running? A rig, a `composer verify:console` or a\n"
+        ."`verify:hydrate` provisions real businesses and drops them afterwards, and one\n"
+        ."caught part-way through looks EXACTLY like a leak from here. Check with\n"
+        ."`ps aux | grep -E 'phpunit|rig.sh'` and re-run this once it is finished.\n\n"
+        ."Then confirm each is not a real business — the transaction count above, and\n"
+        ."console/README.md §7 — before running:\n\n";
+
+    foreach ($suspect as $schema) {
+        echo "  php tests/manual/pg.php drop {$schema}\n";
+    }
+
+    echo "\nThat drops the schema and every branch role its own rows account for. Nothing\n"
+        ."here does it for you: a biz_ schema is indistinguishable from a real customer's.\n";
+}
+
+/** One table's row count, or null when the table is not there to be counted. */
+function countRows(PDO $pdo, string $schema, string $table): ?int
+{
+    try {
+        return (int) $pdo->query(
+            'select count(*) from '.quoteIdentifier($schema).'.'.quoteIdentifier($table)
+        )->fetchColumn();
+    } catch (Throwable) {
+        return null;
     }
 }
 
@@ -310,10 +512,32 @@ function quoteIdentifier(string $identifier): string
     return '"'.str_replace('"', '""', $identifier).'"';
 }
 
+/**
+ * A TIME-ORDERED UUID — the stand-in for Str::orderedUuid(), which is what the
+ * console and the app mint everywhere.
+ *
+ * Ordered rather than v4 for one reason that is not performance: the business
+ * UUID becomes the schema NAME, so `select schema_name ... order by 1` and the
+ * `orphans` listing come out in creation order. That is a real diagnostic — the
+ * leak this file was changed for was first identified as "the schema immediately
+ * before the run that succeeded", which a random v4 makes impossible to see.
+ *
+ * UUIDv7 layout: 48-bit big-endian milliseconds, then version 7 and the RFC 4122
+ * variant, then random. Hex-sortable because the timestamp is the prefix.
+ */
 function uuid(): string
 {
     $bytes = random_bytes(16);
-    $bytes[6] = chr((ord($bytes[6]) & 0x0F) | 0x40);
+
+    // Milliseconds since the epoch, big-endian, in the first six bytes.
+    $ms = (int) (microtime(true) * 1000);
+
+    for ($i = 5; $i >= 0; $i--) {
+        $bytes[$i] = chr($ms & 0xFF);
+        $ms >>= 8;
+    }
+
+    $bytes[6] = chr((ord($bytes[6]) & 0x0F) | 0x70);
     $bytes[8] = chr((ord($bytes[8]) & 0x3F) | 0x80);
 
     return implode('-', array_map('bin2hex', [

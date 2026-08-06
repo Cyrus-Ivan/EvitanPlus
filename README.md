@@ -397,10 +397,32 @@ local, so `127.0.0.2` needs no `/etc/hosts` entry.
 If a run dies before its teardown can fire, `composer rig:clean` finishes the job. It
 reads `tests/manual/.runtime/state.env` — written incrementally as each artifact is
 created, so it is accurate even after `kill -9` — and destroys exactly what that one run
-made, nothing global. Should the Postgres drop fail it **keeps** the state file and
-prints the SQL to run by hand: a `biz_%` schema is indistinguishable from a real
-customer's, so there is no reaper (`console/README.md` §5), and deleting that file is
-the only way to lose a schema name for good.
+made, nothing global. Should the Postgres drop fail it **keeps** the state file and both
+credentials JSONs and prints the SQL to run by hand: a `biz_%` schema is
+indistinguishable from a real customer's, so there is no reaper (`console/README.md` §5),
+and deleting those is the only way to lose a schema name for good.
+
+Two details of that make the difference between a leak you can clean and one you cannot,
+and both were learned the hard way:
+
+- **The schema name is recorded before the schema exists.** The rig mints the business
+  UUID itself and passes `--business`, so `state.env` names the schema *before* the ~15s
+  `business:provision` call rather than after. It used to be read out of the credentials
+  JSON, which is not readable until that call returns — so a Ctrl-C during provisioning
+  skipped the drop, deleted the JSON, and printed "nothing left in Postgres" over a live
+  schema that nothing could then find. A signal kills the console at PHP's default
+  disposition, so its own rollback never runs.
+- **Branch roles are discovered, not just remembered.** `DROP SCHEMA … CASCADE` takes a
+  role's grants but never the role, so teardown reads the schema's own `branches` rows
+  and derives every `branch_<hex>` from them. That is exact rather than a guess: both
+  provisioning paths insert the row before creating the role.
+
+If `state.env` is gone entirely, `composer rig:clean` asks Postgres instead —
+`php tests/manual/pg.php orphans` lists every `biz_` schema that never finished
+provisioning (no completed audit row, no `branches` row, no `schema_meta`) with the drop
+line for each. It **only prints**. Run it while a suite or another rig is going and you
+will see healthy schemas mid-build under the same flag, which is exactly why it does not
+act on its own.
 
 Two things to know while using it:
 

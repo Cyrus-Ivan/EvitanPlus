@@ -438,6 +438,7 @@ timing table.
 | `EMAXCONNSESSION` part-way through a run | The admin session pooler is **15 clients** wide and Supavisor frees them lazily. A cancelled run, an open `tinker`, or a psql session holds slots. | Close them and wait a minute. `Tests\TestCase::tearDownAfterClass` purges four connections per class precisely to avoid this. |
 | Leftover `biz_test_*` schemas | A run cancelled before `tearDownAfterClass`. There is no reaper, by choice. | `select schema_name from information_schema.schemata where schema_name like 'biz_test_%';` then drop them. |
 | Leftover `biz_<uuid>` schemas and `branch_*` roles | **A second, less obvious leak.** The provisioning tests do not use the `biz_test_` prefix — `ProvisionsBusiness` runs the real `business:provision`, so its schema is named from a freshly minted UUID and is indistinguishable by name from a real business. A run cancelled mid-provision therefore leaks a schema the `biz_test_%` sweep will never find. | See the sweep in §7 — identify them by their fixture branch codes (`FIX`, `LIFE`) in the audit trail, not by their names. |
+| Leftover `biz_<uuid>` schemas from an interrupted **`composer rig`** (not a suite, but the same symptom and the same aisle) | Third source of the leak above. A SIGINT kills `business:provision` at PHP's default disposition — there is no `SignalableCommandInterface` anywhere in `console/` — so `BusinessProvisioner`'s undo stack, reached only from its `catch`, never runs, and no audit row is written either: it records on terminal outcomes only. **Fixed in the rig**, which now passes `--business` and records the schema name before the provision call; leaks from before that fix are still out there and have no trail entry at all. | `php tests/manual/pg.php orphans` lists every `biz_` schema with no completed audit row, no `branches` row or no `schema_meta`, and prints the drop line for each. It only ever prints — a schema mid-build in a concurrent suite is indistinguishable from a leak, which is this section's rule restated. |
 | The same leak from a run that **completed** | **Fixed, and worth knowing it existed.** `ProvisionsBusiness` is not self-cleaning: its docblock requires every using class to call `tearDownProvisionedBusiness()` from its own `tearDownAfterClass`. `SchemaReapplyGrantsTest` never did, so a fully green suite still left one real `biz_*` schema and one branch role in Supabase **on every run** — eight had accumulated before anyone counted. Nothing fails when this happens, which is the whole problem. | Fixed by adding the teardown. If a new class uses that trait, give it a `tearDownAfterClass` or it will do this again silently. |
 | A green run that tested nothing | The bare suite skips silently without credentials. | Always use `composer verify:console`, which passes `--fail-on-skipped`. This exact shape is why the parity guard sat unrun from M1 to M4. |
 
@@ -533,6 +534,11 @@ where s.schema_name like 'biz\_%'
 group by s.schema_name
 order by last_touched desc;
 ```
+
+`php tests/manual/pg.php orphans` runs that query for you and annotates each schema with
+its `branches`, `transactions` and `schema_meta` counts — read-only, and it prints the
+drop line rather than running it. It lives in the rig's tooling rather than here because
+it enumerates `biz_%`, which is the one thing a console command must not do.
 
 A schema whose only branch codes are `FIX`/`LIFE` and which holds zero transactions is
 test litter. Drop it and its roles — but **read `branch:list` first**, and never drop a

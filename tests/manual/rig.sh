@@ -9,8 +9,9 @@
 # `ready` and `wizard` provision a REAL throwaway business with two branches on
 # the live Supabase project, then stay in the foreground. Ctrl-C destroys all of
 # it — both servers, both SQLite files, both credential JSONs, the Postgres
-# schema and both branch roles. `clean` is only for a run that died before its
-# trap could fire.
+# schema and both branch roles. `clean` is for a run that died before its trap
+# could fire; with no state file it asks Postgres instead (`pg.php orphans`),
+# because "no state file" and "nothing to clean" are not the same answer.
 #
 # This is a PERCEPTION tool. The tests own correctness (composer verify,
 # verify:hydrate); this exists so the wizard and two-branch hydration can be
@@ -68,6 +69,10 @@ OWNER_PASSWORD=password
 # Each artifact is recorded the instant it exists, never in a batch at the end.
 # A kill -9 at any point then leaves a state file that describes exactly what
 # was created, which is the only thing `clean` has to go on.
+#
+# The schema goes in BEFORE it exists rather than the instant it does, because
+# it is the one identifier the rig can know in advance (see the provision step)
+# and the one whose loss is unrecoverable. Everything else is derivable from it.
 remember() { printf '%s=%q\n' "$1" "$2" >>"$STATE"; }
 
 # ── Teardown ───────────────────────────────────────────────────────────────
@@ -104,16 +109,35 @@ teardown() {
         fi
     done
 
+    # An unknown schema is a FAILURE, never "nothing to drop". The provision
+    # step records SCHEMA before the first Supabase call, so reaching this with
+    # it empty means the state file was truncated or hand-edited — and that is
+    # precisely the case that must not print a success line over a live schema.
     local dropped=0
-    if [[ -n "${SCHEMA:-}" ]]; then
+    if [[ -z "${SCHEMA:-}" ]]; then
+        dropped=1
+    else
         php "$ROOT/tests/manual/pg.php" drop "$SCHEMA" "${ROLE_A:-}" "${ROLE_B:-}" || dropped=1
     fi
 
-    rm -f "$RT"/branch-a.sqlite* "$RT"/branch-b.sqlite* "$JSON_A" "$JSON_B" 2>/dev/null || true
+    # The SQLite files always go; they describe nothing. The credentials JSONs
+    # name the schema and the role, so they are evidence — deleted only once the
+    # drop they describe has actually happened, for the same reason $STATE is.
+    rm -f "$RT"/branch-a.sqlite* "$RT"/branch-b.sqlite* 2>/dev/null || true
+
+    # Read by `clean` for its exit status. The EXIT-trap path cannot use it —
+    # it is already on its way out with a status of its own — but a `clean` that
+    # destroyed nothing must not report success to whatever called it.
+    TEARDOWN_FAILED=$dropped
 
     if (( dropped == 0 )); then
-        rm -f "$STATE"
+        rm -f "$JSON_A" "$JSON_B" "$STATE" 2>/dev/null || true
         echo "rig: done — nothing left locally or in Postgres."
+    elif [[ -z "${SCHEMA:-}" ]]; then
+        echo "rig: STATE FILE HAS NO SCHEMA NAME — nothing was dropped." >&2
+        echo "rig: $STATE and both credentials JSONs are kept; the JSONs name the" >&2
+        echo "rig: schema if they were written. To find it in Postgres instead:" >&2
+        echo "rig:   php tests/manual/pg.php orphans" >&2
     else
         # Deleting the state file here is the one and only way this design can
         # lose a schema name for good. Keep it and say so.
@@ -128,14 +152,21 @@ teardown() {
 
 # ── clean ──────────────────────────────────────────────────────────────────
 if [[ "$MODE" == clean ]]; then
+    # No state file is not the same as nothing to clean, and answering it that
+    # way is what let an interrupted provision disappear. Ask Postgres instead:
+    # a schema that never finished provisioning is visible there even when
+    # nothing local remembers it.
     if [[ ! -f "$STATE" ]]; then
-        echo "rig: nothing to clean."
+        echo "rig: no state file — this run left nothing behind locally."
+        echo "rig: checking Postgres for schemas that never finished provisioning…"
+        echo
+        php "$ROOT/tests/manual/pg.php" orphans
         exit 0
     fi
 
     set -a; . "$STATE"; set +a
     teardown
-    exit 0
+    exit "${TEARDOWN_FAILED:-0}"
 fi
 
 # ── Preflight ──────────────────────────────────────────────────────────────
@@ -179,6 +210,35 @@ done
 mkdir -p "$RT"
 : >"$STATE"
 
+# Console success output goes through twoColumnDetail, which pads and truncates
+# to terminal width — never parse it. Read the JSON from the known --out path,
+# the way tests/Integration/HydrationTest.php does.
+jread() { php -r 'echo json_decode(file_get_contents($argv[1]), true)[$argv[2]][$argv[3]];' -- "$@"; }
+
+# ── The schema name, known BEFORE anything can create it ────────────────────
+# This used to be read out of the credentials JSON after the command returned,
+# which left the entire ~15s provision — a schema, 22 migrations, an Owner and a
+# role — inside a window where teardown did not know what to drop. Ctrl-C there
+# skipped the drop, deleted the JSON that was the only other record of the name,
+# and printed "nothing left in Postgres" over a live schema nothing could ever
+# find again. A signal kills the console at PHP's default disposition, so
+# BusinessProvisioner's undo stack (reached only from a `catch`) never runs.
+#
+# --business exists for exactly this: "so a schema name can be reproduced
+# deliberately" (BusinessProvisionCommand::resolveBusinessId).
+#
+# Derived BEFORE the traps are armed, not merely before the provision call, so
+# that whenever teardown can fire it already has a schema name. Nothing above
+# this line reaches Supabase, so there is nothing for a trap to clean up yet.
+BUSINESS_ID="$(php "$ROOT/tests/manual/pg.php" uuid)"
+# SchemaName::forBusiness — `biz_` plus the UUID with its dashes stripped.
+# Derived rather than read back, because the schema exists about a second into a
+# fifteen-second call. pg.php's drop assertion already hard-codes the same shape.
+SCHEMA="biz_${BUSINESS_ID//-/}"
+
+remember BUSINESS_ID "$BUSINESS_ID"
+remember SCHEMA "$SCHEMA"
+
 # Armed BEFORE the first provision call, so a business whose second branch fails
 # still gets dropped. One trap does the work; INT/TERM only set the status, so
 # it can never double-fire.
@@ -190,14 +250,10 @@ trap 'teardown' EXIT
 # reporting a script error. Real failures still exit non-zero via `set -e`.
 trap 'exit 0' INT TERM
 
-# Console success output goes through twoColumnDetail, which pads and truncates
-# to terminal width — never parse it. Read the JSON from the known --out path,
-# the way tests/Integration/HydrationTest.php does.
-jread() { php -r 'echo json_decode(file_get_contents($argv[1]), true)[$argv[2]][$argv[3]];' -- "$@"; }
-
 echo "rig: provisioning a throwaway business on Supabase (~15s)…"
 
 php "$ROOT/console/artisan" business:provision \
+    --business="$BUSINESS_ID" \
     --owner-name='Rig Owner' \
     --username="$OWNER_USERNAME" \
     --owner-password="$OWNER_PASSWORD" \
@@ -214,11 +270,20 @@ php "$ROOT/console/artisan" business:provision \
     --actor=manual-rig \
     --force --no-interaction
 
-# The moment the JSON is readable, the schema and role exist and must be
-# recoverable — record them before anything else can fail.
-SCHEMA="$(jread "$JSON_A" business schema)"; remember SCHEMA "$SCHEMA"
-ROLE_A="$(jread "$JSON_A" role name)";       remember ROLE_A "$ROLE_A"
-BUSINESS_ID="$(jread "$JSON_A" business id)"; remember BUSINESS_ID "$BUSINESS_ID"
+# The schema was recorded before the call; this proves the two agree. If the
+# bash derivation above ever drifted from SchemaName::forBusiness, teardown
+# would drop a schema that does not exist and leak the one that does — silently,
+# and reporting success. Cheap to check, and it is the whole safety of deriving
+# the name in two languages.
+ACTUAL_SCHEMA="$(jread "$JSON_A" business schema)"
+[[ "$ACTUAL_SCHEMA" == "$SCHEMA" ]] || fail \
+    "provisioning used schema [$ACTUAL_SCHEMA], not the recorded [$SCHEMA] — teardown would leak it"
+
+# The moment the JSON is readable the role exists and must be recoverable. Kept
+# even though pg.php's drop now finds it in the schema's own branches rows:
+# recording it costs a line, and it is what makes the printed manual-cleanup SQL
+# complete when the drop itself is what failed.
+ROLE_A="$(jread "$JSON_A" role name)"; remember ROLE_A "$ROLE_A"
 
 echo "rig: adding the second branch…"
 

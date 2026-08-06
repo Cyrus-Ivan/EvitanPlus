@@ -37,13 +37,15 @@ const mainNavGroups: NavGroup[] = [
     {
         title: 'Inventory Management',
         items: [
-            { title: 'Inventory', url: '/inventory', icon: Package }, // view-only for Cashier
             // No dedicated ability backs categories either. Admin-gated to match
             // what every action on that page needs — the route itself is
             // Cashier-readable, but a screen whose every button is disabled is
             // not worth a nav entry.
             { title: 'Categories', url: '/inventory/categories', icon: Tags, minRole: 'admin' },
-            { title: 'Stock History', url: '/inventory/stock-history', icon: PackageSearch }, // read-only ledger
+            { title: 'Inventory', url: '/inventory', icon: Package }, // view-only for Cashier
+            // No dedicated ability backs the import/export routes, so this one
+            // gates by role floor; the routes are `role:admin` server-side.
+            { title: 'Import / Export', url: '/inventory/import', icon: FileSpreadsheet, minRole: 'admin' },
             // Ungated ON PURPOSE, unlike everything else that touches stock:
             // answering one is reporting what physically happened, and the
             // person who knows is whoever is in the shop. See routes/web.php.
@@ -51,9 +53,7 @@ const mainNavGroups: NavGroup[] = [
             // are still *pending stock adjustments* — that is the term of art
             // (docs/glossary.md) and it outranks the label on a screen.
             { title: 'Pending Stocks', url: '/inventory/stock-updates', icon: ClipboardCheck },
-            // No dedicated ability backs the import/export routes, so this one
-            // gates by role floor; the routes are `role:admin` server-side.
-            { title: 'Import / Export', url: '/inventory/import', icon: FileSpreadsheet, minRole: 'admin' },
+            { title: 'Stock History', url: '/inventory/stock-history', icon: PackageSearch }, // read-only ledger
         ],
     },
     {

@@ -19,6 +19,13 @@ const ALL = 'all';
  * because the server strips its id from the roster and snaps `?scope=<own id>`
  * back to `local` (see `App\Http\Controllers\Concerns\OffersBranchScope`).
  *
+ * `allowAll` drops the middle entry, and Inventory is the one screen that does:
+ * a wider scope there lands on a stock *number* rather than on a list of rows,
+ * and a business-wide total per variant cannot be read without a per-branch
+ * breakdown printed under it. `App\Http\Controllers\Inventory\ItemController`
+ * snaps `?scope=all` back to `local` to match, so the option cannot return by
+ * URL.
+ *
  * `branches` is empty when the business database could not be reached — the
  * other branches' rows live only there — so the content says so instead of
  * leaving a two-entry list looking broken.
@@ -28,6 +35,7 @@ export function BranchScopeSelect({
     branches,
     onChange,
     label,
+    allowAll = true,
 }: {
     scope: BranchScope;
     branches: RosterBranch[];
@@ -35,6 +43,7 @@ export function BranchScopeSelect({
     // What the control is choosing between on this screen, for screen readers:
     // "Branches shown", "Branches reported on".
     label: string;
+    allowAll?: boolean;
 }) {
     const { identity } = usePage<SharedData>().props;
 
@@ -50,7 +59,7 @@ export function BranchScopeSelect({
             </SelectTrigger>
             <SelectContent>
                 <SelectItem value={LOCAL}>{here}</SelectItem>
-                <SelectItem value={ALL}>All branches</SelectItem>
+                {allowAll && <SelectItem value={ALL}>All branches</SelectItem>}
                 {branches.map((branch) => (
                     <SelectItem key={branch.id} value={branch.id}>
                         {branch.code} — {branch.name}

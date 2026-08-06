@@ -137,28 +137,6 @@ class ConsolidatedStockTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_the_all_scope_shows_the_business_wide_total_and_a_per_branch_breakdown(): void
-    {
-        $this->actingAs($this->owner())
-            ->get(route('inventory', ['scope' => 'all']))
-            ->assertOk()
-            ->assertInertia(function ($page) {
-                $page->where('scope', 'all')->where('consolidatedOnline', true);
-
-                $variant = $this->variantOnPage($page, 'STOCKED');
-
-                $this->assertSame(15, $variant['scoped_stock']);
-
-                // Roster order, which is by code — so the breakdown reads the
-                // same way down the whole page rather than in whatever order
-                // Postgres answered.
-                $this->assertSame([
-                    ['branch' => self::BRANCH_A, 'quantity' => 12],
-                    ['branch' => self::BRANCH_B, 'quantity' => 3],
-                ], $variant['branch_stock']);
-            });
-    }
-
     public function test_a_single_branch_scope_shows_only_that_branch(): void
     {
         $this->actingAs($this->owner())
@@ -169,8 +147,10 @@ class ConsolidatedStockTest extends TestCase
 
                 $variant = $this->variantOnPage($page, 'STOCKED');
 
+                // Branch B's 3, and only B's — not the 12 on this device's own
+                // shelf, and not the 15 the two of them add up to. The `where`
+                // is the whole point of the read.
                 $this->assertSame(3, $variant['scoped_stock']);
-                $this->assertSame([['branch' => self::BRANCH_B, 'quantity' => 3]], $variant['branch_stock']);
             });
     }
 
@@ -198,33 +178,33 @@ class ConsolidatedStockTest extends TestCase
             });
     }
 
-    public function test_a_variant_no_branch_has_handled_reads_zero_with_an_empty_breakdown(): void
+    public function test_a_variant_that_branch_has_never_handled_reads_zero(): void
     {
         // `RemoteStock::recompute()` only writes a row for a variant with ledger
-        // movement, so "no row anywhere" is the ordinary state of a product
-        // nobody has stocked yet — not a failure, and not a reason to hide it.
+        // movement, so "no row" is the ordinary state of a product nobody has
+        // stocked yet — not a failure, and not a reason to leave the cell blank.
+        // No row means none has moved, and none has moved means none on the shelf.
         $this->actingAs($this->owner())
-            ->get(route('inventory', ['scope' => 'all']))
+            ->get(route('inventory', ['scope' => self::$documentB['branch']['id']]))
             ->assertInertia(function ($page) {
                 $variant = $this->variantOnPage($page, 'UNTOUCHED');
 
                 $this->assertSame(0, $variant['scoped_stock']);
-                $this->assertSame([], $variant['branch_stock']);
             });
     }
 
-    public function test_a_branch_that_never_handled_the_variant_is_absent_rather_than_zero(): void
+    public function test_a_variant_this_device_never_handled_still_reads_the_other_branch(): void
     {
-        // Branch A holds none of ONLY-B, and says nothing about it. Listing it at
-        // zero would claim it had run out, and would put a low-stock badge on
-        // every branch that has never stocked half the catalog.
+        // ONLY-B has no row at branch A at all, so this device's own figure is
+        // zero and the scoped one is not. The page must show B's shelf rather
+        // than fall back to the local answer for a variant it knows nothing about.
         $this->actingAs($this->owner())
-            ->get(route('inventory', ['scope' => 'all']))
+            ->get(route('inventory', ['scope' => self::$documentB['branch']['id']]))
             ->assertInertia(function ($page) {
                 $variant = $this->variantOnPage($page, 'ONLY-B');
 
                 $this->assertSame(7, $variant['scoped_stock']);
-                $this->assertSame([['branch' => self::BRANCH_B, 'quantity' => 7]], $variant['branch_stock']);
+                $this->assertSame(0, $variant['current_stock']);
             });
     }
 
@@ -234,7 +214,7 @@ class ConsolidatedStockTest extends TestCase
         // work in every scope — the online read is one whereIn over the variant
         // ids already on the page.
         $this->actingAs($this->owner())
-            ->get(route('inventory', ['scope' => 'all', 'search' => 'ONLY-B']))
+            ->get(route('inventory', ['scope' => self::$documentB['branch']['id'], 'search' => 'ONLY-B']))
             ->assertOk()
             ->assertInertia(function ($page) {
                 $items = $page->toArray()['props']['items']['data'];
@@ -247,7 +227,7 @@ class ConsolidatedStockTest extends TestCase
     public function test_the_roster_arrives_with_the_stock_in_one_read(): void
     {
         $this->actingAs($this->owner())
-            ->get(route('inventory', ['scope' => 'all']))
+            ->get(route('inventory', ['scope' => self::$documentB['branch']['id']]))
             ->assertInertia(fn ($page) => $page->where(
                 'branches',
                 fn ($branches) => collect($branches)->pluck('code')->all() === [self::BRANCH_B],

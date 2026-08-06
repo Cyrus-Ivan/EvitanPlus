@@ -112,17 +112,12 @@ export interface Variant {
     // Current on-hand from THIS device's stock snapshot; present where the
     // controller eager-loads it (e.g. the inventory list). Absent elsewhere.
     current_stock?: number;
-    // The on-hand figure for the branch scope currently on screen (M12): one
-    // branch's, or the business-wide total under 'all'. Absent in the local
-    // scope and after a failed cross-branch read, where `current_stock` is the
-    // answer. A separate key rather than an override of `current_stock`, which
-    // is a get-only cached accessor server-side and silently ignores a write —
-    // the local figure would render under another branch's heading.
+    // The on-hand figure for the one branch the scope names (M12). Absent in the
+    // local scope and after a failed cross-branch read, where `current_stock` is
+    // the answer. A separate key rather than an override of `current_stock`,
+    // which is a get-only cached accessor server-side and silently ignores a
+    // write — the local figure would render under another branch's heading.
     scoped_stock?: number;
-    // The per-branch breakdown behind `scoped_stock`, ordered by branch code.
-    // Only branches that hold a stock row appear; an absent branch has never
-    // handled this variant, which is not the same as holding none of it.
-    branch_stock?: { branch: string; quantity: number }[];
     archived_at: string | null;
     created_at: string;
     updated_at: string;
@@ -475,6 +470,9 @@ export interface RosterBranch {
 // 'local' is online-only. Used by reports (Owner-only, M11), login history
 // (Admin+, M11.5), stock history and pending stocks (M11.8), and sales and
 // inventory stock (Admin+, M12) — one parameter, one meaning, six screens.
+// Inventory stock is the exception that takes 'local' or a branch id and never
+// 'all': the scope lands there on a figure rather than on a list of rows, and a
+// business-wide total per variant is unreadable without a breakdown under it.
 export type BranchScope = 'local' | 'all' | string;
 
 // The chart's series dimension: what sold, or which branch sold it.

@@ -23,8 +23,6 @@ const ALL_CATEGORIES = 'all';
 
 const LOCAL = 'local';
 
-const ALL_BRANCHES = 'all';
-
 interface Filters {
     search: string | null;
     category: string | null;
@@ -39,11 +37,6 @@ interface Filters {
  * rung up and not yet pushed are not deducted, so the number reads high, and it
  * reads high in exactly the situation where somebody is about to promise a
  * customer that the other branch has one.
- *
- * The same is true of this branch's own slice under "All branches": one query
- * reads every branch upstream, deliberately, because a total stitched from two
- * sources at two moments is harder to explain than one that is uniformly "as of
- * last sync".
  */
 function BaselineNotice() {
     return (
@@ -78,17 +71,12 @@ function OfflineStockNotice() {
 /**
  * Is this variant low, on the shelf the current scope is showing?
  *
- * Under "All branches" the test is deliberately NOT the total against the
- * threshold: twenty units against a threshold of five looks healthy and can be
- * twenty at one branch and none at the other four. Any branch at or below its
- * reorder point is the thing worth surfacing, which is what the badge means at
- * every other scope too.
+ * One shelf, always — the scope names a single branch — so the badge means the
+ * same thing wherever it is pointed: the figure on screen is at or below the
+ * reorder point. `scoped_stock` is the remote branch's; `current_stock` is this
+ * device's, and is what remains when the scope is local or the read fell back.
  */
-function isLowStock(variant: Variant, scope: BranchScope): boolean {
-    if (scope === ALL_BRANCHES && variant.branch_stock && variant.branch_stock.length > 0) {
-        return variant.branch_stock.some((row) => row.quantity <= variant.low_stock_threshold);
-    }
-
+function isLowStock(variant: Variant): boolean {
     return (variant.scoped_stock ?? variant.current_stock ?? 0) <= variant.low_stock_threshold;
 }
 
@@ -241,6 +229,9 @@ export default function InventoryIndex({
                                 branches={branches}
                                 onChange={(next) => applyFilters({ scope: next })}
                                 label="Stock shown for"
+                                // One branch at a time here: see the component's
+                                // docblock and `ItemController`'s.
+                                allowAll={false}
                             />
                         )}
                     </div>
@@ -299,7 +290,7 @@ export default function InventoryIndex({
                                     const hasVariants = variants.length > 0;
                                     // Tint the whole item row when any of its variants is at or below its
                                     // low-stock threshold, so low stock is visible without expanding.
-                                    const hasLowStock = variants.some((v) => isLowStock(v, scope));
+                                    const hasLowStock = variants.some((v) => isLowStock(v));
 
                                     return (
                                         <Fragment key={item.id}>
@@ -387,8 +378,7 @@ export default function InventoryIndex({
                                                                         // device's own, and is what remains when the
                                                                         // scope is local or the read fell back.
                                                                         const stock = variant.scoped_stock ?? variant.current_stock ?? 0;
-                                                                        const isLow = isLowStock(variant, scope);
-                                                                        const breakdown = variant.branch_stock ?? [];
+                                                                        const isLow = isLowStock(variant);
                                                                         return (
                                                                             <TableRow
                                                                                 key={variant.id}
@@ -422,26 +412,6 @@ export default function InventoryIndex({
                                                                                             </Badge>
                                                                                         )}
                                                                                     </span>
-                                                                                    {/* Which branches make up that number.
-                                                                                        A branch with no row for this variant
-                                                                                        has never handled it and is absent —
-                                                                                        which is not the same as holding none. */}
-                                                                                    {breakdown.length > 0 && (
-                                                                                        <div className="text-muted-foreground mt-0.5 text-xs tabular-nums">
-                                                                                            {breakdown.map((row) => (
-                                                                                                <span
-                                                                                                    key={row.branch}
-                                                                                                    className={`ml-2 first:ml-0 ${
-                                                                                                        row.quantity <= variant.low_stock_threshold
-                                                                                                            ? 'text-destructive font-medium'
-                                                                                                            : ''
-                                                                                                    }`}
-                                                                                                >
-                                                                                                    {row.branch} {row.quantity}
-                                                                                                </span>
-                                                                                            ))}
-                                                                                        </div>
-                                                                                    )}
                                                                                 </TableCell>
                                                                                 <TableCell className="text-right tabular-nums">
                                                                                     {variant.low_stock_threshold}

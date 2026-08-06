@@ -328,10 +328,9 @@ own `sync_cursor` row (M7).
 ✗ **Not** an internal number since M12. Ask `/inventory` for another branch's stock and the
 baseline is what is on screen, unreconciled — that branch's unsynced sales are not deducted, so it
 reads **high**, and it reads high in exactly the moment somebody is about to promise a customer
-that the other branch has one. The page says so (`BaselineNotice`). This branch's own slice of an
-"All branches" total is the baseline too, deliberately: one query reads every branch upstream,
-because a total stitched from two sources at two moments is harder to explain than one that is
-uniformly "as of last sync". `local` remains the only reconciled view, and is the till's default.
+that the other branch has one. The page says so (`BaselineNotice`). `local` remains the only
+reconciled view, and is the till's default — which is also why asking that screen for *this*
+branch by id gets `local` back rather than this branch's own baseline.
 
 ### Reconciled stock
 `stock baseline − local unsynced out-movements`. The number the till actually sells against.
@@ -512,7 +511,8 @@ for a non-Owner here exactly as everywhere else.
 ### Branch scope
 Which branches a screen covers: **`local`** (this device's SQLite mirror — the default, works
 offline), **`all`**, or a **branch id**. Echoed back to the screen *after* normalisation, so it
-always names what was actually read rather than what was asked for.
+always names what was actually read rather than what was asked for. Inventory offers only two of
+the three — see the fourth bullet.
 *Anchor:* the `scope` query parameter on `ReportsController` (M11), `LoginHistoryController`
 (M11.5), `Inventory\StockHistoryController` and `Inventory\InventoryQueueController` (both
 M11.8), `SalesController` and `Inventory\ItemController` (both M12); `BranchScope` in
@@ -523,10 +523,17 @@ M11.8), `SalesController` and `Inventory\ItemController` (both M12); `BranchScop
 ✗ **Not** necessarily a swap of the whole page's source. On Inventory (M12) it changes **stock and
 nothing else**: the item and variant list is read locally in every scope, because the catalog is
 mirrored business-wide and the local rows *are* the upstream rows, and only `stock_snapshots` is
-read live. The scoped figure lands on a key of its own (`scoped_stock`, plus a per-branch
-`branch_stock`) — never on `current_stock`, which is a get-only cached accessor over the local
-snapshot and would ignore the write while rendering this device's number under another branch's
-heading.
+read live. The scoped figure lands on a key of its own (`scoped_stock`) — never on
+`current_stock`, which is a get-only cached accessor over the local snapshot and would ignore the
+write while rendering this device's number under another branch's heading.
+✗ **Not** the same three values on every screen. Inventory takes **`local` or a branch id and
+never `all`**: everywhere else a wider scope adds rows to a list, but there it would have to add
+them to a *number*, and a business-wide total per variant answers nothing on its own — twenty
+units is twenty spread evenly or twenty at one branch and none at the other four. It is the one
+value of the parameter that needed a second display (a per-branch breakdown under every figure)
+to be readable at all, so it was dropped rather than kept. `ItemController::normalizeScope()`
+snaps `?scope=all` back to `local` like any other scope it cannot serve, and the shared picker
+takes `allowAll={false}` there.
 ✗ **Not** three values plus a fourth for this branch. **This** branch's id *is* `local`: it is
 stripped from the picker's roster and `?scope=<own id>` snaps back to `local`, which answers the
 same question offline and includes rows this device has not pushed yet. The two coincide only

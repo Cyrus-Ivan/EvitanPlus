@@ -40,9 +40,18 @@ use Inertia\Response;
  *
  * Stock is the one thing on this screen that is per-branch, so it is the only
  * thing the scope changes. `local` (the default) reads the local snapshot and
- * is exactly what this screen has always shown; a branch id, or `all`, reads
+ * is exactly what this screen has always shown; a branch id reads
  * `stock_snapshots` live from the business database through {@see OnlineRead}.
  * Admin+, with a Cashier snapped back to `local` rather than refused.
+ *
+ * **One branch at a time, and no `all`** — the one screen carrying the branch
+ * scope that does not offer it. Everywhere else a wider scope adds rows to a
+ * list; here it would have to add them to a *number*, and a business-wide total
+ * per variant says nothing on its own: twenty units is twenty spread evenly or
+ * twenty at one branch and none at the other four. That needed a per-branch
+ * breakdown under every figure to be readable at all, which is a lot of distinct
+ * meaning stacked into one table cell. `?scope=all` is snapped back to `local`
+ * like any other scope this screen cannot serve.
  *
  * **The item and variant query is local in EVERY scope.** The catalog is
  * online-authoritative and mirrored business-wide, so the local rows ARE the
@@ -71,9 +80,6 @@ class ItemController extends Controller
 
     /** This branch's own shelf: the local snapshot, works offline. */
     private const SCOPE_LOCAL = 'local';
-
-    /** Every branch's shelf, totalled: Postgres, read live. */
-    private const SCOPE_ALL = 'all';
 
     public function __construct(
         private readonly OnlineWrite $online,
@@ -153,8 +159,7 @@ class ItemController extends Controller
     }
 
     /**
-     * Attach another branch's stock — or every branch's — to the variants on this
-     * page.
+     * Attach another branch's stock to the variants on this page.
      *
      * The roster and the snapshots come back in ONE online read, so a page view
      * holds one Supavisor client slot rather than two.
@@ -164,14 +169,12 @@ class ItemController extends Controller
      * there and still this device's. That is the whole reason the catalog query
      * stayed local — there is no half-consolidated state to design a screen for.
      *
-     * @param  string  $scope  'all', or a branch id.
+     * @param  string  $scope  A branch id, and never this branch's own.
      * @param  LengthAwarePaginator<int, Item>  $items
      * @return array<string, mixed>
      */
     private function consolidated(string $scope, LengthAwarePaginator $items): array
     {
-        $requested = $scope === self::SCOPE_ALL ? null : $scope;
-
         $variantIds = $items->getCollection()
             ->flatMap(fn (Item $item): Collection => $item->variants->pluck('id'))
             ->unique()
@@ -179,21 +182,27 @@ class ItemController extends Controller
             ->all();
 
         $data = rescue(fn (): array => $this->read->run(
-            function (Connection $remote) use ($requested, $variantIds, $items): array {
+            function (Connection $remote) use ($scope, $variantIds, $items): array {
                 // Disabled branches included: a disabled branch cannot receive
                 // work, but the stock still sitting on its shelf is the
                 // business's and has to be findable.
                 $branches = BranchRoster::read($remote);
 
                 // A branch id no longer in the roster means a stale or hand-typed
-                // link. Show the whole business rather than an empty screen, and
-                // let the echoed-back scope say what happened.
-                $branchId = $requested !== null && isset($branches[$requested]) ? $requested : null;
+                // link. Fall back exactly as a failed read does, rather than
+                // reading no rows and printing a page of confident zeros.
+                if (! isset($branches[$scope])) {
+                    return [
+                        'scope' => self::SCOPE_LOCAL,
+                        'branches' => array_values($branches),
+                        'consolidatedOnline' => false,
+                    ];
+                }
 
-                $this->attach($items, $this->remoteStock($remote, $branchId, $variantIds), $branches);
+                $this->attach($items, $this->remoteStock($remote, $scope, $variantIds));
 
                 return [
-                    'scope' => $branchId ?? self::SCOPE_ALL,
+                    'scope' => $scope,
                     'branches' => array_values($branches),
                     'consolidatedOnline' => true,
                 ];
@@ -205,13 +214,11 @@ class ItemController extends Controller
     }
 
     /**
-     * The upstream stock rows for one page of variants.
+     * One branch's stock rows for one page of variants.
      *
-     * Deliberately NOT grouped. The `all` scope has to show which branch holds
-     * what — a total on its own cannot tell "twenty spread evenly" from "twenty
-     * at one branch and none at the other four" — so aggregating here would throw
-     * away the answer and force a second query to get it back. One page is at
-     * most a few dozen variants; the sum is done in PHP.
+     * No aggregate and no GROUP BY, because there is nothing to aggregate:
+     * `stock_snapshots` is keyed `(branch_id, variant_id)`, so one branch answers
+     * with at most one row per variant and the figure is already the figure.
      *
      * `variants` is never touched upstream, which is also how `variants.cost`
      * stays out of reach: {@see HidesCostFromNonOwners} is a
@@ -220,7 +227,7 @@ class ItemController extends Controller
      * @param  list<string>  $variantIds
      * @return Collection<int, \stdClass>
      */
-    private function remoteStock(Connection $remote, ?string $branchId, array $variantIds): Collection
+    private function remoteStock(Connection $remote, string $branchId, array $variantIds): Collection
     {
         if ($variantIds === []) {
             return collect();
@@ -228,62 +235,54 @@ class ItemController extends Controller
 
         return $remote->table('stock_snapshots')
             ->whereIn('variant_id', $variantIds)
-            ->when($branchId, fn ($query) => $query->where('branch_id', $branchId))
-            ->get(['branch_id', 'variant_id', 'quantity']);
+            ->where('branch_id', $branchId)
+            ->get(['variant_id', 'quantity']);
     }
 
     /**
-     * Put the scoped figures on the variants the page will serialise.
+     * Put the scoped figure on the variants the page will serialise.
      *
-     * Two new attributes, and the naming is load-bearing. `current_stock` is a
-     * get-only cached {@see Variant::currentStock()} accessor: writing to it
-     * would land in `$attributes`, be ignored by `getAttribute()`, and render
-     * THIS branch's numbers under another branch's heading with no error
-     * anywhere. So the scoped figure gets a name of its own and the local one is
-     * left exactly as it was — which is also what makes the failed-read fallback
+     * The naming is load-bearing. `current_stock` is a get-only cached
+     * {@see Variant::currentStock()} accessor: writing to it would land in
+     * `$attributes`, be ignored by `getAttribute()`, and render THIS branch's
+     * numbers under another branch's heading with no error anywhere. So the
+     * scoped figure gets a name of its own and the local one is left exactly as
+     * it was — which is also what makes the failed-read fallback
      * indistinguishable from an ordinary local render.
      *
-     * A branch with no row for a variant is OMITTED rather than shown as zero.
-     * "Has never handled this product" and "has run out of it" are different
-     * statements, and zero-filling would put a low-stock badge on every branch
-     * that has never stocked half the catalog.
+     * A variant that branch holds no row for reads zero: upstream a snapshot is
+     * written the first time stock moves, so no row means none has, and none has
+     * moved is none on the shelf.
      *
-     * These attributes are for serialisation only. Setting them marks the model
-     * dirty, so nothing on this path may call `save()` on a variant.
+     * The attribute is for serialisation only. Setting it marks the model dirty,
+     * so nothing on this path may call `save()` on a variant.
      *
      * @param  LengthAwarePaginator<int, Item>  $items
      * @param  Collection<int, \stdClass>  $rows
-     * @param  array<string, array{id: string, code: string, name: string}>  $branches
      */
-    private function attach(LengthAwarePaginator $items, Collection $rows, array $branches): void
+    private function attach(LengthAwarePaginator $items, Collection $rows): void
     {
-        $byVariant = $rows->groupBy(fn (object $row): string => (string) $row->variant_id);
+        $byVariant = $rows->keyBy(fn (object $row): string => (string) $row->variant_id);
 
-        // Roster order, which is by code — so the breakdown reads the same way
-        // down the whole page instead of in whatever order Postgres answered.
-        $order = array_flip(array_keys($branches));
+        $items->getCollection()->each(function (Item $item) use ($byVariant): void {
+            $item->variants->each(function (Variant $variant) use ($byVariant): void {
+                $row = $byVariant->get((string) $variant->getKey());
 
-        $items->getCollection()->each(function (Item $item) use ($byVariant, $branches, $order): void {
-            $item->variants->each(function (Variant $variant) use ($byVariant, $branches, $order): void {
-                $rows = $byVariant->get((string) $variant->getKey(), collect())
-                    ->sortBy(fn (object $row): int => $order[(string) $row->branch_id] ?? PHP_INT_MAX)
-                    ->values();
-
-                $variant->setAttribute('branch_stock', $rows->map(fn (object $row): array => [
-                    'branch' => $branches[(string) $row->branch_id]['code'] ?? '??',
-                    'quantity' => (int) $row->quantity,
-                ])->all());
-
-                $variant->setAttribute('scoped_stock', (int) $rows->sum('quantity'));
+                $variant->setAttribute('scoped_stock', $row === null ? 0 : (int) $row->quantity);
             });
         });
     }
 
     /**
-     * Which branches' stock to read, snapped to what this viewer and this device
+     * WHICH branch's stock to read, snapped to what this viewer and this device
      * can actually serve. Matches {@see StockHistoryController} deliberately: a
      * Cashier, or a device that was never connected to a business database, gets
      * `local` back rather than a 403 — the local shelf is what they are here for.
+     *
+     * Singular, unlike every other screen: `all` is not a scope this one has, so
+     * it falls through to the same `local` that `?scope=junk` gets. That is what
+     * keeps the option from coming back by URL after the picker stopped offering
+     * it (see the class docblock for why it does not).
      */
     private function normalizeScope(mixed $value, bool $canViewAll): string
     {
@@ -297,7 +296,7 @@ class ItemController extends Controller
             return self::SCOPE_LOCAL;
         }
 
-        return $scope === self::SCOPE_ALL || Str::isUuid($scope) ? $scope : self::SCOPE_ALL;
+        return Str::isUuid($scope) ? $scope : self::SCOPE_LOCAL;
     }
 
     /**

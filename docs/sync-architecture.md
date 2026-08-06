@@ -523,20 +523,29 @@ And the one that is not a dialect difference: **`cost` is guarded by the SELECT 
 nothing else.** `HidesCostFromNonOwners` is a model serialization hook and never runs on a
 query-builder row, so for a non-Owner the key must be *absent*, matching the local path.
 
-**Inventory stock** (M12, `Inventory\ItemController`) is the odd one out: the scope changes
-**stock and nothing else**. The item and variant list is read locally in every scope — the catalog
-is mirrored business-wide, so the local rows *are* the upstream rows — and the online read is one
-`whereIn` over `stock_snapshots` for the variant ids already on the page. That makes the fallback
-trivial (attach nothing, and the page is byte-identical to its offline render) and means a failed
-read has no half-consolidated state to design a screen for.
+**Inventory stock** (M12, `Inventory\ItemController`) is the odd one out twice over. First, the
+scope changes **stock and nothing else**. The item and variant list is read locally in every scope
+— the catalog is mirrored business-wide, so the local rows *are* the upstream rows — and the
+online read is one `whereIn` over `stock_snapshots` for the variant ids already on the page. That
+makes the fallback trivial (attach nothing, and the page is byte-identical to its offline render)
+and means a failed read has no half-consolidated state to design a screen for.
 
-Two rules hold it up. The scoped figure lands on `scoped_stock`, **never** on `current_stock`:
-that is a get-only cached accessor over the local snapshot, so a write to it is silently discarded
-and the page renders this device's numbers under another branch's heading. And a branch with no
-row for a variant is **omitted** from the breakdown rather than shown as zero — "has never handled
-this" and "has run out" are different statements, and zero-filling would badge half the catalog
-low at every branch. What is on screen is that branch's *baseline* (glossary §"Stock baseline"),
-which excludes its unsynced sales and therefore reads high; the page says so.
+Second, it is the one screen with **no `all`**: the parameter is `local` or a branch id, and
+nothing wider. Everywhere else a wider scope adds rows to a list; here it would have to add them
+to a *number*, and a business-wide total per variant says nothing on its own — twenty units is
+twenty spread evenly or twenty at one branch and none at the other four. It shipped in M12 with a
+per-branch breakdown printed under every figure to make it readable, and that much meaning in one
+table cell was the thing that had to go, not the thing that fixed it. `normalizeScope()` snaps
+`?scope=all` back to `local` so the option cannot return by URL; the shared picker takes
+`allowAll={false}`; the other five screens are untouched.
+
+The rule that survives all of it: the scoped figure lands on `scoped_stock`, **never** on
+`current_stock`: that is a get-only cached accessor over the local snapshot, so a write to it is
+silently discarded and the page renders this device's numbers under another branch's heading. A
+variant the scoped branch holds no row for reads zero — upstream a snapshot is written the first
+time stock moves, so no row means none has. What is on screen is that branch's *baseline*
+(glossary §"Stock baseline"), which excludes its unsynced sales and therefore reads high; the page
+says so.
 
 ---
 

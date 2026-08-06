@@ -182,68 +182,86 @@ export function PendingRequestCard({ request }: { request: PendingRequest }) {
 
     return (
         <Card>
-            <CardContent className="space-y-4 p-4">
-                <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant={transfer ? 'default' : 'secondary'}>{transfer ? 'Transfer' : 'Adjustment'}</Badge>
-                    <span className="text-muted-foreground text-xs">{SOURCE[request.source] ?? request.source}</span>
-                </div>
-
-                <div className="grid gap-4 sm:grid-cols-2">
-                    <Field label="Requested by">
-                        <div className="space-y-0.5">
-                            <BranchName branch={request.issued_by.branch} />
-                            <Actor actor={request.issued_by} />
-                            <p className="text-muted-foreground text-xs">{formatWhen(request.issued_by.at)}</p>
+            <CardContent className="p-4">
+                {/* Two columns wide enough to hold them: the context on the left,
+                    the thing being answered on the right. Below lg it is one
+                    stack and the divider goes back to being a top border. */}
+                <div className="flex flex-col gap-4 lg:flex-row lg:gap-6">
+                    <div className="min-w-0 flex-1 space-y-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant={transfer ? 'default' : 'secondary'}>{transfer ? 'Transfer' : 'Adjustment'}</Badge>
+                            <span className="text-muted-foreground text-xs">{SOURCE[request.source] ?? request.source}</span>
                         </div>
-                    </Field>
 
-                    {transfer ? (
-                        <Field label="Moving between">
-                            <div className="flex flex-wrap items-center gap-2">
-                                <BranchName branch={request.sender} />
-                                <ArrowRight className="text-muted-foreground size-4 shrink-0" aria-label="to" />
-                                <BranchName branch={request.receiver} />
-                            </div>
-                        </Field>
-                    ) : (
-                        <Field label="Stock changes at">
-                            <BranchName branch={request.target} />
-                        </Field>
-                    )}
-                </div>
+                        {/* Capped: past this the two fields drift so far apart on a
+                            wide monitor that they stop reading as one block. */}
+                        <div className="grid max-w-2xl gap-4 sm:grid-cols-2">
+                            <Field label="Requested by">
+                                <div className="space-y-0.5">
+                                    <BranchName branch={request.issued_by.branch} />
+                                    <Actor actor={request.issued_by} />
+                                    <p className="text-muted-foreground text-xs">{formatWhen(request.issued_by.at)}</p>
+                                </div>
+                            </Field>
 
-                {/* A transfer's receiving branch is answering for what the SENDER
-                    said actually left, so what the sender said has to be on the
-                    card. Only shown once there is an answer to show. */}
-                {transfer && send && send.status !== 'pending' && (
-                    <Field label={`Sent by ${send.branch?.code ?? 'the sending branch'}`}>
-                        <Answer leg={send} />
-                    </Field>
-                )}
-
-                <div className="space-y-3 border-t pt-3">
-                    <div className="flex flex-wrap items-baseline justify-between gap-2">
-                        <div>
-                            <p className="font-medium">
-                                {request.item}
-                                {request.variant ? <span className="text-muted-foreground"> · {request.variant}</span> : null}
-                            </p>
-                            {request.notes && <p className="text-muted-foreground text-sm">{request.notes}</p>}
+                            {transfer ? (
+                                <Field label="Moving between">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <BranchName branch={request.sender} />
+                                        <ArrowRight className="text-muted-foreground size-4 shrink-0" aria-label="to" />
+                                        <BranchName branch={request.receiver} />
+                                    </div>
+                                </Field>
+                            ) : (
+                                <Field label="Stock changes at">
+                                    <BranchName branch={request.target} />
+                                </Field>
+                            )}
                         </div>
-                        <p className="text-lg font-semibold tabular-nums">{signed(answerable?.quantity ?? request.requested)}</p>
+
+                        {/* A transfer's receiving branch is answering for what the SENDER
+                            said actually left, so what the sender said has to be on the
+                            card. Only shown once there is an answer to show. */}
+                        {transfer && send && send.status !== 'pending' && (
+                            <Field label={`Sent by ${send.branch?.code ?? 'the sending branch'}`}>
+                                <Answer leg={send} />
+                            </Field>
+                        )}
                     </div>
 
-                    {transfer && <TransferSteps send={send} receive={receive} />}
+                    {/* An equal share of the width, so the divider lands down the
+                        middle of every card in the list however much context the
+                        left side happens to carry. */}
+                    <div className="flex w-full min-w-0 flex-1 flex-col gap-3 border-t pt-3 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-6">
+                        <div className="flex flex-wrap items-baseline justify-between gap-2">
+                            <div>
+                                <p className="font-medium">
+                                    {request.item}
+                                    {request.variant ? <span className="text-muted-foreground"> · {request.variant}</span> : null}
+                                </p>
+                                {request.notes && <p className="text-muted-foreground text-sm">{request.notes}</p>}
+                            </div>
+                            <p className="text-lg font-semibold tabular-nums">{signed(answerable?.quantity ?? request.requested)}</p>
+                        </div>
 
-                    {answerable ? (
-                        <AnswerControls leg={answerable} />
-                    ) : (
-                        <p className="text-muted-foreground text-sm">
-                            {transfer && send?.status === 'pending'
-                                ? `Waiting on ${send.branch?.code ?? 'the sending branch'} to confirm it left.`
-                                : `Waiting on ${(receive ?? request.legs[0])?.branch?.code ?? 'another branch'} to confirm.`}
-                        </p>
-                    )}
+                        {transfer && <TransferSteps send={send} receive={receive} />}
+
+                        {/* Pushed to the foot of the column: the buttons are the
+                            last thing on the card in reading order, and on a tall
+                            card they stay put rather than floating up against the
+                            product line. */}
+                        <div className="mt-auto">
+                            {answerable ? (
+                                <AnswerControls leg={answerable} />
+                            ) : (
+                                <p className="text-muted-foreground text-sm">
+                                    {transfer && send?.status === 'pending'
+                                        ? `Waiting on ${send.branch?.code ?? 'the sending branch'} to confirm it left.`
+                                        : `Waiting on ${(receive ?? request.legs[0])?.branch?.code ?? 'another branch'} to confirm.`}
+                                </p>
+                            )}
+                        </div>
+                    </div>
                 </div>
             </CardContent>
         </Card>
@@ -268,7 +286,7 @@ function AnswerControls({ leg }: { leg: RequestLeg }) {
 
     return (
         <div className="space-y-3">
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
                 <Button size="sm" onClick={approve} disabled={form.processing}>
                     Approve
                 </Button>
@@ -365,10 +383,12 @@ function AnswerForm({ leg, onDone }: { leg: RequestLeg; onDone: () => void }) {
                 </p>
             </div>
 
-            <Button size="sm" onClick={submit} disabled={processing}>
-                {processing && <LoaderCircle className="mr-2 size-4 animate-spin" />}
-                Save answer
-            </Button>
+            <div className="flex justify-end">
+                <Button size="sm" onClick={submit} disabled={processing}>
+                    {processing && <LoaderCircle className="mr-2 size-4 animate-spin" />}
+                    Save answer
+                </Button>
+            </div>
         </div>
     );
 }

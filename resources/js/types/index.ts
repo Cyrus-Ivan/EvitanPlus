@@ -227,6 +227,10 @@ export interface PendingRequests {
  * lookup rather than a join. Null for a sale, a return or a defect — which never
  * went through the queue — and null offline, where the row's own `notes` carry
  * the sentence version instead.
+ *
+ * Every field describes THIS leg. `parent` is the sending leg of a transfer and
+ * describes that one: a different person, at a different branch, answering a
+ * different question.
  */
 export interface MovementRequest {
     id: string;
@@ -236,12 +240,29 @@ export interface MovementRequest {
     requested: number;
     approved: number | null;
     resolution_reason: string | null;
+    // What the person ASKING wrote, as against `resolution_reason`, which is what
+    // the person ANSWERING wrote.
+    notes: string | null;
     issued_by: RequestActor & { branch: BranchRef | null; at: string };
     resolved_by: RequestActor | null;
     resolved_at: string | null;
     branch: BranchRef | null;
     counterparty_branch: BranchRef | null;
-    can_reissue: boolean;
+    // The sending leg, on a receiving one — and the only place the original
+    // requester can be read: a receiving leg's own `issued_by` is the person who
+    // confirmed the stock left, and it carries no issuing branch at all.
+    parent: MovementRequestLeg | null;
+}
+
+export interface MovementRequestLeg {
+    requested: number;
+    approved: number | null;
+    resolution_reason: string | null;
+    notes: string | null;
+    issued_by: RequestActor & { branch: BranchRef | null; at: string };
+    resolved_by: RequestActor | null;
+    resolved_at: string | null;
+    branch: BranchRef | null;
 }
 
 export interface Item {

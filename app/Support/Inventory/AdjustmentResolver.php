@@ -305,12 +305,22 @@ class AdjustmentResolver
         return $this->read->run(
             fn (Connection $remote): Collection => $remote->table('inventory_update_queue as q')
                 ->leftJoin('branches as b', 'b.id', '=', 'q.counterparty_branch_id')
+                // The sending leg, on a receiving one. Joined rather than looked
+                // up afterwards because {@see notes()} needs it to write the
+                // record this branch will still be able to read offline.
+                ->leftJoin('inventory_update_queue as p', 'p.id', '=', 'q.parent_id')
                 ->where('q.branch_id', $branchId)
                 ->where('q.status', 'pending')
                 ->whereIn('q.id', $ids)
                 ->orderBy('q.created_at')
                 ->orderBy('q.id')
-                ->get(['q.*', 'b.code as counterparty_branch_code']),
+                ->get([
+                    'q.*',
+                    'b.code as counterparty_branch_code',
+                    'p.quantity as parent_quantity',
+                    'p.approved_quantity as parent_approved',
+                    'p.resolution_reason as parent_reason',
+                ]),
             'Pending stock adjustments',
         );
     }
@@ -371,15 +381,25 @@ class AdjustmentResolver
      * the movement disagree, so the row has to carry both numbers — otherwise the
      * history shows two arriving and nothing anywhere says three were sent.
      *
-     * This is also the whole of what a rejection says OFFLINE. The structured
-     * account lives on the queue row and the stock entry dialog fetches it, but
-     * that needs a connection; a sentence on the ledger row does not, and Stock
-     * History is a screen that has to render with none.
+     * This is the whole of what a movement says OFFLINE. The structured account
+     * lives on the queue rows and the stock entry dialog fetches it — attributing
+     * each sentence to the person who wrote it, at their branch — but that needs a
+     * connection, and Stock History is a screen that has to render with none. So
+     * every voice gets a labelled line here too.
      *
-     * The verdict gets a line to itself. Either side of it is somebody's own
-     * words — the requester's above, the approver's below — and run together on
-     * one line there is nothing to tell a reader where a person stopped talking
-     * and the app started.
+     * ## Up to three people are talking, and one of them is at another branch
+     *
+     * A transfer is asked for by one person, confirmed out of the door by a second
+     * at the sending branch, and confirmed in by a third at the receiving one. The
+     * middle voice is the one that is easy to lose: {@see secondLeg()} copies the
+     * REQUESTER's note onto the receiving leg and leaves the sender's answer
+     * behind on the sending leg, at a branch whose ledger this device never pulls.
+     * Without the `Sent:` line below, the receiving branch's permanent record
+     * cannot say why only two of the three arrived — which is the same argument
+     * that put this string here in the first place.
+     *
+     * No names or branches in it: attribution needs a user and a roster lookup and
+     * belongs to the dialog, which has both. This is the sentence version.
      */
     private function notes(stdClass $row, int $approved, string $outcome, ?string $reason): ?string
     {
@@ -390,12 +410,45 @@ class AdjustmentResolver
         };
 
         $parts = array_filter([
-            $row->notes,
+            $row->notes === null ? null : 'Requested: '.$row->notes,
+            $this->sendersAccount($row),
             $verdict,
-            $verdict === null ? null : $reason,
+            $verdict === null || $reason === null ? null : 'User note: '.$reason,
         ]);
 
         return $parts === [] ? null : implode("\n", $parts);
+    }
+
+    /**
+     * What the sending branch said, on the receiving branch's row.
+     *
+     * Null unless there is something the receiver could not otherwise know: a
+     * plain approval with no reason sent exactly what was asked for, and the
+     * quantity on this leg already says so.
+     *
+     * Magnitudes rather than signed figures, uniquely in this class. The sending
+     * leg is negative and the receiving leg positive, so "-2 of the -3" on a row
+     * that adds two reads as a contradiction; "Sent" is the direction.
+     */
+    private function sendersAccount(stdClass $row): ?string
+    {
+        if (($row->parent_quantity ?? null) === null) {
+            return null;
+        }
+
+        $askedOfSender = abs((int) $row->parent_quantity);
+        $sent = $row->parent_approved === null ? $askedOfSender : abs((int) $row->parent_approved);
+        $short = $sent !== $askedOfSender;
+
+        if (! $short && $row->parent_reason === null) {
+            return null;
+        }
+
+        $line = $short
+            ? sprintf('Sent: %d of the %d asked for.', $sent, $askedOfSender)
+            : sprintf('Sent: %d, all of it.', $sent);
+
+        return $row->parent_reason === null ? $line : $line.' '.$row->parent_reason;
     }
 
     /**

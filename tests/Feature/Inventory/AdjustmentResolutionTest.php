@@ -86,7 +86,10 @@ class AdjustmentResolutionTest extends TestCase
         $entry = InventoryLedger::query()->findOrFail($id);
         $this->assertSame(6, $entry->quantity);
         $this->assertSame('stock_adjustment', $entry->type);
-        $this->assertSame('Delivery', $entry->notes);
+        // Labelled even when the requester is the only voice on the row: this
+        // string is what a reader gets offline, and an unlabelled line there
+        // gives them nothing to tell somebody's words from the app's.
+        $this->assertSame('Requested: Delivery', $entry->notes);
 
         $answered = $remote->table('inventory_update_queue')->find($id);
         $this->assertSame('accepted', $answered->status);
@@ -137,10 +140,13 @@ class AdjustmentResolutionTest extends TestCase
         $this->assertStringContainsString('+2 of +3', (string) $entry->notes);
         $this->assertStringContainsString('crushed in transit', (string) $entry->notes);
 
-        // The app's verdict stands on its own line, between the requester's words
-        // and the approver's. Merged onto one line, nothing tells them apart.
+        // Every voice on its own labelled line, with the app's verdict between
+        // the requester's words and the approver's. Run together, nothing tells
+        // a reader where a person stopped talking and the app started — and this
+        // string is the whole record offline, where the dialog's attributed
+        // blocks cannot be fetched.
         $this->assertSame(
-            ['Transfer in', 'Partially approved: +2 of +3 asked for.', 'One was crushed in transit.'],
+            ['Requested: Transfer in', 'Partially approved: +2 of +3 asked for.', 'User note: One was crushed in transit.'],
             explode("\n", (string) $entry->notes),
         );
 

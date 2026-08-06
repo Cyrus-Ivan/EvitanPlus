@@ -198,6 +198,134 @@ class StockTransferTest extends TestCase
         $this->assertSame(1, $remote->table('inventory_update_queue')->count());
     }
 
+    /**
+     * A receiving leg for stock that left short, with its sending leg behind it.
+     *
+     * Alice at FAR asked for 3; Bob at FAR confirmed only 2 went out of the door
+     * and said why; 2 are now arriving at this branch. Returns the receiving
+     * leg's id.
+     */
+    private function shortSendArriving(Connection $remote, Variant $variant, User $requester, User $sender): string
+    {
+        $parent = (string) Str::uuid();
+        $incoming = (string) Str::uuid();
+
+        // One statement each: the two rows do not carry the same columns, and
+        // SQLite refuses a multi-row insert whose tuples differ in width.
+        $remote->table('inventory_update_queue')->insert([
+            'id' => $parent,
+            'branch_id' => self::THERE,
+            'counterparty_branch_id' => self::HERE,
+            'variant_id' => $variant->id,
+            'quantity' => -3,
+            'reference_type' => 'transfer',
+            'status' => 'accepted',
+            'approved_quantity' => -2,
+            'resolution_reason' => 'One was damaged loading.',
+            'resolved_by' => $sender->id,
+            'resolved_at' => now()->toDateTimeString(),
+            'notes' => 'Restock for the weekend rush.',
+            'issued_by' => $requester->id,
+            'issued_by_branch_id' => self::THERE,
+            'created_at' => now()->toDateTimeString(),
+            'updated_at' => now()->toDateTimeString(),
+        ]);
+
+        $remote->table('inventory_update_queue')->insert([
+            'id' => $incoming,
+            'parent_id' => $parent,
+            'branch_id' => self::HERE,
+            'counterparty_branch_id' => self::THERE,
+            'variant_id' => $variant->id,
+            'quantity' => 2,
+            'reference_type' => 'transfer',
+            'status' => 'pending',
+            'notes' => 'Restock for the weekend rush.',
+            // As AdjustmentResolver::secondLeg() writes it: the issuer is the
+            // person who put the stock in the van, and no issuing branch.
+            'issued_by' => $sender->id,
+            'created_at' => now()->toDateTimeString(),
+            'updated_at' => now()->toDateTimeString(),
+        ]);
+
+        return $incoming;
+    }
+
+    public function test_the_senders_account_reaches_the_receiving_branchs_ledger_row(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $this->seedRoster($remote);
+        $variant = Variant::factory()->create();
+        $receiver = User::factory()->admin()->create();
+
+        $incoming = $this->shortSendArriving(
+            $remote,
+            $variant,
+            User::factory()->admin()->create(),
+            User::factory()->admin()->create(),
+        );
+
+        $this->actingAs($receiver)
+            ->post(route('stock-updates.resolve'), ['adjustments' => [['id' => $incoming, 'outcome' => 'approve']]])
+            ->assertSessionHasNoErrors();
+
+        // Why only two of the three arrived is a claim made by somebody at the
+        // OTHER branch, on a row this device never pulls — `Puller` filters the
+        // ledger to one branch. Without this line the receiving branch's
+        // permanent record cannot say it at all once the request leaves the
+        // Pending Stocks page, and this string is the whole account offline.
+        $this->assertSame(
+            ['Requested: Restock for the weekend rush.', 'Sent: 2 of the 3 asked for. One was damaged loading.'],
+            explode("\n", (string) InventoryLedger::query()->findOrFail($incoming)->notes),
+        );
+    }
+
+    public function test_the_request_behind_an_arrival_names_all_three_people(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $this->seedRoster($remote);
+        $variant = Variant::factory()->create();
+
+        $requester = User::factory()->admin()->create(['name' => 'Alice']);
+        $sender = User::factory()->admin()->create(['name' => 'Bob']);
+        $receiver = User::factory()->cashier()->create(['name' => 'Carla']);
+
+        $incoming = $this->shortSendArriving($remote, $variant, $requester, $sender);
+
+        $this->actingAs($receiver)
+            ->post(route('stock-updates.resolve'), ['adjustments' => [['id' => $incoming, 'outcome' => 'approve']]])
+            ->assertSessionHasNoErrors();
+
+        $request = $this->actingAs($receiver)
+            ->getJson(route('stock-history.request', $incoming))
+            ->assertOk()
+            ->json('request');
+
+        // Carla answered THIS leg, and the flat fields are hers.
+        $this->assertSame('Carla', $request['resolved_by']['name']);
+        $this->assertSame(2, $request['requested']);
+        $this->assertSame('TST', $request['branch']['code']);
+        // The requester's own words, apart from any answerer's.
+        $this->assertSame('Restock for the weekend rush.', $request['notes']);
+
+        // Alice asked, and she can only be read off the PARENT: this leg's own
+        // issuer is Bob, who confirmed the stock left, and it carries no issuing
+        // branch at all. Taken from the row itself the dialog would name the
+        // wrong person, from nowhere.
+        $this->assertSame('Bob', $request['issued_by']['name']);
+        $this->assertNull($request['issued_by']['branch']);
+
+        $this->assertSame('Alice', $request['parent']['issued_by']['name']);
+        $this->assertSame('FAR', $request['parent']['issued_by']['branch']['code']);
+        $this->assertSame(-3, $request['parent']['requested']);
+
+        // And Bob, who is the only one who knows why a third of it is missing.
+        $this->assertSame('Bob', $request['parent']['resolved_by']['name']);
+        $this->assertSame(-2, $request['parent']['approved']);
+        $this->assertSame('One was damaged loading.', $request['parent']['resolution_reason']);
+        $this->assertSame('FAR', $request['parent']['branch']['code']);
+    }
+
     public function test_turning_down_the_sending_leg_asks_nobody_anything(): void
     {
         $remote = $this->fakeBusinessQueue();
@@ -225,48 +353,6 @@ class StockTransferTest extends TestCase
         $this->assertSame(10, app(StockLedger::class)->currentStock($variant));
         $this->assertSame(1, $remote->table('inventory_update_queue')->count());
         $this->assertSame(0, $remote->table('inventory_update_queue')->whereNotNull('parent_id')->count());
-    }
-
-    public function test_asking_again_for_a_rejected_transfer_keeps_it_a_transfer(): void
-    {
-        $remote = $this->fakeBusinessQueue();
-        $this->seedRoster($remote);
-        $variant = Variant::factory()->create();
-        $admin = User::factory()->admin()->create();
-
-        $rejected = (string) Str::uuid();
-        $remote->table('inventory_update_queue')->insert([
-            'id' => $rejected,
-            'branch_id' => self::THERE,
-            'counterparty_branch_id' => self::HERE,
-            'variant_id' => $variant->id,
-            'quantity' => -4,
-            'reference_type' => 'transfer',
-            'status' => 'rejected',
-            'resolution_reason' => 'The van never came.',
-            'resolved_at' => now()->toDateTimeString(),
-            'issued_by' => $admin->id,
-            'created_at' => now()->toDateTimeString(),
-            'updated_at' => now()->toDateTimeString(),
-        ]);
-
-        $this->actingAs($admin)->post(route('stock-updates.reissue', $rejected))->assertSessionHasNoErrors();
-
-        // The row's own kind, target and counterparty are carried through. A
-        // re-issue that hard-coded `manual_adjustment` would silently turn this
-        // into a plain adjustment aimed at the branch that turned it down, with
-        // the counterparty pointing at whoever pressed the button — and approving
-        // it would then never spawn the receiving leg.
-        $again = $remote->table('inventory_update_queue')->where('id', '!=', $rejected)->sole();
-
-        $this->assertSame('transfer', $again->reference_type);
-        $this->assertSame(self::THERE, $again->branch_id);
-        $this->assertSame(self::HERE, $again->counterparty_branch_id);
-        $this->assertSame(-4, (int) $again->quantity);
-        $this->assertSame('pending', $again->status);
-
-        // And the rejection still stands as the record of what happened.
-        $this->assertSame('rejected', $remote->table('inventory_update_queue')->find($rejected)->status);
     }
 
     public function test_a_transfer_to_the_same_branch_is_refused(): void

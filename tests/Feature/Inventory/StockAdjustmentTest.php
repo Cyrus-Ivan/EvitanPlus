@@ -82,7 +82,9 @@ class StockAdjustmentTest extends TestCase
             'quantity' => 12,
             'type' => 'stock_adjustment',
             'reference_type' => 'manual_adjustment',
-            'notes' => 'Restock',
+            // Labelled, because a movement's notes can hold several people's
+            // words and the row has to say whose are whose with no connection.
+            'notes' => 'Requested: Restock',
         ]);
     }
 

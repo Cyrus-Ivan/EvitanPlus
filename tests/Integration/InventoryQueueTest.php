@@ -257,8 +257,11 @@ class InventoryQueueTest extends TestCase
         $this->assertSame(self::BRANCH_B, $request['branch']['code']);
         // Schema 22: where the person who asked was standing.
         $this->assertSame(self::BRANCH_A, $request['issued_by']['branch']['code']);
-        // Rejected, and this viewer is the Owner, so it can be asked for again.
-        $this->assertTrue($request['can_reissue']);
+        // The requester's own words, returned separately from the answerer's so
+        // the dialog can attribute each to the person who wrote it.
+        $this->assertSame('Spoiled at QBB', $request['notes']);
+        // A plain adjustment has no sending leg to report.
+        $this->assertNull($request['parent']);
     }
 
     public function test_an_approved_adjustment_becomes_a_ledger_entry_on_both_sides(): void
@@ -377,7 +380,7 @@ class InventoryQueueTest extends TestCase
         )[0]['quantity']);
     }
 
-    public function test_the_issuing_branch_sees_the_flag_and_can_re_issue(): void
+    public function test_a_resolved_row_leaves_the_pending_page_at_the_branch_that_issued_it(): void
     {
         $this->hydrateAs(self::$documentA);
         $this->createProduct('QUEUE4', '20.00');
@@ -412,25 +415,15 @@ class InventoryQueueTest extends TestCase
             collect($props['requests'])->first(fn (array $request): bool => $request['notes'] === 'Too many'),
         );
 
-        $rejected = $this->remote(
-            "select id from inventory_update_queue where notes = 'Too many' and status = 'rejected'",
-        )[0]['id'];
-
-        // Re-issued for an amount that fits: a NEW pending row, leaving the
-        // rejection standing as the record of what happened.
-        $this->actingAs($this->owner())
-            ->post(route('stock-updates.reissue', $rejected))
-            ->assertRedirect()
-            ->assertSessionHasNoErrors();
-
+        // And it left because it was ANSWERED, not because it vanished: the
+        // rejection stands upstream as the only record of what happened, and
+        // asking for the stock again means issuing a new request.
         $rows = $this->remote(
-            "select * from inventory_update_queue where notes = 'Too many' order by created_at"
+            "select * from inventory_update_queue where notes = 'Too many'",
         );
 
-        $this->assertCount(2, $rows);
+        $this->assertCount(1, $rows);
         $this->assertSame('rejected', $rows[0]['status']);
-        $this->assertSame('pending', $rows[1]['status']);
-        $this->assertNotSame($rows[0]['id'], $rows[1]['id']);
     }
 
     public function test_a_transfer_is_answered_at_both_ends_and_the_shortfall_is_written_off(): void

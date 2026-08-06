@@ -140,8 +140,17 @@ class StockHistoryController extends Controller
      *
      * Every `type = 'stock_adjustment'` row on the ledger began as a pending
      * stock adjustment, and the two share an id — {@see AdjustmentResolver}
-     * forces the ledger entry to take the queue row's own uuid. So this needs no
-     * join, no new column and no lookup table: the id in hand IS the key.
+     * forces the ledger entry to take the queue row's own uuid. So finding the
+     * row needs no join, no new column and no lookup table: the id in hand IS
+     * the key.
+     *
+     * The PARENT leg is a second lookup, and only a receiving leg has one. It is
+     * what lets the dialog attribute three separate voices — whoever asked,
+     * whoever confirmed the stock left, whoever confirmed it arrived — to three
+     * people at up to three branches. Without it a receiving leg is read wrong
+     * rather than read short: {@see AdjustmentResolver::secondLeg()} sets that
+     * row's `issued_by` to the SENDER and never stamps `issued_by_branch_id`, so
+     * "asked by" taken from the row itself names the wrong person with no branch.
      *
      * A JSON route fetched when the dialog opens rather than a prop on the page,
      * for the same reason {@see InventoryQueueController::branches()} is one —
@@ -152,7 +161,7 @@ class StockHistoryController extends Controller
      * and null offline. Neither is an error: the row's own `notes` already carry
      * the sentence version of this, precisely so it reads with no connection.
      */
-    public function request(Request $request, string $entry): JsonResponse
+    public function request(string $entry): JsonResponse
     {
         if (! Str::isUuid($entry)) {
             return response()->json(['request' => null]);
@@ -162,17 +171,18 @@ class StockHistoryController extends Controller
             function (Connection $remote) use ($entry): ?array {
                 $row = $remote->table('inventory_update_queue')->where('id', $entry)->first();
 
-                return $row === null ? null : $this->describeRequest($row, BranchRoster::read($remote));
+                if ($row === null) {
+                    return null;
+                }
+
+                $parent = $row->parent_id === null ? null : $remote->table('inventory_update_queue')
+                    ->where('id', $row->parent_id)
+                    ->first();
+
+                return $this->describeRequest($row, $parent, BranchRoster::read($remote));
             },
             'The request behind this movement',
         ), null, report: false);
-
-        if ($data !== null) {
-            // Offered only where it can be acted on: re-issuing is Admin+ and
-            // there is nothing to re-issue unless this was turned down.
-            $data['can_reissue'] = $data['status'] === 'rejected'
-                && ($request->user()?->can('manage-inventory') ?? false);
-        }
 
         return response()->json(['request' => $data]);
     }
@@ -368,16 +378,23 @@ class StockHistoryController extends Controller
     /**
      * The queue row behind a ledger entry, named from the local mirror.
      *
+     * Every flat field describes THIS leg. `parent` is the sending leg of a
+     * transfer and describes that one — a different person, at a different
+     * branch, answering a different question — which is why it is a nested block
+     * rather than more columns alongside.
+     *
      * @param  array<string, array{id: string, code: string, name: string}>  $branches
      * @return array<string, mixed>
      */
-    private function describeRequest(object $row, array $branches): array
+    private function describeRequest(object $row, ?object $parent, array $branches): array
     {
         $users = User::query()
             ->withTrashed()
             ->whereIn('id', array_filter([
                 (string) $row->issued_by,
                 $row->resolved_by === null ? null : (string) $row->resolved_by,
+                $parent === null ? null : (string) $parent->issued_by,
+                $parent?->resolved_by === null ? null : (string) $parent->resolved_by,
             ]))
             ->get(['id', 'name', 'role'])
             ->keyBy('id')
@@ -386,8 +403,6 @@ class StockHistoryController extends Controller
             // not been mirrored to this device yet genuinely has none.
             ->all();
 
-        $issuer = $users[(string) $row->issued_by] ?? null;
-        $resolver = $row->resolved_by === null ? null : ($users[(string) $row->resolved_by] ?? null);
         $transfer = (string) $row->reference_type === 'transfer';
 
         return [
@@ -400,20 +415,58 @@ class StockHistoryController extends Controller
             'requested' => (int) $row->quantity,
             'approved' => $row->approved_quantity === null ? null : (int) $row->approved_quantity,
             'resolution_reason' => $row->resolution_reason,
-            'issued_by' => [
-                'name' => $issuer === null ? 'Unknown user' : $issuer->name,
-                'role' => $issuer?->role->value,
+            // The requester's own words, kept apart from the answerer's so each
+            // can be shown under the name of whoever wrote it.
+            'notes' => $row->notes,
+            'issued_by' => $this->actor($users, $row->issued_by, [
                 'branch' => $this->branchRef($row->issued_by_branch_id ?? null, $branches),
                 'at' => $this->localise($row->created_at),
-            ],
-            'resolved_by' => $resolver === null ? null : [
-                'name' => $resolver->name,
-                'role' => $resolver->role->value,
-            ],
+            ]),
+            'resolved_by' => $row->resolved_by === null
+                ? null
+                : $this->actor($users, $row->resolved_by),
             'resolved_at' => $this->localise($row->resolved_at),
             'branch' => $this->branchRef($row->branch_id, $branches),
             'counterparty_branch' => $this->branchRef($row->counterparty_branch_id, $branches),
+            'parent' => $parent === null ? null : [
+                'requested' => (int) $parent->quantity,
+                'approved' => $parent->approved_quantity === null ? null : (int) $parent->approved_quantity,
+                'resolution_reason' => $parent->resolution_reason,
+                'notes' => $parent->notes,
+                // Whoever FIRST asked for the stock to move, which this leg does
+                // not know: its own `issued_by` is the person who confirmed the
+                // stock left, and it carries no issuing branch at all.
+                'issued_by' => $this->actor($users, $parent->issued_by, [
+                    'branch' => $this->branchRef($parent->issued_by_branch_id ?? null, $branches),
+                    'at' => $this->localise($parent->created_at),
+                ]),
+                'resolved_by' => $parent->resolved_by === null
+                    ? null
+                    : $this->actor($users, $parent->resolved_by),
+                'resolved_at' => $this->localise($parent->resolved_at),
+                'branch' => $this->branchRef($parent->branch_id, $branches),
+            ],
         ];
+    }
+
+    /**
+     * A person on a queue row, named from the local mirror.
+     *
+     * "Unknown user" rather than null: the row is proof somebody did this, and a
+     * device that has not pulled them yet must not imply otherwise.
+     *
+     * @param  array<string, User>  $users
+     * @param  array<string, mixed>  $extra
+     * @return array<string, mixed>
+     */
+    private function actor(array $users, mixed $id, array $extra = []): array
+    {
+        $user = $users[(string) $id] ?? null;
+
+        return [
+            'name' => $user === null ? 'Unknown user' : $user->name,
+            'role' => $user?->role->value,
+        ] + $extra;
     }
 
     /**

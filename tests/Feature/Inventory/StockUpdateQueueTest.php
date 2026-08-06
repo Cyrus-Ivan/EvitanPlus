@@ -166,14 +166,4 @@ class StockUpdateQueueTest extends TestCase
             ]))
             ->assertSessionHasErrors('variant_id');
     }
-
-    public function test_re_issuing_needs_the_business_database(): void
-    {
-        // The original row is only in Postgres, so without a connection there is
-        // nothing to copy — refused with the offline message, not a 500.
-        $this->actingAs(User::factory()->admin()->create())
-            ->post(route('stock-updates.reissue', '00000000-0000-0000-0000-0000000000aa'))
-            ->assertRedirect()
-            ->assertSessionHas('toast.type', 'error');
-    }
 }

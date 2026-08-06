@@ -132,7 +132,6 @@ Route::middleware(['auth'])->group(function () {
         // of the {item} wildcard.
         Route::get('inventory/stock-updates/branches', [InventoryQueueController::class, 'branches'])->name('stock-updates.branches');
         Route::post('inventory/stock-updates', [InventoryQueueController::class, 'store'])->name('stock-updates.store');
-        Route::post('inventory/stock-updates/{queued}/reissue', [InventoryQueueController::class, 'reissue'])->name('stock-updates.reissue');
 
         // A branch-to-branch transfer, which is one request and TWO pending
         // rows: the sending branch answers first, and confirming it is what

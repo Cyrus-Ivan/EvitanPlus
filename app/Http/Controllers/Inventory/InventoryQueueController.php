@@ -235,65 +235,6 @@ class InventoryQueueController extends Controller
     }
 
     /**
-     * Ask for a rejected adjustment again, unchanged.
-     *
-     * A new row rather than a reopened one: `status` and `resolved_at` are tied by
-     * a check constraint, the rejection is a fact that happened, and the queue is
-     * the record of what was asked for and what came of it. Re-deciding a resolved
-     * row would erase the first answer — and that answer is the only account of it
-     * anywhere, since a rejection writes no ledger row.
-     */
-    public function reissue(string $queued, AuditRecorder $audit): RedirectResponse
-    {
-        $original = $this->read->run(
-            fn (Connection $remote): ?object => $remote->table('inventory_update_queue')
-                ->where('id', $queued)
-                ->where('status', 'rejected')
-                ->first(),
-            'Branch stock updates',
-        );
-
-        if ($original === null) {
-            return back()->with('toast', [
-                'type' => 'error',
-                'message' => 'That adjustment is no longer rejected, so there is nothing to re-issue.',
-            ]);
-        }
-
-        // Carried through unchanged, and this is easy to get wrong: a re-issue
-        // that hard-coded `manual_adjustment` would silently turn a rejected
-        // TRANSFER leg into a plain adjustment aimed at the branch that turned it
-        // down, with the counterparty pointing at whoever pressed the button.
-        // A re-issue is the same request again, not a new kind of one.
-        $this->online->run(function () use ($original): void {
-            $this->queue->enqueue([[
-                'branch_id' => (string) $original->branch_id,
-                'counterparty_branch_id' => $original->counterparty_branch_id === null
-                    ? null
-                    : (string) $original->counterparty_branch_id,
-                'parent_id' => $original->parent_id === null ? null : (string) $original->parent_id,
-                'variant_id' => (string) $original->variant_id,
-                'quantity' => (int) $original->quantity,
-                'reference_type' => (string) $original->reference_type,
-                'reference_id' => $original->reference_id === null ? null : (string) $original->reference_id,
-                'notes' => $original->notes,
-            ]], request()->user());
-        }, 'Stock');
-
-        $audit->record(
-            action: 'inventory.stock.queued',
-            auditable: Variant::query()->find($original->variant_id),
-            description: sprintf('Asked again for a rejected stock adjustment of %+d.', (int) $original->quantity),
-            new: ['branch_id' => (string) $original->branch_id, 'reissued_from' => $queued],
-        );
-
-        return back()->with('toast', [
-            'type' => 'success',
-            'message' => 'Asked again. That branch has to confirm it before anything moves.',
-        ]);
-    }
-
-    /**
      * Move stock from one branch to another, in two halves.
      *
      * Only the FIRST half is written here: a pending row at the SENDING branch

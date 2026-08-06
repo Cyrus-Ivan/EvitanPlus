@@ -1,9 +1,8 @@
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { movementLabel, movementVariant } from '@/lib/stock-movement';
-import type { MovementRequest, StockLedgerEntry } from '@/types';
-import { router } from '@inertiajs/react';
+import { cn } from '@/lib/utils';
+import type { BranchRef, MovementRequest, RequestActor, StockLedgerEntry } from '@/types';
 import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 
@@ -79,71 +78,87 @@ export function StockEntryDialog({
 }) {
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent>
-                {entry && (
-                    <>
-                        <DialogHeader>
-                            <DialogTitle>
-                                {entry.variant?.item ?? 'Unknown product'}
-                                {entry.variant?.name ? <span className="text-muted-foreground font-normal"> · {entry.variant.name}</span> : null}
-                            </DialogTitle>
-                            <DialogDescription>{formatWhen(entry.created_at)}</DialogDescription>
-                        </DialogHeader>
-
-                        <dl className="grid grid-cols-2 gap-4">
-                            <Field label="Movement">
-                                <Badge variant={movementVariant(entry)}>{movementLabel(entry)}</Badge>
-                            </Field>
-                            <Field label="How it was asked for">{REFERENCE_LABEL[entry.reference_type] ?? entry.reference_type}</Field>
-                            <Field label="Change">
-                                <span
-                                    className={`tabular-nums ${
-                                        entry.quantity > 0 ? 'text-emerald-600 dark:text-emerald-400' : entry.quantity < 0 ? 'text-destructive' : ''
-                                    }`}
-                                >
-                                    {entry.quantity > 0 ? `+${entry.quantity}` : entry.quantity}
-                                </span>
-                            </Field>
-                            <Field label="On-hand after">
-                                <span className="tabular-nums">{entry.resulting_snapshot}</span>
-                            </Field>
-                            <Field label="By">{entry.performed_by ?? '—'}</Field>
-                            {/* Only when another branch was involved: who asked
-                                for this, or the far end of a transfer. Read from
-                                the row itself, so it renders offline. */}
-                            {entry.counterparty_branch_code && (
-                                <Field label={entry.quantity < 0 ? 'Sent to' : 'Came from'}>{entry.counterparty_branch_code}</Field>
-                            )}
-                        </dl>
-
-                        <div className="space-y-0.5">
-                            <p className="text-muted-foreground text-xs">Notes</p>
-                            <p className="text-sm whitespace-pre-wrap">{entry.notes ?? '—'}</p>
-                        </div>
-
-                        <RequestDetails entry={entry} />
-                    </>
-                )}
-            </DialogContent>
+            <DialogContent>{entry && <EntryBody entry={entry} />}</DialogContent>
         </Dialog>
+    );
+}
+
+/**
+ * Split out so the request lookup has an entry to hang off.
+ *
+ * The hook cannot live in {@see StockEntryDialog}, which renders with `entry`
+ * null between openings.
+ */
+function EntryBody({ entry }: { entry: StockLedgerEntry }) {
+    const request = useMovementRequest(entry);
+
+    return (
+        <>
+            <DialogHeader>
+                <DialogTitle>
+                    {entry.variant?.item ?? 'Unknown product'}
+                    {entry.variant?.name ? <span className="text-muted-foreground font-normal"> · {entry.variant.name}</span> : null}
+                </DialogTitle>
+                <DialogDescription>{formatWhen(entry.created_at)}</DialogDescription>
+            </DialogHeader>
+
+            <dl className="grid grid-cols-2 gap-4">
+                <Field label="Movement">
+                    <Badge variant={movementVariant(entry)}>{movementLabel(entry)}</Badge>
+                </Field>
+                <Field label="How it was asked for">{REFERENCE_LABEL[entry.reference_type] ?? entry.reference_type}</Field>
+                <Field label="Change">
+                    <span
+                        className={`tabular-nums ${
+                            entry.quantity > 0 ? 'text-emerald-600 dark:text-emerald-400' : entry.quantity < 0 ? 'text-destructive' : ''
+                        }`}
+                    >
+                        {entry.quantity > 0 ? `+${entry.quantity}` : entry.quantity}
+                    </span>
+                </Field>
+                <Field label="On-hand after">
+                    <span className="tabular-nums">{entry.resulting_snapshot}</span>
+                </Field>
+                <Field label="By">{entry.performed_by ?? '—'}</Field>
+                {/* Only when another branch was involved: who asked
+                    for this, or the far end of a transfer. Read from
+                    the row itself, so it renders offline. */}
+                {entry.counterparty_branch_code && (
+                    <Field label={entry.quantity < 0 ? 'Sent to' : 'Came from'}>{entry.counterparty_branch_code}</Field>
+                )}
+            </dl>
+
+            {/* One or the other, never both. The blocks are a superset of the
+                row's own notes — `AdjustmentResolver::notes()` composes that
+                string out of exactly these pieces — so showing the two together
+                prints every sentence twice. The notes are the fallback: offline,
+                and on a sale, return or defect that never had a request. */}
+            {request === null ? (
+                <div className="space-y-0.5">
+                    <p className="text-muted-foreground text-xs">Notes</p>
+                    <p className="text-sm whitespace-pre-wrap">{entry.notes ?? '—'}</p>
+                </div>
+            ) : (
+                <RequestStory request={request} />
+            )}
+        </>
     );
 }
 
 /**
  * What was ASKED for behind this movement, and who answered (M11.8).
  *
- * The ledger row says what moved; only the queue row it came from says what was
- * requested, by whom, from which branch, and — for a refusal, whose ledger row
- * is a movement of zero — why nothing did. The two share an id, so this is a
- * lookup and not a join.
+ * The ledger row says what moved; only the queue rows it came from say what was
+ * requested, by whom, from which branch, and — for a refusal, whose ledger row is
+ * a movement of zero — why nothing did. The entry and its request share an id, so
+ * this is a lookup and not a join.
  *
  * Fetched when the dialog opens rather than carried in the page props: it lives
  * in Postgres, and Stock History is a Cashier-level screen that has to render
- * offline. A failed fetch is not an error state — the row's own notes already
- * carry the sentence version of all of this, which is why they are written that
- * way.
+ * offline. A failed fetch is not an error state — the row's own notes carry the
+ * sentence version of all of this, which is why they are written that way.
  */
-function RequestDetails({ entry }: { entry: StockLedgerEntry }) {
+function useMovementRequest(entry: StockLedgerEntry): MovementRequest | null {
     const [request, setRequest] = useState<MovementRequest | null>(null);
 
     useEffect(() => {
@@ -169,55 +184,104 @@ function RequestDetails({ entry }: { entry: StockLedgerEntry }) {
         };
     }, [entry.id, entry.type]);
 
-    if (request === null) {
-        return null;
-    }
+    return request;
+}
 
-    const partial = request.approved !== null && request.approved !== request.requested;
+/**
+ * One block per person who spoke, in the order they spoke.
+ *
+ * Up to three of them, and they are at up to three different branches: somebody
+ * asks for stock to move, somebody at the sending branch confirms it left, and
+ * somebody at the receiving branch confirms it arrived. Each block carries that
+ * person's name, role, branch, figure and own words — which is the whole reason
+ * this replaced a single run-together paragraph, because "one was damaged
+ * loading" and "all present and correct" are two people disagreeing about the
+ * same van and prose cannot say which is which.
+ */
+function RequestStory({ request }: { request: MovementRequest }) {
+    const parent = request.parent;
+    const transfer = request.kind === 'transfer';
+
+    // A transfer's figures are magnitudes. The sending leg is negative and the
+    // receiving leg positive, so "-3 requested" above "+2 received" reads as a
+    // contradiction rather than as one van; the block labels carry the direction.
+    // An adjustment has no direction but its sign, so it keeps it.
+    const figure = (quantity: number): string => (transfer ? String(Math.abs(quantity)) : signed(quantity));
+
+    const amount = (agreed: number | null, asked: number): string =>
+        agreed === null || agreed === asked ? figure(asked) : `${figure(agreed)} of ${figure(asked)}`;
 
     return (
         <div className="space-y-3 border-t pt-3">
-            <div className="flex flex-wrap items-center gap-2">
-                <p className="text-muted-foreground text-xs">What was asked for</p>
-                <Badge variant={request.status === 'rejected' ? 'destructive' : 'secondary'}>
-                    {request.status === 'rejected' ? 'Turned down' : partial ? 'Partly approved' : 'Approved'}
-                </Badge>
-            </div>
+            {/* The original ask comes off the PARENT where there is one: a
+                receiving leg's own issuer is the person who confirmed the stock
+                left, not whoever asked for it, and it carries no branch. */}
+            <Voice
+                label="Requested"
+                person={parent?.issued_by ?? request.issued_by}
+                branch={(parent ?? request).issued_by.branch}
+                at={(parent ?? request).issued_by.at}
+                amount={figure((parent ?? request).requested)}
+                words={(parent ?? request).notes}
+            />
 
-            <dl className="grid grid-cols-2 gap-4">
-                <Field label="Requested">
-                    <span className="tabular-nums">{signed(request.requested)}</span>
-                    {request.approved !== null && request.approved !== request.requested && (
-                        <span className="text-muted-foreground"> · {signed(request.approved)} agreed</span>
-                    )}
-                </Field>
-                <Field label="Asked by">
-                    <span>{actor(request.issued_by)}</span>
-                    {request.issued_by.branch && <p className="text-muted-foreground text-xs">{request.issued_by.branch.code}</p>}
-                </Field>
-                <Field label="Answered by">
-                    <span>{actor(request.resolved_by)}</span>
-                    <p className="text-muted-foreground text-xs">{formatWhen(request.resolved_at)}</p>
-                </Field>
-                <Field label="Stock changes at">{request.branch?.code ?? '—'}</Field>
-            </dl>
+            {parent && (
+                <Voice
+                    label="Sent"
+                    person={parent.resolved_by}
+                    branch={parent.branch}
+                    at={parent.resolved_at}
+                    amount={amount(parent.approved, parent.requested)}
+                    words={parent.resolution_reason}
+                />
+            )}
 
-            {request.resolution_reason && (
-                <div className="space-y-0.5">
-                    <p className="text-muted-foreground text-xs">Why</p>
-                    <p className="text-sm whitespace-pre-wrap">{request.resolution_reason}</p>
+            <Voice
+                label={transfer ? (parent ? 'Received' : 'Sent') : 'Answered'}
+                person={request.resolved_by}
+                branch={request.branch}
+                at={request.resolved_at}
+                amount={request.status === 'rejected' ? 'None of it' : amount(request.approved, request.requested)}
+                refused={request.status === 'rejected'}
+                words={request.resolution_reason}
+                pending={request.status === 'pending'}
+            />
+        </div>
+    );
+}
+
+/** One person, at one branch, and what they said about one figure. */
+function Voice({
+    label,
+    person,
+    branch,
+    at,
+    amount,
+    words,
+    refused = false,
+    pending = false,
+}: {
+    label: string;
+    person: RequestActor | null;
+    branch: BranchRef | null;
+    at: string | null;
+    amount: string;
+    words: string | null;
+    refused?: boolean;
+    pending?: boolean;
+}) {
+    return (
+        <div className="space-y-1">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                <div className="flex flex-wrap items-baseline gap-x-2">
+                    <span className="text-muted-foreground text-xs">{label}</span>
+                    <span className="text-sm">{pending ? 'Not answered yet' : actor(person)}</span>
+                    {branch && <span className="text-muted-foreground text-xs">· {branch.code}</span>}
                 </div>
-            )}
-
-            {request.can_reissue && (
-                <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => router.post(route('stock-updates.reissue', request.id), {}, { preserveScroll: true })}
-                >
-                    Ask again
-                </Button>
-            )}
+                <span className={cn('text-sm tabular-nums', refused && 'text-destructive')}>{amount}</span>
+            </div>
+            {words && <p className="text-muted-foreground text-sm whitespace-pre-wrap">{words}</p>}
+            {!pending && at && <p className="text-muted-foreground text-xs">{formatWhen(at)}</p>}
         </div>
     );
 }

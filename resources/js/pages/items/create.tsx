@@ -5,8 +5,8 @@ import type { BreadcrumbItem, Category } from '@/types';
 import { Head } from '@inertiajs/react';
 
 const breadcrumbs: BreadcrumbItem[] = [
-    { title: 'Inventory', href: '/inventory' },
-    { title: 'New item', href: '/inventory/create' },
+    { title: 'Items', href: '/items' },
+    { title: 'New item', href: '/items/create' },
 ];
 
 export default function CreateItem({ categories, online }: { categories: Pick<Category, 'id' | 'name'>[]; online: boolean }) {

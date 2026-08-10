@@ -30,23 +30,36 @@ trait ApprovesEveryPendingRow
      */
     private function approveEverythingPending(User $actor): int
     {
+        $ids = array_map(fn (object $row): string => (string) $row->id, $this->pendingRows());
+
+        return app(AdjustmentResolver::class)->resolve(
+            array_fill_keys($ids, ['outcome' => 'approve']),
+            $actor,
+        );
+    }
+
+    /**
+     * Every row still waiting on this branch, oldest first.
+     *
+     * Exposed on its own because "nothing was asked for" is now a claim tests
+     * make directly — a CSV import stopped queueing anything in M13, and the only
+     * way to say so is to look.
+     *
+     * @return list<object>
+     */
+    private function pendingRows(): array
+    {
         $branchId = (string) Instance::current()?->branch_id;
 
-        $ids = app(OnlineRead::class)->run(
+        return app(OnlineRead::class)->run(
             fn (Connection $remote): array => $remote->table('inventory_update_queue')
                 ->where('branch_id', $branchId)
                 ->where('status', 'pending')
                 ->orderBy('created_at')
                 ->orderBy('id')
-                ->pluck('id')
-                ->map(fn ($id): string => (string) $id)
+                ->get()
                 ->all(),
             'Pending stock adjustments',
-        );
-
-        return app(AdjustmentResolver::class)->resolve(
-            array_fill_keys($ids, ['outcome' => 'approve']),
-            $actor,
         );
     }
 }

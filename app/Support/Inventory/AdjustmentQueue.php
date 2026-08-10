@@ -54,6 +54,7 @@ class AdjustmentQueue
      *     notes?: string|null,
      *     counterparty_branch_id?: string|null,
      *     parent_id?: string|null,
+     *     batch_id?: string|null,
      * }>  $rows
      *
      * @throws \RuntimeException when called outside an OnlineWrite::run().
@@ -73,6 +74,12 @@ class AdjustmentQueue
                     'branch_id' => $row['branch_id'],
                     'counterparty_branch_id' => $row['counterparty_branch_id'] ?? null,
                     'parent_id' => $row['parent_id'] ?? null,
+                    // The one act these rows were issued as, when they were
+                    // issued as one. Minted by the caller rather than here: a
+                    // batch spans the whole enqueue and this closure runs per
+                    // row, so generating it here would give every line a batch
+                    // of one. Null for anything asked for on its own.
+                    'batch_id' => $row['batch_id'] ?? null,
                     'variant_id' => $row['variant_id'],
                     'quantity' => $row['quantity'],
                     'reference_type' => $row['reference_type'],

@@ -323,10 +323,11 @@ push, the next baseline contains them and the correction converges to zero on it
 
 ## 6. Pending stock adjustments
 
-**Every** stock movement is now asked for before it happens. A recount typed at this till, a
-CSV import, an adjustment aimed at another branch, and both legs of a transfer all write a
+**Every** stock movement is now asked for before it happens. A recount typed at this till, an
+adjustment aimed at another branch, a stock batch, and both legs of a transfer all write a
 `pending` row into `inventory_update_queue` (`App\Support\Inventory\AdjustmentQueue`) and
-stop. It becomes a ledger entry when a person at the affected branch says it really happened
+stop. (A CSV import did too, until M13 took stock out of the catalog file entirely — see §6.1.)
+It becomes a ledger entry when a person at the affected branch says it really happened
 (`App\Support\Inventory\AdjustmentResolver`), from `/inventory/stock-updates`.
 
 M8 mediated only the cross-branch case, on the grounds that the issuer cannot see the target's
@@ -350,15 +351,43 @@ alike — and zero-quantity rows are not new: defect audit entries have written 
 
 ### The page shows unfinished work only
 
-`/inventory/stock-updates` ("Pending Stocks") groups rows into **requests** by `parent_id ?? id`
-— one row for an adjustment, two for a transfer — and shows a request while **any** leg is still
-pending. An answered adjustment leaves; a transfer stays, with the sender's answer on the card,
+`/inventory/stock-updates` ("Pending Stocks") groups rows into **requests** by
+`batch_id ?? parent_id ?? id` — a whole stock batch, else a transfer's two legs, else one row on
+its own — and shows a request while **any** leg is still pending. An answered adjustment leaves; a transfer stays, with the sender's answer on the card,
 until the receiver answers too; a transfer its sender refused leaves, because refusing it spawns
 no receiving leg. Where the record goes afterwards is §9.
 
 `issued_by_branch_id` (schema 22) says where the person who asked was standing. It cannot be
 derived: `IssueTransferRequest` takes both branch ids as free choices, so an Owner at head office
 can arrange a move between two branches that are neither of them theirs.
+
+### 6.1 A stock batch is one card (M13, schema 23)
+
+Twelve products moving between two branches was twelve trips through the transfer dialog, twelve
+unrelated pending rows, and twelve copies of one note for the receiving branch to read. That is
+not what happened: one delivery left one shop. `batch_id` (nullable, no FK, on both
+`inventory_update_queue` and `inventory_ledger`) is the name of that one act.
+
+`App\Support\Inventory\StockBatchController` mints it and writes one row per line, all sharing
+one note. A transfer batch writes only the **sending** legs, as one always did; each receiving leg
+is spawned by `AdjustmentResolver::secondLeg()` when the sender confirms, and inherits the batch
+so the receiving branch also sees one card. `AdjustmentResolver::apply()` carries it onto the
+ledger row, which is why Stock History can say a movement was part of a delivery on a till with no
+connection — the same reason `counterparty_branch_code` is stored as a code.
+
+Because the grouping key made a card span many products, the product moved from the request onto
+the **leg**. A card names its branches and its note once.
+
+**Additive.** Both columns are nullable and nothing older reads them, so `MIN_APP_VERSION` stayed
+at 1.1.0: a 1.1.0 build against a 23 schema writes nulls, its cards do not group, and a transfer
+batch it approves does not carry the batch onto the receiving legs. Degraded, not wrong. No grant
+change either — INSERT and SELECT on both tables are table-level, and nothing ever UPDATEs
+`batch_id`, so `UPDATE_COLUMNS` stays at six.
+
+**Answering a batch needs no new path.** "Approve all" posts the card's ids to the same
+`stock-updates.resolve` route one Approve uses, and the resolver re-reads each of them filtered to
+this branch — which is the only thing stopping one branch writing another's stock, and not
+something a bulk shortcut may skip.
 
 ### The resolver reads before it writes, and the filter is not defensive
 
@@ -594,6 +623,9 @@ side it looks exactly like a branch doing its job.
 Stamping the floor first sends every old till to `version_blocked` at step 0, so none of them
 reaches its step 2 during the rollout window. They keep selling offline throughout. The other
 order means new builds writing `resolution_reason` into a schema that has not got it.
+
+This section is *why*; [`releasing.md`](releasing.md) is *how* — the order of operations for
+shipping a version, including which of these three quantities you move and what that costs.
 
 ---
 

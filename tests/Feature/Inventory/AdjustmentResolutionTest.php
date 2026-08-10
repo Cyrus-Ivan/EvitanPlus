@@ -352,7 +352,7 @@ class AdjustmentResolutionTest extends TestCase
                 ->has('requests', 2)
                 ->where('filters.scope', 'all')
                 ->where('requests.0.kind', 'adjustment')
-                ->where('requests.0.requested', 3)
+                ->where('requests.0.legs.0.requested', 3)
                 ->where('requests.0.legs.0.role', 'target')
                 ->where('requests.0.legs.0.actionable', true)
                 ->where('requests.1.legs.0.actionable', false)
@@ -372,7 +372,7 @@ class AdjustmentResolutionTest extends TestCase
             ->assertInertia(fn ($page) => $page
                 ->where('filters.scope', 'local')
                 ->has('requests', 1)
-                ->where('requests.0.requested', 3)
+                ->where('requests.0.legs.0.requested', 3)
             );
     }
 
@@ -431,7 +431,7 @@ class AdjustmentResolutionTest extends TestCase
             ->assertInertia(fn ($page) => $page
                 ->has('requests', 1)
                 ->where('requests.0.kind', 'transfer')
-                ->where('requests.0.requested', -3)
+                ->where('requests.0.legs.0.requested', -3)
                 ->has('requests.0.legs', 2)
                 ->where('requests.0.legs.0.role', 'send')
                 ->where('requests.0.legs.0.status', 'accepted')
@@ -441,6 +441,69 @@ class AdjustmentResolutionTest extends TestCase
                 ->where('requests.0.legs.1.role', 'receive')
                 ->where('requests.0.legs.1.quantity', 2)
                 ->where('requests.0.legs.1.actionable', true)
+            );
+    }
+
+    /**
+     * A stock batch is ONE card, however many products it holds (M13).
+     *
+     * The grouping key is `batch_id ?? parent_id ?? id`, read outside in, and
+     * this is the outermost term: twelve rows of one delivery are one event to
+     * the person confirming it, and twelve cards repeating one note is the page
+     * failing to say so. The product moved onto the LEG for the same reason.
+     */
+    public function test_a_batch_is_one_card_listing_every_product_in_it(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $admin = User::factory()->admin()->create();
+        $batchId = (string) Str::uuid();
+
+        $first = $this->stocked();
+        $second = $this->stocked();
+
+        // Distinct timestamps, because the queue is worked oldest-first and two
+        // rows in the same second would leave the leg order to the uuids.
+        $this->pending($remote, $first, 4, [
+            'batch_id' => $batchId, 'notes' => 'Weekly delivery',
+            'created_at' => now()->subMinute()->toDateTimeString(),
+        ]);
+        $this->pending($remote, $second, 7, ['batch_id' => $batchId, 'notes' => 'Weekly delivery']);
+
+        $this->actingAs($admin)
+            ->get(route('stock-updates.index'))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->has('requests', 1)
+                ->where('requests.0.kind', 'adjustment')
+                ->where('requests.0.batch.size', 2)
+                // Said once, on the card, rather than twice.
+                ->where('requests.0.notes', 'Weekly delivery')
+                ->has('requests.0.legs', 2)
+                ->where('requests.0.legs.0.item', $first->item->name)
+                ->where('requests.0.legs.0.quantity', 4)
+                ->where('requests.0.legs.0.actionable', true)
+                ->where('requests.0.legs.1.item', $second->item->name)
+                ->where('requests.0.legs.1.quantity', 7)
+                ->where('requests.0.legs.1.actionable', true)
+            );
+    }
+
+    /**
+     * A row issued on its own carries no batch, and still renders as the card it
+     * always did — one line, `batch` null.
+     */
+    public function test_a_request_issued_alone_carries_no_batch(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $this->pending($remote, $this->stocked(), 5);
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->get(route('stock-updates.index'))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->has('requests', 1)
+                ->where('requests.0.batch', null)
+                ->has('requests.0.legs', 1)
             );
     }
 

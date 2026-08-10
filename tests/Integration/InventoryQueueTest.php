@@ -502,6 +502,80 @@ class InventoryQueueTest extends TestCase
         )[0]['c']);
     }
 
+    /**
+     * A stock batch across two really provisioned branches (M13).
+     *
+     * Here rather than in `StockBatchTest` because three of the things it turns
+     * on are structurally out of reach of a SQLite stand-in: whether the branch
+     * role may INSERT `batch_id` at all, whether the resolver's UPDATE still fits
+     * inside the six-column grant now that a seventh column exists on the table,
+     * and whether the receiving legs really carry the batch across the wire.
+     */
+    public function test_a_transfer_batch_is_one_act_at_both_branches(): void
+    {
+        $this->hydrateAs(self::$documentA);
+        $this->createProduct('BATCH1', '20.00');
+        $this->createProduct('BATCH2', '30.00');
+        $this->stockUp('BATCH1', 10);
+        $this->stockUp('BATCH2', 10);
+
+        $this->actingAs($this->owner())
+            ->post(route('stock-batches.store'), [
+                'kind' => 'transfer',
+                'from_branch_id' => self::$documentA['branch']['id'],
+                'to_branch_id' => self::$documentB['branch']['id'],
+                'lines' => [
+                    ['variant_id' => Variant::query()->where('sku', 'BATCH1')->sole()->getKey(), 'quantity' => 3],
+                    ['variant_id' => Variant::query()->where('sku', 'BATCH2')->sole()->getKey(), 'quantity' => 5],
+                ],
+                'notes' => 'Weekly restock',
+            ])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $sending = $this->remote(
+            'select * from inventory_update_queue where notes = ? order by quantity',
+            ['Weekly restock'],
+        );
+
+        // Two sending legs, one batch, and nothing at B yet.
+        $this->assertCount(2, $sending);
+        $this->assertNotNull($sending[0]['batch_id']);
+        $this->assertSame($sending[0]['batch_id'], $sending[1]['batch_id']);
+        $this->assertSame([-5, -3], array_map(fn (array $row): int => (int) $row['quantity'], $sending));
+
+        // Somebody at A confirms both, in one submission, as the card's
+        // "Approve all" sends them.
+        $this->actingAs($this->owner())
+            ->post(route('stock-updates.resolve'), ['adjustments' => [
+                ['id' => $sending[0]['id'], 'outcome' => 'approve'],
+                ['id' => $sending[1]['id'], 'outcome' => 'approve'],
+            ]])
+            ->assertSessionHasNoErrors();
+
+        // The batch reaches the ledger — which is the half a stand-in cannot
+        // reach, because `inventory_ledger` is mirrored and this is the column
+        // travelling up through RowMapper.
+        $ledger = $this->remote(
+            'select quantity, batch_id from inventory_ledger where batch_id = ? order by quantity',
+            [$sending[0]['batch_id']],
+        );
+
+        $this->assertCount(2, $ledger);
+        $this->assertSame([-5, -3], array_map(fn (array $row): int => (int) $row['quantity'], $ledger));
+
+        // And the receiving legs inherit it, so B sees one delivery rather than
+        // two unrelated arrivals.
+        $incoming = $this->remote(
+            'select * from inventory_update_queue where branch_id = ? and batch_id = ? order by quantity',
+            [self::$documentB['branch']['id'], $sending[0]['batch_id']],
+        );
+
+        $this->assertCount(2, $incoming);
+        $this->assertSame([3, 5], array_map(fn (array $row): int => (int) $row['quantity'], $incoming));
+        $this->assertSame(['pending', 'pending'], array_column($incoming, 'status'));
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private function owner(): User

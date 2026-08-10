@@ -41,7 +41,7 @@ class CategoryController extends Controller
             ->orderBy('name')
             ->get();
 
-        return Inertia::render('inventory/categories', [
+        return Inertia::render('items/categories', [
             'categories' => $categories,
             'filters' => ['status' => $status],
             // Told to the screen so it can say so before a form is filled in

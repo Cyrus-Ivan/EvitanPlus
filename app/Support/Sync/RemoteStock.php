@@ -38,6 +38,44 @@ use Illuminate\Support\Str;
 class RemoteStock
 {
     /**
+     * One branch's stock for a known set of variants, keyed by variant id.
+     *
+     * No aggregate and no GROUP BY, because there is nothing to aggregate:
+     * `stock_snapshots` is keyed `(branch_id, variant_id)`, so one branch answers
+     * with at most one row per variant and the figure is already the figure.
+     *
+     * A variant the branch holds no row for is simply ABSENT from the result
+     * rather than present as zero — callers decide what a missing shelf means,
+     * and every one of them so far reads it as zero for the reason upstream
+     * gives: a snapshot is written the first time stock moves, so no row means
+     * none has.
+     *
+     * `variants` is never touched here, which is also how `variants.cost` stays
+     * out of reach: `HidesCostFromNonOwners` is a model hook and would not run on
+     * a query-builder row.
+     *
+     * Static and connection-taking, like everything else that reads the business
+     * database: the connection is opened by {@see OnlineRead} or {@see BranchCycle}
+     * and handed in, never acquired here.
+     *
+     * @param  list<string>  $variantIds
+     * @return array<string, int>
+     */
+    public static function read(Connection $remote, string $branchId, array $variantIds): array
+    {
+        if ($variantIds === []) {
+            return [];
+        }
+
+        return $remote->table('stock_snapshots')
+            ->whereIn('variant_id', $variantIds)
+            ->where('branch_id', $branchId)
+            ->get(['variant_id', 'quantity'])
+            ->mapWithKeys(fn (object $row): array => [(string) $row->variant_id => (int) $row->quantity])
+            ->all();
+    }
+
+    /**
      * @param  list<string>  $variantIds
      */
     public function recompute(Connection $remote, string $branchId, array $variantIds): void

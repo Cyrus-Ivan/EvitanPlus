@@ -88,7 +88,13 @@ class LedgerSnapshotReconciliationTest extends TestCase
         $this->assertReconciled($variant, 5);
     }
 
-    public function test_snapshot_equals_ledger_sum_after_csv_import(): void
+    /**
+     * A CSV import is a catalog edit, so the invariant it has to keep is that it
+     * does not touch the shelf at all (M13). It used to move stock and then, from
+     * schema 21, to ASK for it; the price change below lands and the on-hand does
+     * not move, which is the claim that replaced both.
+     */
+    public function test_a_csv_import_leaves_the_snapshot_and_the_ledger_alone(): void
     {
         $owner = User::factory()->owner()->create();
         $variant = Variant::factory()->create(['sku' => 'SKU-REC-1']);
@@ -100,7 +106,7 @@ class LedgerSnapshotReconciliationTest extends TestCase
         $item = $variant->item;
 
         $handle = fopen('php://temp', 'r+');
-        fputcsv($handle, ['category', 'product', 'variant', 'sku', 'barcode', 'selling_price', 'cost', 'stock', 'unit', 'description', 'low_stock_threshold', 'mode']);
+        fputcsv($handle, ['category', 'product', 'variant', 'sku', 'barcode', 'selling_price', 'cost', 'unit', 'description', 'low_stock_threshold']);
         fputcsv($handle, [
             $item->category?->name ?? '',
             $item->name,
@@ -109,11 +115,9 @@ class LedgerSnapshotReconciliationTest extends TestCase
             $variant->barcode ?? '',
             '25.00',
             '',
-            '9',
             $item->unit,
             $item->description ?? '',
             '',
-            'replace_stock_count',
         ]);
         rewind($handle);
         $content = stream_get_contents($handle);
@@ -122,15 +126,16 @@ class LedgerSnapshotReconciliationTest extends TestCase
         $path = tempnam(sys_get_temp_dir(), 'inv').'.csv';
         file_put_contents($path, $content);
 
-        $response = $this->actingAs($owner)
-            ->post(route('inventory.import.store'), [
+        $this->actingAs($owner)
+            ->post(route('items.import.store'), [
                 'file' => new UploadedFile($path, 'inventory.csv', 'text/csv', null, true),
-            ]);
+                // The file edits a product that already exists, which the
+                // importer refuses without this.
+                'confirm_updates' => true,
+            ])
+            ->assertSessionHasNoErrors();
 
-        $response->assertSessionHasNoErrors();
-
-        $this->approveEverythingPending($owner);
-
-        $this->assertReconciled($variant->fresh(), 9);
+        $this->assertSame('25.00', $variant->fresh()->selling_price);
+        $this->assertReconciled($variant->fresh(), 3);
     }
 }

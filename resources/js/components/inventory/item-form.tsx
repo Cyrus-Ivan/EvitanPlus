@@ -363,7 +363,7 @@ export default function ItemForm({ item, categories }: { item?: Item; categories
                     {isEdit ? 'Save changes' : 'Create item'}
                 </Button>
                 <Button type="button" variant="outline" asChild>
-                    <Link href={route('inventory')}>Cancel</Link>
+                    <Link href={route('items.index')}>Cancel</Link>
                 </Button>
                 <Transition
                     show={recentlySuccessful}

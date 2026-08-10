@@ -31,6 +31,7 @@ class InventoryLedger extends Model
         'type',
         'sale_type',
         'reference_id',
+        'batch_id',
         'reference_type',
         'notes',
         'counterparty_branch_code',

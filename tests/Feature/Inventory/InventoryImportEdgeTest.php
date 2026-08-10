@@ -10,8 +10,15 @@ use Illuminate\Http\UploadedFile;
 use Tests\TestCase;
 
 /**
- * Phase 18 S5 — CSV import edges beyond the Phase 7 suite: weird-but-valid
- * UTF-8 survives the import → export round-trip byte-identically.
+ * Phase 18 S5 — CSV import edges beyond the Phase 7 suite: weird-but-valid UTF-8
+ * survives the import byte-identically.
+ *
+ * The round trip used to run through the CSV export, which M13 deleted along
+ * with the stock columns that gave it a reason to exist. The equivalent claim
+ * without it is the one that actually matters to a user: import the file, then
+ * import it AGAIN as an update, and the multibyte name is still the same bytes —
+ * which also exercises the `immutableFieldErrors` comparison, the one place a
+ * mangled name would surface as a spurious "you cannot rename a product".
  *
  * (Formula-injection names are deliberately not pinned here: finding F-16
  * changes how leading =/+/@ names are handled, and its test lands with that
@@ -42,35 +49,38 @@ class InventoryImportEdgeTest extends TestCase
         return new UploadedFile($path, 'inventory.csv', 'text/csv', null, true);
     }
 
-    public function test_multibyte_utf8_names_round_trip_through_import_and_export(): void
+    public function test_multibyte_utf8_names_survive_import_and_re_import(): void
     {
         $owner = User::factory()->owner()->create();
 
         $name = 'Ñandú — 100% Kapé ☕ (テスト)';
+        $row = [
+            'product' => $name,
+            'variant' => 'Größe M',
+            'sku' => 'UTF8-1',
+            'selling_price' => '12.34',
+            'unit' => 'pcs',
+        ];
 
         $this->actingAs($owner)
-            ->post(route('inventory.import.store'), [
-                'file' => $this->csv([[
-                    'product' => $name,
-                    'variant' => 'Größe M',
-                    'sku' => 'UTF8-1',
-                    'selling_price' => '12.34',
-                    'stock' => '5',
-                    'unit' => 'pcs',
-                    'mode' => InventoryCsvSchema::MODE_REPLACE,
-                ]]),
-            ])
+            ->post(route('items.import.store'), ['file' => $this->csv([$row])])
             ->assertSessionHasNoErrors();
 
         $item = Item::query()->firstWhere('name', $name);
         $this->assertNotNull($item, 'multibyte item name was not stored verbatim');
         $this->assertSame('Größe M', $item->variants()->sole()->name);
 
-        // Export must carry the exact same bytes back out.
-        $response = $this->actingAs($owner)->get(route('inventory.export'))->assertOk();
-        $csv = $response->streamedContent();
+        // The same file again, as an update. Every immutable field is compared
+        // against what was stored, so a byte that did not survive the first
+        // import fails here as "you cannot rename a product" rather than
+        // silently.
+        $this->actingAs($owner)
+            ->post(route('items.import.store'), [
+                'file' => $this->csv([['selling_price' => '13.00'] + $row]),
+                'confirm_updates' => true,
+            ])
+            ->assertSessionHasNoErrors();
 
-        $this->assertStringContainsString($name, $csv);
-        $this->assertStringContainsString('Größe M', $csv);
+        $this->assertSame('13.00', Item::query()->firstWhere('name', $name)?->variants()->sole()->selling_price);
     }
 }

@@ -68,7 +68,7 @@ class SpreadsheetSafeNameTest extends TestCase
     {
         $handle = fopen('php://temp', 'r+');
         fputcsv($handle, InventoryCsvSchema::COLUMNS);
-        fputcsv($handle, ['', '=Injected Product', '', 'INJ-1', '', '10.00', '', '5', 'pcs', '', '', InventoryCsvSchema::MODE_REPLACE]);
+        fputcsv($handle, ['', '=Injected Product', '', 'INJ-1', '', '10.00', '', 'pcs', '', '']);
         rewind($handle);
         $content = stream_get_contents($handle);
         fclose($handle);
@@ -77,7 +77,7 @@ class SpreadsheetSafeNameTest extends TestCase
         file_put_contents($path, $content);
 
         $this->actingAs(User::factory()->admin()->create())
-            ->post(route('inventory.import.store'), [
+            ->post(route('items.import.store'), [
                 'file' => new UploadedFile($path, 'inventory.csv', 'text/csv', null, true),
             ]);
 

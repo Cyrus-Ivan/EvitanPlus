@@ -39,6 +39,12 @@ class StockLedger
      *                                               code because this is read offline. Null unless
      *                                               another branch asked for the movement or it is a
      *                                               leg of a transfer.
+     * @param  string|null  $batchId  The stock batch this movement was one line of,
+     *                                if any. Not a foreign key and not looked up:
+     *                                its whole job is to make sibling rows equal to
+     *                                each other, so Stock History can say they came
+     *                                off the shelf together on a till with no
+     *                                connection. Null for anything issued singly.
      *
      * @throws NegativeInventoryException when the movement would drive stock below zero.
      */
@@ -53,10 +59,11 @@ class StockLedger
         ?string $notes = null,
         ?string $id = null,
         ?string $counterpartyBranchCode = null,
+        ?string $batchId = null,
     ): InventoryLedger {
         return DB::transaction(function () use (
             $variant, $quantity, $type, $saleType, $referenceType, $referenceId, $performedBy, $notes,
-            $id, $counterpartyBranchCode,
+            $id, $counterpartyBranchCode, $batchId,
         ) {
             // Lock (or create) the snapshot row so concurrent writes serialize.
             $snapshot = StockSnapshot::query()
@@ -76,6 +83,7 @@ class StockLedger
                 'type' => $type,
                 'sale_type' => $saleType,
                 'reference_id' => $referenceId,
+                'batch_id' => $batchId,
                 'reference_type' => $referenceType,
                 'notes' => $notes,
                 'counterparty_branch_code' => $counterpartyBranchCode,

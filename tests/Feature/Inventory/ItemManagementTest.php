@@ -41,7 +41,7 @@ class ItemManagementTest extends TestCase
     {
         $this->actingAs(User::factory()->owner()->create())
             ->post(route('items.store'), $this->itemPayload())
-            ->assertRedirect(route('inventory'))
+            ->assertRedirect(route('items.index'))
             ->assertSessionHasNoErrors();
 
         $item = Item::first();
@@ -64,7 +64,7 @@ class ItemManagementTest extends TestCase
                     'cost' => '4.00',
                 ],
             ]))
-            ->assertRedirect(route('inventory'))
+            ->assertRedirect(route('items.index'))
             ->assertSessionHasNoErrors();
 
         $variant = Item::first()->variants()->sole();
@@ -232,7 +232,7 @@ class ItemManagementTest extends TestCase
     {
         $this->actingAs(User::factory()->admin()->create())
             ->post(route('items.store'), $this->itemPayload())
-            ->assertRedirect(route('inventory'))
+            ->assertRedirect(route('items.index'))
             ->assertSessionHasNoErrors();
 
         $this->assertSame(1, Item::count());
@@ -264,7 +264,7 @@ class ItemManagementTest extends TestCase
                     'cost' => '4.00',
                 ],
             ]))
-            ->assertRedirect(route('inventory'))
+            ->assertRedirect(route('items.index'))
             ->assertSessionHasNoErrors();
 
         $this->assertSame('12.50', $variant->fresh()->selling_price);
@@ -397,13 +397,13 @@ class ItemManagementTest extends TestCase
 
         $owner = User::factory()->owner()->create();
 
-        $this->actingAs($owner)->get(route('inventory'))
+        $this->actingAs($owner)->get(route('items.index'))
             ->assertInertia(fn ($page) => $page->has('items.data', 1)->where('items.data.0.name', 'Active Item'));
 
-        $this->actingAs($owner)->get(route('inventory', ['status' => 'archived']))
+        $this->actingAs($owner)->get(route('items.index', ['status' => 'archived']))
             ->assertInertia(fn ($page) => $page->has('items.data', 1)->where('items.data.0.name', 'Archived Item'));
 
-        $this->actingAs($owner)->get(route('inventory', ['status' => 'all']))
+        $this->actingAs($owner)->get(route('items.index', ['status' => 'all']))
             ->assertInertia(fn ($page) => $page->has('items.data', 2));
     }
 
@@ -416,10 +416,10 @@ class ItemManagementTest extends TestCase
 
         $owner = User::factory()->owner()->create();
 
-        $this->actingAs($owner)->get(route('inventory', ['search' => 'Apple']))
+        $this->actingAs($owner)->get(route('items.index', ['search' => 'Apple']))
             ->assertInertia(fn ($page) => $page->has('items.data', 1)->where('items.data.0.name', 'Apple Juice'));
 
-        $this->actingAs($owner)->get(route('inventory', ['search' => 'BRD-9']))
+        $this->actingAs($owner)->get(route('items.index', ['search' => 'BRD-9']))
             ->assertInertia(fn ($page) => $page->has('items.data', 1)->where('items.data.0.name', 'Whole Bread'));
     }
 
@@ -430,7 +430,7 @@ class ItemManagementTest extends TestCase
         Item::factory()->create(['name' => 'Chips']);
 
         $this->actingAs(User::factory()->owner()->create())
-            ->get(route('inventory', ['category' => $drinks->id]))
+            ->get(route('items.index', ['category' => $drinks->id]))
             ->assertInertia(fn ($page) => $page->has('items.data', 1)->where('items.data.0.name', 'Cola'));
     }
 
@@ -439,7 +439,7 @@ class ItemManagementTest extends TestCase
         Item::factory()->count(20)->create();
 
         $this->actingAs(User::factory()->owner()->create())
-            ->get(route('inventory'))
+            ->get(route('items.index'))
             ->assertInertia(fn ($page) => $page->has('items.data', 15)->where('items.total', 20)->where('items.last_page', 2));
     }
 }

@@ -46,8 +46,8 @@ class InventoryScopeTest extends TestCase
                 ->where('scope', 'local')
                 ->where('canViewAll', true)
                 ->where('consolidatedOnline', null)
-                ->where('items.data.0.variants.0.current_stock', 0)
-                ->missing('items.data.0.variants.0.scoped_stock')
+                ->where('variants.data.0.current_stock', 0)
+                ->missing('variants.data.0.scoped_stock')
             );
     }
 
@@ -118,8 +118,8 @@ class InventoryScopeTest extends TestCase
                 // The point of the whole split: nothing was attached, so the
                 // Stock column falls back to this device's own figure and the
                 // scoped key is not merely null but absent.
-                ->where('items.data.0.variants.0.current_stock', 0)
-                ->missing('items.data.0.variants.0.scoped_stock')
+                ->where('variants.data.0.current_stock', 0)
+                ->missing('variants.data.0.scoped_stock')
             );
     }
 

@@ -272,6 +272,11 @@ class AdjustmentResolver
         return [
             'id' => (string) Str::uuid(),
             'parent_id' => (string) $row->id,
+            // Carried forward, so a transfer batch arrives at the receiving branch
+            // as ONE card too. Without this the sender sees one request for twelve
+            // products and the receiver sees twelve, which is the same delivery
+            // described two different ways.
+            'batch_id' => $row->batch_id,
             'branch_id' => (string) $row->counterparty_branch_id,
             // Pointing back the way it came, so the receiving branch's ledger row
             // can say which shop the stock arrived from.
@@ -359,13 +364,21 @@ class AdjustmentResolver
                 notes: $this->notes($row, $approved, $outcome, $reason),
                 id: (string) $row->id,
                 counterpartyBranchCode: $row->counterparty_branch_code,
+                // Carried from the queue row rather than re-derived: the batch is
+                // decided when the movements are ASKED for, and answering them
+                // one at a time must not break the set apart. Null on anything
+                // issued singly, and on every row written before schema 23.
+                batchId: $row->batch_id,
             );
         } catch (NegativeInventoryException) {
             // Named, because the operator's next move is to partially approve
-            // this one row and a message about "the batch" tells them nothing.
+            // this one row and a message about "what you submitted" tells them
+            // nothing. "Batch" is deliberately not the word here: since schema 23
+            // that names a set of movements ISSUED together (§4), and this is a
+            // set of answers submitted together, which is a different thing.
             throw ValidationException::withMessages([
                 'adjustments' => sprintf(
-                    'Approving %+d for %s would take it below zero, and nothing in this batch has been applied. '
+                    'Approving %+d for %s would take it below zero, and nothing you submitted has been applied. '
                     .'Approve part of it instead, or sell-through first.',
                     $approved,
                     $variant->item->name,

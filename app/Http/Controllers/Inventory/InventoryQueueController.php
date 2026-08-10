@@ -464,8 +464,20 @@ class InventoryQueueController extends Controller
      * sent an adjustment cannot be offered a new one, but the row it was already
      * sent still has to say whose it is.
      *
-     * A group is keyed by `parent_id ?? id`, so a transfer's two legs meet under
-     * the sending leg's id and everything else is a group of one.
+     * ## The grouping key, and why it grew a third term in M13
+     *
+     * `batch_id ?? parent_id ?? id`, read outside in:
+     *
+     * - a STOCK BATCH is one card, however many products and however many legs
+     *   it holds — the twelve rows of one delivery are one event to the person
+     *   confirming it, and twelve cards repeating one note is the page failing to
+     *   say that;
+     * - failing that, a transfer's two legs meet under the sending leg's id;
+     * - failing that, a row is a group of one.
+     *
+     * Because a batch's legs may now span many products, the product moved from
+     * the request onto the LEG. A card names its branches and its note once, and
+     * every line underneath names what it is about.
      *
      * @param  list<object>  $rows
      * @param  array<string, array{id: string, code: string, name: string}>  $branches
@@ -501,17 +513,31 @@ class InventoryQueueController extends Controller
         $groups = [];
 
         foreach ($rows as $row) {
-            $groups[(string) ($row->parent_id ?? $row->id)][] = $row;
+            $groups[(string) ($row->batch_id ?? $row->parent_id ?? $row->id)][] = $row;
         }
 
         $requests = [];
 
         foreach ($groups as $id => $legs) {
-            // The sending leg first, which is also the only leg of everything
-            // that is not a transfer. `parents()` can only ever return it, so a
-            // group whose first row has a parent is one whose parent was filtered
-            // out by `kind` — impossible today, and cheap to be right about.
-            usort($legs, fn (object $a, object $b): int => ($a->parent_id === null ? 0 : 1) <=> ($b->parent_id === null ? 0 : 1));
+            // Lines keep the order they were asked in, and within a line the
+            // sending leg comes before the receiving one. Ordering by line first
+            // is what keeps a batch's send/receive pairs adjacent instead of
+            // interleaved; ordering by role within it puts the leg that has an
+            // answer above the leg that is waiting on it.
+            //
+            // `parents()` can only ever return a sending leg, so a group whose
+            // first row has a parent is one whose parent was filtered out by
+            // `kind` — impossible today, and cheap to be right about.
+            $order = array_flip(array_values(array_unique(array_map(
+                fn (object $leg): string => (string) ($leg->parent_id ?? $leg->id),
+                $legs,
+            ))));
+
+            usort($legs, fn (object $a, object $b): int => [
+                $order[(string) ($a->parent_id ?? $a->id)], $a->parent_id === null ? 0 : 1,
+            ] <=> [
+                $order[(string) ($b->parent_id ?? $b->id)], $b->parent_id === null ? 0 : 1,
+            ]);
 
             $request = $this->request($id, $legs, $branches, $variants, $users, $branchId);
 
@@ -540,22 +566,41 @@ class InventoryQueueController extends Controller
             return null;
         }
 
-        $variant = $variants->get((string) $first->variant_id);
         $issuer = $users[(string) $first->issued_by] ?? null;
         $transfer = (string) $first->reference_type === 'transfer';
+
+        // What each line was originally asked for, so a receiving leg can show
+        // it beside what the sender actually confirmed. Keyed by line, which is
+        // the sending leg's id — the same key the legs were just ordered by.
+        $asked = [];
+
+        foreach ($legs as $leg) {
+            if ($leg->parent_id === null) {
+                $asked[(string) $leg->id] = (int) $leg->quantity;
+            }
+        }
+
+        $lines = count(array_unique(array_map(
+            fn (object $leg): string => (string) ($leg->parent_id ?? $leg->id),
+            $legs,
+        )));
 
         return [
             'id' => $id,
             'kind' => $transfer ? self::KIND_TRANSFER : self::KIND_ADJUSTMENT,
             // How it was asked for: manual_adjustment | csv_import | transfer.
             'source' => (string) $first->reference_type,
-            'item' => $variant?->item->name ?? 'Unknown product',
-            'variant' => $variant?->name,
+            // Non-null when these rows were asked for as ONE act. `size` counts
+            // LINES, not legs: a transfer of twelve products is twelve, whether
+            // it is showing twelve sending legs or twenty-four of both kinds.
+            'batch' => $first->batch_id === null ? null : [
+                'id' => (string) $first->batch_id,
+                'size' => $lines,
+            ],
+            // One note for the whole card. Every row of a batch carries the same
+            // string, and each leg of a transfer carries the requester's — so the
+            // first leg's is the request's, whichever shape this is.
             'notes' => $first->notes,
-            // Signed, and always the FIRST leg's: what was originally asked for.
-            // A receiving leg carries what the sender confirmed instead, which is
-            // on the leg and is a different number on purpose.
-            'requested' => (int) $first->quantity,
             'issued_by' => [
                 // The queue is read from Postgres and the names come from this
                 // device's mirror, so the two can legitimately disagree for one
@@ -574,31 +619,56 @@ class InventoryQueueController extends Controller
             'receiver' => $transfer ? $this->branchRef($first->counterparty_branch_id, $branches) : null,
             'target' => $transfer ? null : $this->branchRef($first->branch_id, $branches),
             'legs' => array_map(
-                fn (object $leg): array => $this->leg($leg, $transfer, $branches, $users, $branchId),
+                fn (object $leg): array => $this->leg($leg, $transfer, $branches, $variants, $users, $branchId, $asked),
                 $legs,
             ),
         ];
     }
 
     /**
-     * One answer somebody owes, or has given.
+     * One answer somebody owes, or has given, about one product.
+     *
+     * The product lives here rather than on the request because a stock batch's
+     * legs span many of them (M13) — a card is one act, and a leg is one line of
+     * it.
      *
      * @param  array<string, array{id: string, code: string, name: string}>  $branches
+     * @param  Collection<string, Variant>  $variants
      * @param  array<string, User>  $users
+     * @param  array<string, int>  $asked  What each line was first asked for, by line id.
      * @return array<string, mixed>
      */
-    private function leg(object $leg, bool $transfer, array $branches, array $users, string $branchId): array
-    {
+    private function leg(
+        object $leg,
+        bool $transfer,
+        array $branches,
+        Collection $variants,
+        array $users,
+        string $branchId,
+        array $asked,
+    ): array {
         $resolver = $leg->resolved_by === null ? null : ($users[(string) $leg->resolved_by] ?? null);
+        $variant = $variants->get((string) $leg->variant_id);
 
         return [
             'id' => (string) $leg->id,
+            // Which LINE of the request this is a leg of — the sending leg's id,
+            // for both halves of a transfer. A card with many products has to
+            // pair each send with its own receive, and `parent_id` is not on the
+            // wire: this is that pairing, already made.
+            'line' => (string) ($leg->parent_id ?? $leg->id),
             'role' => match (true) {
                 ! $transfer => 'target',
                 $leg->parent_id === null => 'send',
                 default => 'receive',
             },
+            'item' => $variant?->item->name ?? 'Unknown product',
+            'variant' => $variant?->name,
             'branch' => $this->branchRef($leg->branch_id, $branches),
+            // Signed, and always this LINE's sending leg: what was originally
+            // asked for. A receiving leg's own `quantity` is what the sender
+            // confirmed instead, which is a different number on purpose.
+            'requested' => $asked[(string) ($leg->parent_id ?? $leg->id)] ?? (int) $leg->quantity,
             'quantity' => (int) $leg->quantity,
             'approved_quantity' => $leg->approved_quantity === null ? null : (int) $leg->approved_quantity,
             'status' => (string) $leg->status,

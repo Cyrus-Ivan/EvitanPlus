@@ -6,7 +6,7 @@ import { Head } from '@inertiajs/react';
 
 export default function EditItem({ item, categories, online }: { item: Item; categories: Pick<Category, 'id' | 'name'>[]; online: boolean }) {
     const breadcrumbs: BreadcrumbItem[] = [
-        { title: 'Inventory', href: '/inventory' },
+        { title: 'Items', href: '/items' },
         { title: item.name, href: `/inventory/${item.id}/edit` },
     ];
 

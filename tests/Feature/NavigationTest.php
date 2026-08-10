@@ -23,8 +23,12 @@ class NavigationTest extends TestCase
         return [
             'pos' => ['pos'],
             'sales' => ['sales'],
+            // Two sections since M13: the catalog and the shelf.
+            'items' => ['items.index'],
+            'categories' => ['categories.index'],
             'inventory' => ['inventory'],
-            'inventory-import' => ['inventory.import'],
+            'stock-updates' => ['stock-updates.index'],
+            'stock-history' => ['stock-history.index'],
             'reports' => ['reports'],
             'users' => ['users'],
             'login-history' => ['login-history'],

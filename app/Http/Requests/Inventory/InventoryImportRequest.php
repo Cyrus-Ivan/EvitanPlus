@@ -28,6 +28,11 @@ class InventoryImportRequest extends FormRequest
             // NativePHP desktop app: CSVs are exported from spreadsheets, so also
             // accept the text/plain mime some tools stamp on .csv files. 5 MB cap.
             'file' => ['required', 'file', 'mimes:csv,txt', 'max:5120'],
+            // "I have seen which existing products this file changes and I mean
+            // it." Absent on the preview post and on the modal's first attempt;
+            // what it unlocks is decided by the importer, which is the only place
+            // that knows whether the file touches anything that already exists.
+            'confirm_updates' => ['boolean'],
         ];
     }
 

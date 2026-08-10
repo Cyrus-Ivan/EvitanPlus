@@ -14,8 +14,8 @@ import { Tags } from 'lucide-react';
 import { useState } from 'react';
 
 const breadcrumbs: BreadcrumbItem[] = [
-    { title: 'Inventory', href: '/inventory' },
-    { title: 'Categories', href: '/inventory/categories' },
+    { title: 'Items', href: '/items' },
+    { title: 'Categories', href: '/items/categories' },
 ];
 
 export default function Categories({ categories, filters, online }: { categories: Category[]; filters: { status: string }; online: boolean }) {

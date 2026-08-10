@@ -33,12 +33,12 @@ class InventoryCostAuthorizationTest extends TestCase
         Variant::factory()->for($item)->create(['cost' => '4.00']);
 
         $this->actingAs(User::factory()->owner()->create())
-            ->get(route('inventory'))
+            ->get(route('items.index'))
             ->assertInertia(fn ($page) => $page->where('items.data.0.variants.0.cost', '4.00'));
 
         foreach (['admin', 'cashier'] as $role) {
             $this->actingAs(User::factory()->{$role}()->create())
-                ->get(route('inventory'))
+                ->get(route('items.index'))
                 ->assertInertia(fn ($page) => $page->missing('items.data.0.variants.0.cost'));
         }
     }
@@ -91,7 +91,7 @@ class InventoryCostAuthorizationTest extends TestCase
     public function test_cashier_can_view_inventory()
     {
         $this->actingAs(User::factory()->cashier()->create())
-            ->get(route('inventory'))
+            ->get(route('items.index'))
             ->assertOk();
     }
 
@@ -100,6 +100,6 @@ class InventoryCostAuthorizationTest extends TestCase
         // A user must exist — on a fresh install the setup wizard answers.
         User::factory()->cashier()->create();
 
-        $this->get(route('inventory'))->assertRedirect(route('login'));
+        $this->get(route('items.index'))->assertRedirect(route('login'));
     }
 }

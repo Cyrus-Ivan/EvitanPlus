@@ -58,10 +58,15 @@ class OfflineCsvImportTest extends TestCase
         return UploadedFile::fake()->createWithContent('inventory.csv', $contents);
     }
 
+    /**
+     * The Items page is what carries the offline flag now, and the import modal
+     * reads it from there. There is no import PAGE to say it any more (M13), and
+     * the history endpoint is JSON that has nothing to say about connectivity.
+     */
     public function test_the_page_says_it_is_offline(): void
     {
         $this->actingAs(User::factory()->owner()->create())
-            ->get(route('inventory.import'))
+            ->get(route('items.index'))
             ->assertOk()
             ->assertInertia(fn ($page) => $page->where('online', false));
     }
@@ -69,7 +74,7 @@ class OfflineCsvImportTest extends TestCase
     public function test_an_offline_import_is_refused_and_writes_nothing(): void
     {
         $this->actingAs(User::factory()->owner()->create())
-            ->post(route('inventory.import.store'), ['file' => $this->csv()])
+            ->post(route('items.import.store'), ['file' => $this->csv()])
             ->assertSessionHasErrors('file');
 
         // Not merely rejected at the door: nothing partial, no ledger movement
@@ -81,7 +86,7 @@ class OfflineCsvImportTest extends TestCase
     public function test_the_refusal_explains_itself(): void
     {
         $response = $this->actingAs(User::factory()->owner()->create())
-            ->post(route('inventory.import.store'), ['file' => $this->csv()]);
+            ->post(route('items.import.store'), ['file' => $this->csv()]);
 
         $errors = session('errors')->get('file');
 

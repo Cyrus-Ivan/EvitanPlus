@@ -217,10 +217,10 @@ class ConsolidatedStockTest extends TestCase
             ->get(route('inventory', ['scope' => self::$documentB['branch']['id'], 'search' => 'ONLY-B']))
             ->assertOk()
             ->assertInertia(function ($page) {
-                $items = $page->toArray()['props']['items']['data'];
+                $variants = $page->toArray()['props']['variants']['data'];
 
-                $this->assertCount(1, $items);
-                $this->assertSame(7, $items[0]['variants'][0]['scoped_stock']);
+                $this->assertCount(1, $variants);
+                $this->assertSame(7, $variants[0]['scoped_stock']);
             });
     }
 
@@ -257,11 +257,14 @@ class ConsolidatedStockTest extends TestCase
      *
      * @return array<string, mixed>
      */
+    /**
+     * The page is one row per VARIANT since M13, so there is nothing to flatten
+     * — but the lookup stays a helper because every test here names a product by
+     * SKU rather than by position.
+     */
     private function variantOnPage(mixed $page, string $sku): array
     {
-        $variant = collect($page->toArray()['props']['items']['data'])
-            ->flatMap(fn (array $item): array => $item['variants'])
-            ->firstWhere('sku', $sku);
+        $variant = collect($page->toArray()['props']['variants']['data'])->firstWhere('sku', $sku);
 
         $this->assertNotNull($variant, "No variant [{$sku}] on the page.");
 

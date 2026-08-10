@@ -118,9 +118,72 @@ export interface Variant {
     // which is a get-only cached accessor server-side and silently ignores a
     // write — the local figure would render under another branch's heading.
     scoped_stock?: number;
+    // The product this variant belongs to. Present where a controller reads
+    // variant-first and eager-loads it — the Inventory page (M13), which is one
+    // row per variant. Absent on the Items page, where variants arrive nested
+    // under the item they belong to and the parent is already in scope.
+    item?: Pick<Item, 'id' | 'name' | 'unit' | 'category_id' | 'archived_at'> & {
+        category?: Pick<Category, 'id' | 'name'> | null;
+    };
     archived_at: string | null;
     created_at: string;
     updated_at: string;
+}
+
+/**
+ * One product the stock batch dialog may put on a line (M13).
+ *
+ * Fetched from `stock-batches.variants` as the operator types, rather than
+ * shipped with the Inventory page: this feeds a dialog, and the whole catalog is
+ * not a payload every page view should carry.
+ */
+export interface BatchVariantOption {
+    id: string;
+    item: string | null;
+    variant: string | null;
+    sku: string;
+    barcode: string | null;
+    // On hand at whichever branch the batch is aimed at. Null means the figure
+    // could not be read — shown as such rather than as a zero somebody would act
+    // on. When the branch is not this one it is a BASELINE and reads high; the
+    // feed says so with its own `baseline` flag.
+    stock: number | null;
+}
+
+/**
+ * What a CSV import would do, before any of it is done (M13).
+ *
+ * `updates` is the warning: every product in the file that already exists and
+ * would be changed. The operator confirms, and the file is uploaded again with
+ * `confirm_updates` — which the importer, not the modal, enforces.
+ */
+export interface ImportPreview {
+    total: number;
+    creates: number;
+    updates: { sku: string; product: string; variant: string | null }[];
+    errors: ImportRowError[];
+}
+
+/** One rejected CSV row. `row` is the 1-based line, or null for a whole-file problem. */
+export interface ImportRowError {
+    row: number | null;
+    messages: string[];
+}
+
+/** One past CSV import, for the modal's Recent imports tab. */
+export interface ImportHistoryRow {
+    id: string;
+    filename: string | null;
+    // What the file turned out to be: create | update | upsert, or `unknown`
+    // when it never parsed far enough to tell.
+    mode: string;
+    status: 'success' | 'failed' | 'partial';
+    total_rows: number | null;
+    success_count: number | null;
+    error_count: number | null;
+    errors: ImportRowError[] | null;
+    created_at: string;
+    user: string | null;
 }
 
 /**
@@ -160,9 +223,21 @@ export interface RequestActor {
  */
 export interface RequestLeg {
     id: string;
+    // Which LINE of the request this is a leg of — the sending leg's id, for both
+    // halves of a transfer. A card with many products has to pair each send with
+    // its own receive, and this is that pairing, already made server-side.
+    line: string;
     role: 'target' | 'send' | 'receive';
+    // What this leg is about. On the leg rather than on the request since M13,
+    // because a stock batch's legs span many products — a card is one act, and a
+    // leg is one line of it.
+    item: string;
+    variant: string | null;
     // The branch that must answer this leg, and whose stock moves when it does.
     branch: BranchRef | null;
+    // Signed, and always what this LINE was originally asked for — so a receiving
+    // leg can show it beside what the sender actually confirmed.
+    requested: number;
     // Signed. On a receiving leg this is what the sender confirmed actually
     // left, which is not always what was originally asked for.
     quantity: number;
@@ -184,21 +259,23 @@ export interface RequestLeg {
  * One card on the Pending Stocks page: a stock movement that has been asked for
  * and has not happened, with every answer it is still waiting on.
  *
- * A request is a GROUP of `inventory_update_queue` rows sharing `parent_id ?? id`
- * — one row for an adjustment, two for a transfer. It is on the page because at
- * least one of its legs is pending; when the last one is answered it leaves, and
- * the record of what happened is on the ledger, in Stock History.
+ * A request is a GROUP of `inventory_update_queue` rows sharing
+ * `batch_id ?? parent_id ?? id` — a whole stock batch, else a transfer's two
+ * legs, else one row on its own. It is on the page because at least one of its
+ * legs is pending; when the last one is answered it leaves, and the record of
+ * what happened is on the ledger, in Stock History.
  */
 export interface PendingRequest {
     id: string;
     kind: 'transfer' | 'adjustment';
     // How it was asked for: manual_adjustment | csv_import | transfer.
     source: string;
-    item: string;
-    variant: string | null;
+    // Non-null when these rows were asked for as ONE act (M13). `size` counts
+    // LINES, not legs: a transfer of twelve products is twelve, whether the card
+    // is showing twelve sending legs or twenty-four of both kinds.
+    batch: { id: string; size: number } | null;
+    // One note for the whole card. Every row of a batch carries the same string.
     notes: string | null;
-    // Signed, and always what was ORIGINALLY asked for.
-    requested: number;
     issued_by: RequestActor & { branch: BranchRef | null; at: string };
     // A transfer names both ends; an adjustment names the one branch whose stock
     // is going to move. Exactly one of these shapes is filled.

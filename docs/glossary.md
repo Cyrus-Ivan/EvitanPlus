@@ -282,6 +282,14 @@ branch a movement involved — who asked for it, or the far end of a transfer. A
 an id because Stock History is a Cashier-level screen that must render offline, and `branches`
 is never pulled to a device, so an id could not be turned into a name there.
 
+And **`batch_id`** (schema 23, nullable, no FK): the stock batch this movement was one line of,
+carried from the queue row by the resolver so "these came off the shelf together" reads offline
+too. Null on anything issued singly. See §"Stock batch".
+
+`csv_import` stays in the `reference_type` list and **nothing writes it any more** (M13). An
+import describes products; a spreadsheet cannot assert what is on a shelf. Rows written before
+M13 still carry it, which is the whole reason the value remains.
+
 *Anchor:* `console/database/migrations/2026_07_26_000010_create_inventory_ledger_table.php`;
 `app/Support/Inventory/StockLedger::record()`. Since schema 21 there is exactly **one** writer of
 `type = 'stock_adjustment'`: `App\Support\Inventory\AdjustmentResolver`. There were three.
@@ -363,9 +371,9 @@ that asked never found out: `Puller` filters `inventory_ledger` to one branch, s
 was the only record of a refusal anywhere and the page needed a "Sent to other branches" section
 to show it. A movement of nothing plus §"Branch scope" on Stock History replaced both.
 ✗ **Not** kept on the page once answered. `/inventory/stock-updates` ("Pending Stocks") shows
-**unfinished work only**: rows are grouped into *requests* by `parent_id ?? id`, and a request is
-shown while any leg is still pending. The record of what happened is the ledger row, read in
-Stock History.
+**unfinished work only**: rows are grouped into *requests* by `batch_id ?? parent_id ?? id`, and a
+request is shown while any leg is still pending. The record of what happened is the ledger row,
+read in Stock History.
 ✗ **Not** only for other branches, which is what M8 built and what schema 21 widened. The
 narrow version mediated the cross-branch case because the issuer cannot see the target's unsynced
 sales — an argument about arithmetic. The wider rule rests on something arithmetic cannot settle:
@@ -403,6 +411,28 @@ either of which can be false on its own. One row would make whichever branch did
 author of the other's stock.
 ✗ **Not** signed by the operator. They enter how many are moving; the legs' signs are the
 system's.
+
+### Stock batch
+**One set of pending stock adjustments issued together**, sharing a `batch_id` and one note. Either
+an adjustment at one branch or a transfer between two, never a mix — the quantity on a line means a
+different thing in each. Every issuing path can produce one; what makes it a batch is that a person
+asked for all of it in a single act, and Pending Stocks answers it as a single card.
+*Anchor:* `inventory_update_queue.batch_id` and `inventory_ledger.batch_id` (schema 23, both
+nullable, no foreign key); `App\Http\Controllers\Inventory\StockBatchController`;
+`StoreStockBatchRequest`; `AdjustmentQueue::enqueue()` writes the column and
+`AdjustmentResolver::secondLeg()` carries it onto a transfer's receiving legs.
+✗ **Not** "mass update". The batch is the *act*, not the size of it: a batch of one is a batch, and
+nothing about it is bulk-editing anything.
+✗ **Not** a fourth `reference_type`. A batch's rows are `manual_adjustment` or `transfer` like any
+others; `batch_id` is orthogonal to what kind of movement each row is.
+✗ **Not** the outbox, and not a *request* either — a request is one card, and a batch is what makes
+a card span many products. Reserve "batch" for the issued set. A set of *answers* submitted
+together (what `resolve` takes) is not one.
+✗ **Not** answered as a unit. "Approve all" posts the card's ids as an ordinary batch of decisions
+to the same route one Approve uses, and `AdjustmentResolver` re-reads each of them filtered to this
+branch. There is no batch-shaped write path on the answering side, deliberately.
+✗ **Not** derivable. Two rows issued a second apart by the same person are not a batch, which is
+exactly why the column exists rather than a heuristic over `created_at`.
 
 ### Write-off in transit
 The gap when a transfer's receiving branch approves less than was sent. The sender is down three,
@@ -515,15 +545,16 @@ always names what was actually read rather than what was asked for. Inventory of
 the three — see the fourth bullet.
 *Anchor:* the `scope` query parameter on `ReportsController` (M11), `LoginHistoryController`
 (M11.5), `Inventory\StockHistoryController` and `Inventory\InventoryQueueController` (both
-M11.8), `SalesController` and `Inventory\ItemController` (both M12); `BranchScope` in
+M11.8), `SalesController` and `Inventory\InventoryController` (both M12; the latter was
+`Inventory\ItemController` until M13 split the catalog off it); `BranchScope` in
 `resources/js/types/index.ts`; the picker
 `resources/js/components/branch-scope-select.tsx` and
 `App\Http\Controllers\Concerns\OffersBranchScope`, which fills it.
 ✗ **Not** a filter over one dataset. `local` and the other two read different databases.
 ✗ **Not** necessarily a swap of the whole page's source. On Inventory (M12) it changes **stock and
-nothing else**: the item and variant list is read locally in every scope, because the catalog is
-mirrored business-wide and the local rows *are* the upstream rows, and only `stock_snapshots` is
-read live. The scoped figure lands on a key of its own (`scoped_stock`) — never on
+nothing else**: the variant list is read locally in every scope, because the catalog is mirrored
+business-wide and the local rows *are* the upstream rows, and only `stock_snapshots` is read
+live. The scoped figure lands on a key of its own (`scoped_stock`) — never on
 `current_stock`, which is a get-only cached accessor over the local snapshot and would ignore the
 write while rendering this device's number under another branch's heading.
 ✗ **Not** the same three values on every screen. Inventory takes **`local` or a branch id and
@@ -531,7 +562,7 @@ never `all`**: everywhere else a wider scope adds rows to a list, but there it w
 them to a *number*, and a business-wide total per variant answers nothing on its own — twenty
 units is twenty spread evenly or twenty at one branch and none at the other four. It is the one
 value of the parameter that needed a second display (a per-branch breakdown under every figure)
-to be readable at all, so it was dropped rather than kept. `ItemController::normalizeScope()`
+to be readable at all, so it was dropped rather than kept. `InventoryController::normalizeScope()`
 snaps `?scope=all` back to `local` like any other scope it cannot serve, and the shared picker
 takes `allowAll={false}` there.
 ✗ **Not** three values plus a fourth for this branch. **This** branch's id *is* `local`: it is
@@ -542,6 +573,9 @@ than a second answer.
 ✗ **Not** silently downgraded when the connection is down. The screen falls back to `local` and
 says so (`consolidatedOnline: false`); presenting one branch's rows under an "All branches"
 heading is the failure this design refuses.
+✗ **Not** on every screen with data worth widening. **Items** (`/items`) carries no scope at all,
+and that is the M13 split working: nothing on the catalog is per-branch, so there is nothing for a
+scope to change. Stock moved to `/inventory`, and the parameter went with it.
 ✗ **Not** one permission. Reports restrict the wider scopes to the **Owner** (they carry cost
 and profit); login history, stock history, sales and inventory stock allow **Admin+**, per
 `MULTIBRANCH-BRAINSTORM.md` §6; Pending Stocks gates it on nothing at all, because every row it

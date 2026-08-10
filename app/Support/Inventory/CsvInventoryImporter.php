@@ -13,6 +13,7 @@ use App\Support\Sync\OnlineWrite;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Throwable;
 
 /**
@@ -20,25 +21,30 @@ use Throwable;
  * every row, and — only when the whole file is clean — applies it inside a
  * single transaction.
  *
- * ## The catalog lands; the stock waits (schema 21)
+ * ## It imports PRODUCTS, and never stock (M13)
  *
- * An import writes Categories, Items and Variants immediately, as an online
- * write. It no longer moves stock: each row's delta becomes a PENDING stock
- * adjustment ({@see AdjustmentQueue}) that somebody at the branch confirms, in
- * one go, through Approve all.
+ * An import writes Categories, Items and Variants, as an online write, and that
+ * is the whole of what it does. The `stock` and `mode` columns are gone from
+ * {@see InventoryCsvSchema} — a spreadsheet cannot assert what is on a shelf, and
+ * since schema 21 the column was only ASKING anyway. A newly imported product
+ * appears at zero and gets its first count from the stock batch dialog on the
+ * Inventory page.
  *
- * A new product therefore appears in the catalog at stock 0 until the import is
- * confirmed, which is the honest state — the file says the shelf holds twelve,
- * and nobody has looked yet.
+ * All-or-nothing: one bad row aborts the import and nothing is persisted.
  *
- * All-or-nothing still, for everything the file can get wrong: one bad row
- * aborts the import and nothing is persisted. What it can no longer fail on is
- * stock, because no stock moves here; a subtraction that will not fit is refused
- * when it is confirmed, per product, where it can be partially approved instead.
+ * ## An update is confirmed before it happens
+ *
+ * A file whose SKUs already exist is an EDIT to live products — prices, costs
+ * and thresholds every branch sells by. So the importer refuses to apply one
+ * unless the caller passes `$confirmUpdates`, and {@see preview()} is what the
+ * modal calls to find out which products those are and show them first.
+ *
+ * The refusal lives here rather than in the modal deliberately: it is the only
+ * place a hand-built request cannot go around.
  *
  * The outcome — counts and per-row errors — is recorded as an ImportHistory row
- * (the "Upload History" feature), which doubles as the reference_id carried
- * through the queue onto whatever ledger entries confirmation produces.
+ * (the "Upload History" feature), whose `mode` says which of the three kinds of
+ * file this was: `create`, `update` or `upsert`.
  *
  * Semantics the importer enforces (mirroring the item form):
  *   - SKUs are mandatory and canonically UPPERCASE — lowercase input is
@@ -52,10 +58,28 @@ use Throwable;
 class CsvInventoryImporter
 {
     public function __construct(
-        private readonly StockLedger $ledger,
         private readonly OnlineWrite $online,
-        private readonly AdjustmentQueue $queue,
     ) {}
+
+    /** Every row's SKU is new: the file only adds products. */
+    private const MODE_CREATE = 'create';
+
+    /** Every row's SKU already exists: the file only edits products. */
+    private const MODE_UPDATE = 'update';
+
+    /** Both. */
+    private const MODE_UPSERT = 'upsert';
+
+    /**
+     * The file never parsed far enough to tell — unreadable, not UTF-8, or
+     * missing header columns, so there are no rows to classify. A value rather
+     * than a guess: `mode` is not nullable, and calling an unread file a
+     * "create" would put a claim in the history that nothing supports.
+     */
+    private const MODE_UNKNOWN = 'unknown';
+
+    /** whereIn/placeholder chunk size, safely below SQLite's variable limit. */
+    private const LOOKUP_CHUNK = 500;
 
     /**
      * Import the CSV at $path. $canViewCost gates whether the cost column is
@@ -64,50 +88,179 @@ class CsvInventoryImporter
      *
      * Never throws for a bad file: any unexpected failure is reported and
      * recorded as a failed import so the user always gets an Upload History
-     * entry instead of an error page.
+     * entry instead of an error page. A refused-because-unconfirmed import is
+     * the one exception — see below.
+     *
+     * @param  bool  $confirmUpdates  The caller has been shown which existing
+     *                                products this file changes and said go
+     *                                ahead. False refuses any file that touches
+     *                                one.
      */
-    public function import(string $path, ?string $filename, User $user, bool $canViewCost): ImportHistory
+    public function import(string $path, ?string $filename, User $user, bool $canViewCost, bool $confirmUpdates): ImportHistory
     {
         $importId = (string) Str::uuid();
 
         try {
-            return $this->run($path, $filename, $user, $canViewCost, $importId);
+            return $this->run($path, $filename, $user, $canViewCost, $confirmUpdates, $importId);
+        } catch (ValidationException $e) {
+            // The unconfirmed-updates refusal, and the only thing here that is a
+            // question rather than a failure. Recording it as a failed import
+            // would put a row in the history for a file nobody has decided about
+            // yet, so it goes back to the form instead.
+            throw $e;
         } catch (Throwable $e) {
             report($e);
         }
 
         // Outside the try so a failure while recording the failure propagates
         // instead of being swallowed.
-        return $this->record($importId, $user, $filename, self::MODE_FALLBACK, 'failed', 0, 0, 1, [
+        return $this->record($importId, $user, $filename, self::MODE_UNKNOWN, 'failed', 0, 0, 1, [
             ['row' => null, 'messages' => ['Something went wrong while processing the file. No changes were saved.']],
         ]);
     }
 
-    private const MODE_FALLBACK = InventoryCsvSchema::MODE_ADD;
-
-    /** ImportHistory mode value for a file whose rows use both modes. */
-    private const MODE_MIXED = 'mixed';
-
-    /** whereIn/placeholder chunk size, safely below SQLite's variable limit. */
-    private const LOOKUP_CHUNK = 500;
-
-    private function run(string $path, ?string $filename, User $user, bool $canViewCost, string $importId): ImportHistory
+    /**
+     * Parse and fully validate the file, then say what applying it would do —
+     * without applying any of it.
+     *
+     * This is what makes the update warning possible. It runs exactly the
+     * validation {@see import()} runs, so a preview that reports no errors is a
+     * genuine statement that the file is clean, and the `updates` list names
+     * every product whose price, cost, threshold or category the file would
+     * change.
+     *
+     * Purely a read: no ImportHistory row, no online write, no connection. A
+     * previewed file is re-uploaded to be applied, and the second parse is the
+     * authoritative one — if the catalog moved in between, the counts shown were
+     * merely a moment out of date and the apply is still all-or-nothing.
+     *
+     * @return array{
+     *     total: int,
+     *     creates: int,
+     *     updates: list<array{sku: string, product: string, variant: string|null}>,
+     *     errors: list<array{row: int|null, messages: list<string>}>,
+     * }
+     */
+    public function preview(string $path, bool $canViewCost): array
     {
+        $parsed = $this->parse($path, $canViewCost);
+
+        $updates = [];
+        $creates = 0;
+
+        foreach ($parsed['rows'] as $row) {
+            $existing = $parsed['variants']->get($row['sku']);
+
+            if ($existing === null) {
+                $creates++;
+
+                continue;
+            }
+
+            $updates[] = [
+                'sku' => $row['sku'],
+                'product' => $row['product'],
+                'variant' => $this->effectiveVariantName($row),
+            ];
+        }
+
+        return [
+            'total' => $parsed['total'],
+            'creates' => $creates,
+            'updates' => $updates,
+            'errors' => $parsed['errors'],
+        ];
+    }
+
+    private function run(
+        string $path,
+        ?string $filename,
+        User $user,
+        bool $canViewCost,
+        bool $confirmUpdates,
+        string $importId,
+    ): ImportHistory {
+        $parsed = $this->parse($path, $canViewCost);
+
+        $rows = $parsed['rows'];
+        $variantsBySku = $parsed['variants'];
+        $total = $parsed['total'];
+        $mode = $this->modeFor($rows, $variantsBySku);
+
+        if ($parsed['errors'] !== []) {
+            return $this->record(
+                $importId, $user, $filename, $mode, 'failed',
+                $total, 0, count($parsed['errors']), $parsed['errors'],
+            );
+        }
+
+        // After validation and before anything is written. A clean file that
+        // edits live products is not a failure and does not belong in the
+        // history — it is a question, and this is where it is asked.
+        $this->assertUpdatesConfirmed($mode, $confirmUpdates);
+
+        try {
+            // The success row is written inside the transaction on purpose: if
+            // recording it fails, the catalog changes roll back with it, so the
+            // fallback "failed — no changes were saved" entry import() then
+            // writes is actually true.
+            // An ONLINE WRITE, not a plain local transaction (M6.5). An import
+            // creates categories, items and variants — shared catalog every
+            // branch reads. Written locally only, none of it would ever reach the
+            // business database: §17 gated this screen on connectivity in M6
+            // believing that was enough, and being online is not the same as
+            // arriving. See MULTIBRANCH-ROADMAP.md M6.5.
+            return $this->online->run(function () use ($rows, $user, $canViewCost, $importId, $filename, $mode, $total, $variantsBySku) {
+                $this->apply($rows, $user, $canViewCost, $variantsBySku);
+
+                $import = $this->record($importId, $user, $filename, $mode, 'success', $total, $total, 0, []);
+
+                $this->mirrorImport($import, $rows);
+
+                return $import;
+            }, 'A CSV import');
+        } catch (ImportRowException $e) {
+            return $this->record($importId, $user, $filename, $mode, 'failed', $total, 0, 1, [
+                ['row' => $e->csvLine, 'messages' => [$e->getMessage()]],
+            ]);
+        }
+    }
+
+    /**
+     * Read the file, validate every row, and validate the resulting catalog
+     * shape — stopping short of writing anything.
+     *
+     * Shared by {@see run()} and {@see preview()} so the two can never disagree
+     * about whether a file is clean. A non-empty `errors` means the file is
+     * unusable; `rows` and `variants` are then whatever got that far, which is
+     * enough to classify the file for the history but not to apply it.
+     *
+     * @return array{
+     *     rows: list<array<string, mixed>>,
+     *     errors: list<array{row: int|null, messages: list<string>}>,
+     *     variants: Collection<string, Variant>,
+     *     total: int,
+     * }
+     */
+    private function parse(string $path, bool $canViewCost): array
+    {
+        $nothing = fn (array $errors): array => [
+            'rows' => [], 'errors' => $errors, 'variants' => collect(), 'total' => 0,
+        ];
+
         // The upload is capped at 5 MB (InventoryImportRequest), so reading it
         // whole is fine. Reject non-UTF-8 files up front: their bytes would
         // otherwise poison error messages and the JSON errors column.
         $contents = @file_get_contents($path);
 
         if ($contents === false) {
-            return $this->record($importId, $user, $filename, self::MODE_FALLBACK, 'failed', 0, 0, 1, [
-                ['row' => null, 'messages' => ['The file could not be read.']],
-            ]);
+            return $nothing([['row' => null, 'messages' => ['The file could not be read.']]]);
         }
 
         if (! mb_check_encoding($contents, 'UTF-8')) {
-            return $this->record($importId, $user, $filename, self::MODE_FALLBACK, 'failed', 0, 0, 1, [
-                ['row' => null, 'messages' => ['The file must be UTF-8 encoded. Re-save it as "CSV UTF-8" and upload again.']],
-            ]);
+            return $nothing([['row' => null, 'messages' => [
+                'The file must be UTF-8 encoded. Re-save it as "CSV UTF-8" and upload again.',
+            ]]]);
         }
 
         // One pass over one stream: the header read leaves the handle
@@ -120,7 +273,7 @@ class CsvInventoryImporter
             [$columnMap, $headerErrors] = $this->readHeaders($handle);
 
             if ($headerErrors !== []) {
-                return $this->record($importId, $user, $filename, self::MODE_FALLBACK, 'failed', 0, 0, 1, $headerErrors);
+                return $nothing($headerErrors);
             }
 
             [$rows, $rowErrors] = $this->parseAndValidate($handle, $columnMap, $canViewCost);
@@ -128,68 +281,69 @@ class CsvInventoryImporter
             fclose($handle);
         }
 
-        $modes = array_values(array_unique(array_column($rows, 'mode')));
-        $mode = match (true) {
-            $modes === [] => self::MODE_FALLBACK,
-            count($modes) === 1 => $modes[0],
-            default => self::MODE_MIXED,
-        };
-
         $total = count($rows) + count($rowErrors);
 
         if ($total === 0) {
-            return $this->record($importId, $user, $filename, $mode, 'failed', 0, 0, 1, [
-                ['row' => null, 'messages' => ['The file has no data rows.']],
-            ]);
+            return $nothing([['row' => null, 'messages' => ['The file has no data rows.']]]);
         }
+
+        // Loaded even when rows already failed, because classifying the file —
+        // create, update or both — needs to know which SKUs exist, and a failed
+        // import's history row says so too. One query keyed by the SKU column.
+        $variantsBySku = $this->variantsBySku(array_column($rows, 'sku'));
 
         // Once every row is individually valid, validate the resulting catalog
         // shape against the DB (archived matches, immutable names/categories,
-        // no-variant vs. named model). The variants the file matches by SKU are
-        // loaded once here and reused by apply().
-        $variantsBySku = collect();
-
+        // no-variant vs. named model).
         if ($rowErrors === []) {
-            $variantsBySku = $this->variantsBySku(array_column($rows, 'sku'));
             $rowErrors = $this->validateCatalogShape($rows, $variantsBySku);
         }
 
-        if ($rowErrors !== []) {
-            return $this->record($importId, $user, $filename, $mode, 'failed', $total, 0, count($rowErrors), $rowErrors);
+        return ['rows' => $rows, 'errors' => $rowErrors, 'variants' => $variantsBySku, 'total' => $total];
+    }
+
+    /**
+     * Which of the three kinds of file this is, for the history row.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @param  Collection<string, Variant>  $variantsBySku
+     */
+    private function modeFor(array $rows, Collection $variantsBySku): string
+    {
+        if ($rows === []) {
+            return self::MODE_UNKNOWN;
         }
 
-        try {
-            // The success row is written inside the transaction on purpose: if
-            // recording it fails, the catalog changes roll back with it, so the
-            // fallback "failed — no changes were saved" entry import() then
-            // writes is actually true.
-            // An ONLINE WRITE, not a plain local transaction (M6.5). An import
-            // creates categories, items and variants — shared catalog every
-            // branch reads — and, since schema 21, pending adjustments, which
-            // live only in Postgres. Written locally only, none of it would ever
-            // reach the business database: §17 gated this screen on connectivity
-            // in M6 believing that was enough, and being online is not the same
-            // as arriving. See MULTIBRANCH-ROADMAP.md M6.5.
-            return $this->online->run(function () use ($rows, $user, $canViewCost, $importId, $filename, $mode, $total, $variantsBySku) {
-                $queued = $this->apply($rows, $user, $canViewCost, $importId, $variantsBySku);
+        $existing = 0;
 
-                $import = $this->record($importId, $user, $filename, $mode, 'success', $total, $total, 0, []);
-
-                $this->mirrorImport($import, $rows);
-
-                // Registered on this same online write rather than run as one of
-                // its own: nesting an OnlineWrite would open a second Postgres
-                // connection and re-run the version gate inside this one's open
-                // transaction. One multi-row insert for the whole file.
-                $this->queue->enqueue($queued, $user);
-
-                return $import;
-            }, 'A CSV import');
-        } catch (ImportRowException $e) {
-            return $this->record($importId, $user, $filename, $mode, 'failed', $total, 0, 1, [
-                ['row' => $e->csvLine, 'messages' => [$e->getMessage()]],
-            ]);
+        foreach ($rows as $row) {
+            if ($variantsBySku->has($row['sku'])) {
+                $existing++;
+            }
         }
+
+        return match (true) {
+            $existing === 0 => self::MODE_CREATE,
+            $existing === count($rows) => self::MODE_UPDATE,
+            default => self::MODE_UPSERT,
+        };
+    }
+
+    /**
+     * Refuse a file that edits live products unless somebody has said so.
+     *
+     * @throws ValidationException
+     */
+    private function assertUpdatesConfirmed(string $mode, bool $confirmUpdates): void
+    {
+        if ($confirmUpdates || ! in_array($mode, [self::MODE_UPDATE, self::MODE_UPSERT], true)) {
+            return;
+        }
+
+        throw ValidationException::withMessages([
+            'file' => 'Some products in this file already exist and will be updated. '
+                .'Review the changes and confirm to continue.',
+        ]);
     }
 
     /**
@@ -323,9 +477,7 @@ class CsvInventoryImporter
             $description = $get('description');
             $sellingPriceRaw = $get('selling_price');
             $costRaw = $get('cost');
-            $stockRaw = $get('stock');
             $thresholdRaw = $get('low_stock_threshold');
-            $mode = InventoryCsvSchema::normalizeMode($get('mode'));
 
             foreach (['product' => $product, 'sku' => $sku] as $label => $value) {
                 if ($value === '') {
@@ -364,16 +516,6 @@ class CsvInventoryImporter
                 $messages[] = 'Cost must be a number between 0 and 9999999999.99 with up to 2 decimals.';
             }
 
-            $stock = null;
-            if (! $this->isInteger($stockRaw)) {
-                $messages[] = 'Stock must be a whole number between -999999999 and 999999999.';
-            } else {
-                $stock = (int) $stockRaw;
-                if ($mode === InventoryCsvSchema::MODE_REPLACE && $stock < 0) {
-                    $messages[] = 'Stock cannot be negative when replacing the stock count.';
-                }
-            }
-
             $threshold = null;
             if ($thresholdRaw !== '') {
                 if (! $this->isInteger($thresholdRaw) || (int) $thresholdRaw < 0) {
@@ -381,10 +523,6 @@ class CsvInventoryImporter
                 } else {
                     $threshold = (int) $thresholdRaw;
                 }
-            }
-
-            if (! in_array($mode, InventoryCsvSchema::MODES, true)) {
-                $messages[] = 'Mode must be "'.InventoryCsvSchema::MODE_REPLACE.'" or "'.InventoryCsvSchema::MODE_ADD.'".';
             }
 
             // In-file duplicate SKU/barcode: each brand-new colliding row passes a
@@ -430,11 +568,9 @@ class CsvInventoryImporter
                 'selling_price' => $sellingPriceRaw,
                 'cost' => ($canViewCost && $costRaw !== '') ? $costRaw : null,
                 'cost_present' => $canViewCost && $costRaw !== '',
-                'stock' => $stock,
                 'unit' => $unit === '' ? null : $unit,
                 'description' => $description === '' ? null : $description,
                 'low_stock_threshold' => $threshold,
-                'mode' => $mode,
             ];
         }
 
@@ -566,7 +702,7 @@ class CsvInventoryImporter
 
                 // SKU, barcode, variant name and the item's unit/description are
                 // fixed once the variant exists — an update may only touch
-                // price, cost, stock, threshold and category.
+                // price, cost, threshold and category.
                 if ($existing->item !== null && ($message = $this->immutableFieldErrors($row, $existing, $existing->item)) !== null) {
                     $errors[] = ['row' => $row['line'], 'messages' => [$message]];
 
@@ -689,7 +825,7 @@ class CsvInventoryImporter
     }
 
     /**
-     * Import updates are limited to price, cost, stock, threshold and category.
+     * Import updates are limited to price, cost, threshold and category.
      * SKU, barcode, every name, and the item's unit/description are fixed once
      * the variant/item exists: a non-blank cell that disagrees with the stored
      * value is a mistake (a blank cell, or one equal to the current value, is
@@ -957,14 +1093,9 @@ class CsvInventoryImporter
      *
      * @param  list<array<string, mixed>>  $rows
      * @param  Collection<string, Variant>  $variantsBySku  from variantsBySku()
-     * @return list<array<string, mixed>> the pending stock adjustments this file
-     *                                    asks for — the catalog is written here
-     *                                    and now, the stock is not
      */
-    private function apply(array $rows, User $user, bool $canViewCost, string $importId, Collection $variantsBySku): array
+    private function apply(array $rows, User $user, bool $canViewCost, Collection $variantsBySku): void
     {
-        $queued = [];
-
         $categoryCache = [];
         $itemCache = [];
 
@@ -980,7 +1111,7 @@ class CsvInventoryImporter
             } else {
                 // Update path: SKU, barcode, variant name and the item's
                 // unit/description are immutable (validation rejected any
-                // change), so nothing beyond price/cost/stock/threshold and the
+                // change), so nothing beyond price/cost/threshold and the
                 // category move below is written for a matched variant.
                 $item = $variant->item;
             }
@@ -1018,67 +1149,7 @@ class CsvInventoryImporter
             }
 
             $variant->save();
-
-            $pending = $this->applyStock($variant, $row, $importId);
-
-            if ($pending !== null) {
-                $queued[] = $pending;
-            }
         }
-
-        return $queued;
-    }
-
-    /**
-     * Translate the row's mode + stock value into a signed delta and describe it
-     * as a pending adjustment. Zero-delta rows produce nothing (no-op, not an
-     * error).
-     *
-     * ## An import no longer moves stock, and this is where that changed
-     *
-     * This wrote a ledger entry per row until schema 21. It now returns a row for
-     * {@see AdjustmentQueue}, and the stock moves when somebody at the branch
-     * confirms it — in one go, through Approve all, which is the reason that
-     * button exists at all: a file of three hundred products is one action, and
-     * answering it three hundred times is not a workflow.
-     *
-     * Two consequences, both deliberate:
-     *
-     *  - **An import can no longer fail for want of stock.** Whether a
-     *    subtraction fits is now asked when it is confirmed, so a file that would
-     *    have gone negative imports cleanly and is refused later, per product,
-     *    where the operator can approve part of it instead. `ImportRowException`
-     *    is still thrown for everything else the file can get wrong.
-     *  - **A REPLACE delta can go stale.** `stock - on hand right now` is fixed
-     *    here and confirmed later, so sales in between shift it. Same trade as
-     *    the manual adjust screen, and the same answer: the approver partially
-     *    approves what fits. Modelling it would cost the queue two columns and
-     *    make a partial approval meaningless.
-     *
-     * @param  array<string, mixed>  $row
-     * @return array<string, mixed>|null
-     */
-    private function applyStock(Variant $variant, array $row, string $importId): ?array
-    {
-        $delta = $row['mode'] === InventoryCsvSchema::MODE_REPLACE
-            ? $row['stock'] - $this->ledger->currentStock($variant)
-            : $row['stock'];
-
-        if ($delta === 0) {
-            return null;
-        }
-
-        return [
-            'branch_id' => $this->queue->thisBranch(),
-            'variant_id' => (string) $variant->getKey(),
-            'quantity' => $delta,
-            'reference_type' => 'csv_import',
-            // The import_history row, so an approved movement can still be traced
-            // back to the file it came from — carried through the queue and onto
-            // the ledger entry by the resolver.
-            'reference_id' => $importId,
-            'notes' => 'CSV import',
-        ];
     }
 
     /**
@@ -1181,8 +1252,8 @@ class CsvInventoryImporter
 
     private function isInteger(string $value): bool
     {
-        // At most 9 digits (|value| <= 999,999,999): far beyond any real stock
-        // count and safely inside PHP's int range, so (int) casts are exact.
+        // At most 9 digits (|value| <= 999,999,999): far beyond any low-stock
+        // threshold, and safely inside PHP's int range, so (int) casts are exact.
         return $value !== '' && preg_match('/^[+-]?\d{1,9}$/', $value) === 1;
     }
 

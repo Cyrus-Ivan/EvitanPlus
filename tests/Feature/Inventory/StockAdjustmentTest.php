@@ -238,6 +238,6 @@ class StockAdjustmentTest extends TestCase
         $this->actingAs(User::factory()->owner()->create())
             ->get(route('inventory'))
             ->assertOk()
-            ->assertInertia(fn ($page) => $page->where('items.data.0.variants.0.current_stock', 7));
+            ->assertInertia(fn ($page) => $page->where('variants.data.0.current_stock', 7));
     }
 }

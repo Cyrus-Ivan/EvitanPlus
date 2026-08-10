@@ -17,7 +17,6 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
-use Tests\Concerns\ApprovesEveryPendingRow;
 use Tests\Integration\Concerns\ProvisionsABusiness;
 use Tests\TestCase;
 
@@ -38,7 +37,7 @@ use Tests\TestCase;
 #[Group('supabase')]
 class OnlineWriteTest extends TestCase
 {
-    use ApprovesEveryPendingRow, ProvisionsABusiness, RefreshDatabase;
+    use ProvisionsABusiness, RefreshDatabase;
 
     /** Each test sets its devices up for itself, through the real wizard. */
     protected bool $hydrated = false;
@@ -266,52 +265,34 @@ class OnlineWriteTest extends TestCase
         $this->assertSame('Renamed From Branch A', Setting::query()->where('key', 'business_name')->value('value'));
     }
 
-    public function test_a_csv_import_puts_catalog_and_stock_into_the_business_database(): void
+    public function test_a_csv_import_puts_the_catalog_into_the_business_database(): void
     {
         $this->hydrateAs(self::$documentA);
 
         $this->actingAs(User::query()->where('username', self::OWNER_USERNAME)->sole())
-            ->post(route('inventory.import.store'), ['file' => $this->csv()])
+            ->post(route('items.import.store'), ['file' => $this->csv()])
             ->assertSessionHasNoErrors();
 
         // The catalog rows.
         $this->assertSame(1, (int) $this->remote("select count(*) as n from variants where sku = 'IMPORTED1'")[0]['n']);
-
-        // An import no longer moves stock at all (schema 21): every row's change
-        // is a pending adjustment for somebody at the branch to confirm, so
-        // nothing is on the ledger and nothing is in the upstream cache yet.
-        $this->assertSame(
-            0,
-            (int) $this->remote("select count(*) as n from inventory_ledger where type = 'stock_adjustment'")[0]['n'],
-        );
-        $this->assertSame(
-            1,
-            (int) $this->remote("select count(*) as n from inventory_update_queue where reference_type = 'csv_import'")[0]['n'],
-        );
-
-        $this->approveEverythingPending(User::query()->where('username', self::OWNER_USERNAME)->sole());
-
-        // The stock_adjustment ledger rows — the class of row that had NO writer
-        // at all before M6.5. M6's outbox does not carry them (§5.1 calls them
-        // online-authoritative) and nothing else wrote them, so a branch's
-        // opening stock could never reach the business database.
-        $ledger = $this->remote("select type, reference_type, quantity from inventory_ledger where type = 'stock_adjustment'");
-
-        $this->assertCount(1, $ledger);
-        $this->assertSame('csv_import', $ledger[0]['reference_type']);
-        $this->assertSame(100, (int) $ledger[0]['quantity']);
-
-        // And the upstream stock cache, recomputed from that ledger — the thing
-        // Postgres has no trigger for.
-        $this->assertSame(100, (int) $this->remote('select quantity from stock_snapshots')[0]['quantity']);
+        $this->assertSame(1, (int) $this->remote("select count(*) as n from categories where name = 'Imported'")[0]['n']);
 
         // The import history row too, which is why import_history gained INSERT.
         $this->assertSame(1, (int) $this->remote('select count(*) as n from import_history')[0]['n']);
 
+        // An import touches no stock at all since M13 — not the ledger, not the
+        // upstream cache, and not the queue. It describes products, and what is
+        // on a shelf is a claim somebody at the branch has to make.
+        $this->assertSame(
+            0,
+            (int) $this->remote("select count(*) as n from inventory_ledger where type = 'stock_adjustment'")[0]['n'],
+        );
+        $this->assertSame(0, (int) $this->remote('select count(*) as n from inventory_update_queue')[0]['n']);
+        $this->assertSame(0, (int) $this->remote('select count(*) as n from stock_snapshots')[0]['n']);
+
         $this->hydrateAs(self::$documentB);
 
-        // Branch B sees the product. Its stock is branch A's, so B has none —
-        // stock is per branch and the catalog is not.
+        // Branch B sees the product, because the catalog is business-wide.
         $this->assertSame(1, Variant::query()->where('sku', 'IMPORTED1')->count());
         $this->assertSame(0, DB::table('stock_snapshots')->count());
     }
@@ -407,8 +388,7 @@ class OnlineWriteTest extends TestCase
         $row = [
             'category' => 'Imported', 'product' => 'Imported Product', 'variant' => '',
             'sku' => 'IMPORTED1', 'barcode' => '', 'selling_price' => '15.00', 'cost' => '9.50',
-            'stock' => '100', 'unit' => 'pc', 'description' => '', 'low_stock_threshold' => '5',
-            'mode' => 'replace_stock_count',
+            'unit' => 'pc', 'description' => '', 'low_stock_threshold' => '5',
         ];
 
         $handle = fopen('php://temp', 'r+');

@@ -13,8 +13,13 @@ import { login } from './helpers';
  */
 
 const DESTINATIONS: Array<[path: string, title: RegExp]> = [
+    // Two destinations since M13, and the split is the point: the catalog and
+    // the shelf. `/items` must not carry a stock figure and `/inventory` must
+    // not carry an item row, but a nav smoke can only say both boot — the
+    // shapes are pinned in the Feature suite.
+    ['/items', /^Items -/],
+    ['/items/categories', /^Categories -/],
     ['/inventory', /^Inventory -/],
-    ['/inventory/categories', /^Categories -/],
     ['/inventory/stock-history', /^Stock History -/],
     ['/inventory/stock-updates', /^Pending Stocks -/],
     // The same case from the other direction (M11): this URL asks for figures

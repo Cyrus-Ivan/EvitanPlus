@@ -106,10 +106,15 @@ class Variant extends Model
     }
 
     /**
+     * Qualified, because this scope is used on queries that JOIN `items` —
+     * the Inventory list and the batch dialog's picker, both of which read
+     * variant-first (M13). `items` carries an `archived_at` too, so an
+     * unqualified column here is an ambiguous-column error at runtime.
+     *
      * @param  Builder<Variant>  $query
      */
     public function scopeActive(Builder $query): void
     {
-        $query->whereNull('archived_at');
+        $query->whereNull('variants.archived_at');
     }
 }

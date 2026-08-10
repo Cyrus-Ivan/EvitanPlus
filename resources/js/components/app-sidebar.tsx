@@ -5,9 +5,9 @@ import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader, SidebarMenu, Sid
 import { type NavGroup } from '@/types';
 import { Link } from '@inertiajs/react';
 import {
+    Boxes,
     ChartColumn,
     ClipboardCheck,
-    FileSpreadsheet,
     History,
     Package,
     PackageSearch,
@@ -31,21 +31,29 @@ const mainNavGroups: NavGroup[] = [
             { title: 'Sales', url: '/sales', icon: ReceiptText },
         ],
     },
-    // Its own group rather than five entries under Operations: the catalog, the
-    // ledger behind it and the queue in front of it are one job, and selling is
-    // another.
+    // Two groups since M13, and the split is the same one the pages made: the
+    // CATALOG is what the business sells — business-wide, edited by an online
+    // write — and STOCK is how much of it is on one branch's shelf. They were one
+    // group while they were one screen.
     {
-        title: 'Inventory Management',
+        title: 'Catalog',
         items: [
-            // No dedicated ability backs categories either. Admin-gated to match
-            // what every action on that page needs — the route itself is
+            { title: 'Items', url: '/items', icon: Package }, // view-only for Cashier
+            // No dedicated ability backs categories. Admin-gated to match what
+            // every action on that page needs — the route itself is
             // Cashier-readable, but a screen whose every button is disabled is
             // not worth a nav entry.
-            { title: 'Categories', url: '/inventory/categories', icon: Tags, minRole: 'admin' },
-            { title: 'Inventory', url: '/inventory', icon: Package }, // view-only for Cashier
-            // No dedicated ability backs the import/export routes, so this one
-            // gates by role floor; the routes are `role:admin` server-side.
-            { title: 'Import / Export', url: '/inventory/import', icon: FileSpreadsheet, minRole: 'admin' },
+            { title: 'Categories', url: '/items/categories', icon: Tags, minRole: 'admin' },
+        ],
+    },
+    {
+        title: 'Inventory',
+        items: [
+            // "Import / Export" was here until M13. Import is a modal on Items
+            // now — it is something you do TO the catalog, not a place you go —
+            // and the export is gone, because it existed to round-trip stock
+            // counts through a spreadsheet.
+            { title: 'Inventory', url: '/inventory', icon: Boxes }, // view-only for Cashier
             // Ungated ON PURPOSE, unlike everything else that touches stock:
             // answering one is reporting what physically happened, and the
             // person who knows is whoever is in the shop. See routes/web.php.

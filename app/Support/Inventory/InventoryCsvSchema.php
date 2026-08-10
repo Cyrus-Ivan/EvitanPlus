@@ -3,13 +3,29 @@
 namespace App\Support\Inventory;
 
 /**
- * Single source of truth for the inventory CSV shape (Phase 7). The template
- * download, the export, and the importer all read their columns from here so
- * the three stay in lockstep.
+ * Single source of truth for the item CSV shape (Phase 7, narrowed in M13). The
+ * template download and the importer read their columns from here so the two
+ * stay in lockstep.
  *
  * Column order below is the canonical order for generated files. Cost is only
- * emitted for the Owner (see the controllers), but it keeps a fixed slot so the
+ * emitted for the Owner (see the controller), but it keeps a fixed slot so the
  * layout is stable whether or not it is present.
+ *
+ * ## `stock` and `mode` left in M13, and nothing replaced them
+ *
+ * This file describes PRODUCTS. Stock is per-branch, ledger-derived, and moves
+ * only when somebody at the branch confirms it moved — none of which a
+ * spreadsheet can assert. The `stock` column was already only ASKING by then
+ * (schema 21 turned each row's delta into a pending adjustment rather than a
+ * ledger entry), and `mode` existed solely to say what that number meant. With
+ * the catalog and the shelf on separate screens, both columns described the
+ * wrong screen.
+ *
+ * The consequence is real and is not a gap to fill later: **there is no bulk
+ * path for opening stock.** A newly imported product appears at zero, and the
+ * stock batch dialog on the Inventory page is how it gets its first count. That
+ * is one dialog row per variant, deliberately — a stock figure is a claim about
+ * a shelf somebody looked at.
  */
 final class InventoryCsvSchema
 {
@@ -22,11 +38,9 @@ final class InventoryCsvSchema
         'barcode',
         'selling_price',
         'cost',
-        'stock',
         'unit',
         'description',
         'low_stock_threshold',
-        'mode',
     ];
 
     /** Columns that must carry a value on every data row. */
@@ -34,16 +48,7 @@ final class InventoryCsvSchema
         'product',
         'sku',
         'selling_price',
-        'stock',
-        'mode',
     ];
-
-    /** Allowed per-row stock modes. */
-    public const MODE_REPLACE = 'replace_stock_count';
-
-    public const MODE_ADD = 'add_to_current_stock';
-
-    public const MODES = [self::MODE_REPLACE, self::MODE_ADD];
 
     /**
      * Header row for a generated file. Cost is dropped for non-Owners so the
@@ -74,11 +79,9 @@ final class InventoryCsvSchema
             'barcode' => '4801234567890',
             'selling_price' => '15.00',
             'cost' => '9.50',
-            'stock' => '100',
             'unit' => 'pc',
             'description' => 'Purified drinking water',
             'low_stock_threshold' => '12',
-            'mode' => self::MODE_REPLACE,
         ];
     }
 
@@ -96,14 +99,5 @@ final class InventoryCsvSchema
         $header = strtolower(trim($header));
 
         return (string) preg_replace('/[\s-]+/', '_', $header);
-    }
-
-    /**
-     * Normalise a raw mode cell the same way ("Replace Stock Count" ->
-     * "replace_stock_count"). Returns the normalised string (may be invalid).
-     */
-    public static function normalizeMode(string $mode): string
-    {
-        return self::normalizeHeader($mode);
     }
 }

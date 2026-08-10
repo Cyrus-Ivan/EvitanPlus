@@ -59,7 +59,7 @@ final class SchemaVersion
      * Asserted against {@see migrationCount()}, so this is not a number you
      * choose — it is one you keep in step, and the test says so when you don't.
      */
-    public const SCHEMA_VERSION = 22;
+    public const SCHEMA_VERSION = 23;
 
     /**
      * Raise ONLY for a breaking change. See the class docblock.
@@ -80,6 +80,13 @@ final class SchemaVersion
      * what this number does.
      *
      * Schema 22 left it here: one nullable column nothing older reads.
+     *
+     * Schema 23 left it here too. `batch_id` is nullable on both tables it
+     * touches, and a 1.1.0 build against a 23 schema simply does not write it:
+     * its Pending Stocks cards do not group and a transfer batch it approves
+     * does not carry the batch onto the receiving legs. Degraded, not wrong —
+     * the arithmetic, the grants and the answering all behave exactly as they
+     * did, which is the line between a raise and a column somebody may ignore.
      */
     public const MIN_APP_VERSION = '1.1.0';
 

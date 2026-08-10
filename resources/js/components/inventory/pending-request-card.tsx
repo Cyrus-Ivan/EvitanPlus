@@ -162,23 +162,79 @@ function Answer({ leg }: { leg: RequestLeg }) {
     );
 }
 
+/** One product's worth of a request: its legs, paired. */
+interface Line {
+    id: string;
+    item: string;
+    variant: string | null;
+    requested: number;
+    send: RequestLeg | undefined;
+    receive: RequestLeg | undefined;
+    /** The leg THIS device owes an answer on, if any. Never more than one. */
+    answerable: RequestLeg | undefined;
+    /** An adjustment's single leg, or a transfer's sending leg. */
+    first: RequestLeg;
+}
+
 /**
- * One pending stock movement, and every answer it is still waiting on.
+ * Pair a request's legs up by the product they are about.
+ *
+ * One line for an adjustment, one for each product in a batch, and within a line
+ * a transfer's send and receive. The pairing key comes off the wire (`leg.line`)
+ * rather than being inferred from the order — a batch interleaves nothing, but a
+ * card that quietly mispairs two products' legs would show the wrong branch's
+ * answer against the wrong shelf.
+ */
+function toLines(legs: RequestLeg[]): Line[] {
+    const byLine = new Map<string, RequestLeg[]>();
+
+    for (const leg of legs) {
+        byLine.set(leg.line, [...(byLine.get(leg.line) ?? []), leg]);
+    }
+
+    return [...byLine.entries()].map(([id, group]) => {
+        const send = group.find((leg) => leg.role === 'send');
+        const receive = group.find((leg) => leg.role === 'receive');
+        const first = send ?? group[0];
+
+        return {
+            id,
+            item: first.item,
+            variant: first.variant,
+            requested: first.requested,
+            send,
+            receive,
+            answerable: group.find((leg) => leg.actionable),
+            first,
+        };
+    });
+}
+
+/**
+ * One pending stock request, and every answer it is still waiting on.
  *
  * Read top to bottom it is the question a person standing in the shop has to
  * answer, in the order they need it: what kind of movement this is, who asked
  * for it and from where, which branches it moves stock between, what the other
- * branch has already said about it, and only then the product, the number, and
+ * branch has already said about it, and only then the products, the numbers, and
  * the buttons.
+ *
+ * ## A card is an ACT, not a row (M13)
+ *
+ * A stock batch is many products asked for at once, and this shows it as one
+ * card with one note and one branch pair, listing its products underneath. Twelve
+ * cards repeating one note is the page failing to say that one delivery left one
+ * shop. A request issued on its own is the same card with a single line, which is
+ * why there is no separate layout for it.
  */
 export function PendingRequestCard({ request }: { request: PendingRequest }) {
     const transfer = request.kind === 'transfer';
-    const send = request.legs.find((leg) => leg.role === 'send');
-    const receive = request.legs.find((leg) => leg.role === 'receive');
-    // An adjustment's single leg, or the transfer leg this device owes an answer
-    // on. At most one leg of a card is ever actionable here: both ends of a
-    // transfer are answered from different branches.
-    const answerable = request.legs.find((leg) => leg.actionable);
+    const lines = toLines(request.legs);
+    const single = lines.length === 1;
+    // The sending leg whose answer the receiving branch is reading. Only
+    // meaningful on a single-line card; a batch shows each line's own.
+    const send = single ? lines[0].send : undefined;
+    const answerable = request.legs.filter((leg) => leg.actionable);
 
     return (
         <Card>
@@ -190,6 +246,11 @@ export function PendingRequestCard({ request }: { request: PendingRequest }) {
                     <div className="min-w-0 flex-1 space-y-4">
                         <div className="flex flex-wrap items-center gap-2">
                             <Badge variant={transfer ? 'default' : 'secondary'}>{transfer ? 'Transfer' : 'Adjustment'}</Badge>
+                            {request.batch && (
+                                <Badge variant="outline" className="font-normal">
+                                    Batch · {request.batch.size} {request.batch.size === 1 ? 'product' : 'products'}
+                                </Badge>
+                            )}
                             <span className="text-muted-foreground text-xs">{SOURCE[request.source] ?? request.source}</span>
                         </div>
 
@@ -219,9 +280,12 @@ export function PendingRequestCard({ request }: { request: PendingRequest }) {
                             )}
                         </div>
 
+                        {request.notes && <Field label="Note">{request.notes}</Field>}
+
                         {/* A transfer's receiving branch is answering for what the SENDER
                             said actually left, so what the sender said has to be on the
-                            card. Only shown once there is an answer to show. */}
+                            card. Only shown once there is an answer to show, and only on
+                            a single-line card — a batch shows it per product. */}
                         {transfer && send && send.status !== 'pending' && (
                             <Field label={`Sent by ${send.branch?.code ?? 'the sending branch'}`}>
                                 <Answer leg={send} />
@@ -233,38 +297,90 @@ export function PendingRequestCard({ request }: { request: PendingRequest }) {
                         middle of every card in the list however much context the
                         left side happens to carry. */}
                     <div className="flex w-full min-w-0 flex-1 flex-col gap-3 border-t pt-3 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-6">
-                        <div className="flex flex-wrap items-baseline justify-between gap-2">
-                            <div>
-                                <p className="font-medium">
-                                    {request.item}
-                                    {request.variant ? <span className="text-muted-foreground"> · {request.variant}</span> : null}
-                                </p>
-                                {request.notes && <p className="text-muted-foreground text-sm">{request.notes}</p>}
-                            </div>
-                            <p className="text-lg font-semibold tabular-nums">{signed(answerable?.quantity ?? request.requested)}</p>
-                        </div>
+                        {!single && answerable.length > 1 && <ApproveAll legs={answerable} />}
 
-                        {transfer && <TransferSteps send={send} receive={receive} />}
-
-                        {/* Pushed to the foot of the column: the buttons are the
-                            last thing on the card in reading order, and on a tall
-                            card they stay put rather than floating up against the
-                            product line. */}
-                        <div className="mt-auto">
-                            {answerable ? (
-                                <AnswerControls leg={answerable} />
-                            ) : (
-                                <p className="text-muted-foreground text-sm">
-                                    {transfer && send?.status === 'pending'
-                                        ? `Waiting on ${send.branch?.code ?? 'the sending branch'} to confirm it left.`
-                                        : `Waiting on ${(receive ?? request.legs[0])?.branch?.code ?? 'another branch'} to confirm.`}
-                                </p>
-                            )}
+                        <div className={single ? undefined : 'divide-y'}>
+                            {lines.map((line) => (
+                                <LineBlock key={line.id} line={line} transfer={transfer} single={single} />
+                            ))}
                         </div>
                     </div>
                 </div>
             </CardContent>
         </Card>
+    );
+}
+
+/**
+ * One product on a card: what was asked, how far along it is, and the buttons.
+ *
+ * A single-line card gets the roomier layout the page has always had; a batch's
+ * lines are the same information stacked tighter, because the context they share
+ * is already stated once on the left.
+ */
+function LineBlock({ line, transfer, single }: { line: Line; transfer: boolean; single: boolean }) {
+    const { send, receive, answerable } = line;
+
+    return (
+        <div className={single ? 'flex flex-1 flex-col gap-3' : 'space-y-2 py-3 first:pt-0 last:pb-0'}>
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <p className={single ? 'font-medium' : 'text-sm font-medium'}>
+                    {line.item}
+                    {line.variant ? <span className="text-muted-foreground"> · {line.variant}</span> : null}
+                </p>
+                <p className={single ? 'text-lg font-semibold tabular-nums' : 'font-semibold tabular-nums'}>
+                    {signed(answerable?.quantity ?? line.requested)}
+                </p>
+            </div>
+
+            {transfer && <TransferSteps send={send} receive={receive} />}
+
+            {/* On a batch the sender's answer belongs beside the product it is
+                about, because the quantities differ line by line. */}
+            {!single && transfer && send && send.status !== 'pending' && <Answer leg={send} />}
+
+            {/* Pushed to the foot of the column on a single-line card: the
+                buttons are the last thing in reading order, and on a tall card
+                they stay put rather than floating up against the product line. */}
+            <div className={single ? 'mt-auto' : undefined}>
+                {answerable ? (
+                    <AnswerControls leg={answerable} />
+                ) : (
+                    <p className="text-muted-foreground text-sm">
+                        {transfer && send?.status === 'pending'
+                            ? `Waiting on ${send.branch?.code ?? 'the sending branch'} to confirm it left.`
+                            : `Waiting on ${(receive ?? line.first)?.branch?.code ?? 'another branch'} to confirm.`}
+                    </p>
+                )}
+            </div>
+        </div>
+    );
+}
+
+/**
+ * Approve every line on this card that this branch owes an answer on.
+ *
+ * Posts them as an ordinary batch of decisions to the same route one Approve
+ * uses — the resolver re-reads each id from Postgres filtered to this branch
+ * before writing anything, so there is nothing a bulk path could usefully skip.
+ * It says how many rather than "all", because "all" on a filtered page has meant
+ * two different things before.
+ */
+function ApproveAll({ legs }: { legs: RequestLeg[] }) {
+    const form = useForm({});
+
+    const approve = () => {
+        form.transform(() => ({ adjustments: legs.map((leg) => ({ id: leg.id, outcome: 'approve' })) }));
+        form.post(route('stock-updates.resolve'), { preserveScroll: true });
+    };
+
+    return (
+        <div className="flex justify-end">
+            <Button size="sm" onClick={approve} disabled={form.processing}>
+                {form.processing && <LoaderCircle className="mr-2 size-4 animate-spin" />}
+                Approve all {legs.length}
+            </Button>
+        </div>
     );
 }
 

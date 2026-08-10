@@ -3,11 +3,12 @@
 use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\BusinessSettingsController;
 use App\Http\Controllers\Inventory\CategoryController;
-use App\Http\Controllers\Inventory\InventoryExportController;
+use App\Http\Controllers\Inventory\InventoryController;
 use App\Http\Controllers\Inventory\InventoryImportController;
 use App\Http\Controllers\Inventory\InventoryQueueController;
 use App\Http\Controllers\Inventory\ItemController;
 use App\Http\Controllers\Inventory\StockAdjustmentController;
+use App\Http\Controllers\Inventory\StockBatchController;
 use App\Http\Controllers\Inventory\StockHistoryController;
 use App\Http\Controllers\LoginHistoryController;
 use App\Http\Controllers\PosController;
@@ -74,11 +75,17 @@ Route::middleware(['auth'])->group(function () {
     Route::post('sales/{transaction}/returns', [SaleReturnController::class, 'store'])->name('sales.returns.store');
     Route::get('login-history', [LoginHistoryController::class, 'index'])->name('login-history');  // Phase 14
 
-    // Inventory (Phase 5). Viewing is Cashier-level (read-only); every write is
-    // gated to Admin+ below. Item Cost is further restricted to the Owner inside
-    // the request/model layer, not here.
-    Route::get('inventory', [ItemController::class, 'index'])->name('inventory');
-    Route::get('inventory/categories', [CategoryController::class, 'index'])->name('categories.index');
+    // The CATALOG (Phase 5, split off /inventory in M13). Viewing is
+    // Cashier-level (read-only); every write is gated to Admin+ below. Item Cost
+    // is further restricted to the Owner inside the request/model layer, not
+    // here. Nothing under /items is per-branch, so none of it takes a `scope`.
+    Route::get('items', [ItemController::class, 'index'])->name('items.index');
+    Route::get('items/categories', [CategoryController::class, 'index'])->name('categories.index');
+
+    // STOCK (M13). One row per variant, branch-scoped, Cashier-level to read.
+    // Keeps the `inventory` route name because it is the page still called
+    // Inventory; the catalog took the name `items.index` with it.
+    Route::get('inventory', [InventoryController::class, 'index'])->name('inventory');
     // Stock history (Phase 6) — read-only ledger view; the ledger carries no
     // cost, so it is Cashier-level. Literal segment, declared before the
     // {item} wildcard writes below.
@@ -120,17 +127,30 @@ Route::middleware(['auth'])->group(function () {
         Route::patch('users/{user}/archive', [UserController::class, 'archive'])->name('users.archive');
         Route::patch('users/{user}/restore', [UserController::class, 'restore'])->name('users.restore')->withTrashed();
 
-        // Inventory writes (Phase 5). Literal segments are declared before the
-        // {item} wildcard so create/categories are never captured as an id.
-        Route::get('inventory/create', [ItemController::class, 'create'])->name('items.create');
-        Route::post('inventory', [ItemController::class, 'store'])->name('items.store');
+        // Catalog writes (Phase 5). Literal segments are declared before the
+        // {item} wildcard so create/categories/import are never captured as an id.
+        Route::get('items/create', [ItemController::class, 'create'])->name('items.create');
+        Route::post('items', [ItemController::class, 'store'])->name('items.store');
 
-        // Inventory CSV import / export (Phase 7). Literal segments, declared
-        // before the {item} wildcard so they are never captured as an item id.
-        Route::get('inventory/import', [InventoryImportController::class, 'index'])->name('inventory.import');
-        Route::post('inventory/import', [InventoryImportController::class, 'store'])->name('inventory.import.store');
-        Route::get('inventory/import/template', [InventoryImportController::class, 'template'])->name('inventory.import.template');
-        Route::get('inventory/export', InventoryExportController::class)->name('inventory.export');
+        // Item CSV import (Phase 7, reworked in M13). The page is gone — this is
+        // a modal on the Items page now — and so is the export.
+        //
+        // `preview` is the half that is new. It parses and validates the file and
+        // stops, so the modal can say WHICH existing products the file is about to
+        // change before anything is written. The confirmation it collects is
+        // enforced on `store` by the importer itself, not by the modal: a request
+        // built by hand with no `confirm_updates` is refused the same way.
+        //
+        // The file is re-uploaded on confirm rather than parked server-side. The
+        // second parse is authoritative anyway, the apply stays all-or-nothing,
+        // and there is no temp-file lifecycle to clean up after.
+        Route::post('items/import/preview', [InventoryImportController::class, 'preview'])->name('items.import.preview');
+        Route::post('items/import', [InventoryImportController::class, 'store'])->name('items.import.store');
+        Route::get('items/import/template', [InventoryImportController::class, 'template'])->name('items.import.template');
+        // Past imports, fetched when the modal's second tab opens. JSON rather
+        // than a prop, for the same reason as stock-updates.branches: the Items
+        // page must not pay for it on every render.
+        Route::get('items/imports', [InventoryImportController::class, 'history'])->name('items.imports');
 
         // ASKING for a stock adjustment at another branch. Online-only:
         // everything here lives in Postgres and is deliberately not mirrored.
@@ -144,10 +164,21 @@ Route::middleware(['auth'])->group(function () {
         // creates the receiving branch's row.
         Route::post('inventory/stock-transfers', [InventoryQueueController::class, 'transfer'])->name('stock-transfers.store');
 
-        Route::get('inventory/{item}/edit', [ItemController::class, 'edit'])->name('items.edit');
-        Route::patch('inventory/{item}', [ItemController::class, 'update'])->name('items.update');
-        Route::patch('inventory/{item}/archive', [ItemController::class, 'archive'])->name('items.archive');
-        Route::patch('inventory/{item}/restore', [ItemController::class, 'restore'])->name('items.restore');
+        // A STOCK BATCH (M13): many movements asked for as one act, sharing one
+        // batch id and one note. Either an adjustment at one branch or a transfer
+        // between two, never a mix — the branch pickers differ, and so does what
+        // the quantity on each line means.
+        //
+        // Issuing is Admin+ like every other way of asking; ANSWERING one is
+        // Cashier-level and comes through stock-updates.resolve unchanged, since
+        // a batch resolves as an ordinary set of decisions.
+        Route::get('inventory/stock-batches/variants', [StockBatchController::class, 'variants'])->name('stock-batches.variants');
+        Route::post('inventory/stock-batches', [StockBatchController::class, 'store'])->name('stock-batches.store');
+
+        Route::get('items/{item}/edit', [ItemController::class, 'edit'])->name('items.edit');
+        Route::patch('items/{item}', [ItemController::class, 'update'])->name('items.update');
+        Route::patch('items/{item}/archive', [ItemController::class, 'archive'])->name('items.archive');
+        Route::patch('items/{item}/restore', [ItemController::class, 'restore'])->name('items.restore');
 
         // Manual stock adjustment (Phase 6). Writes an inventory_ledger entry.
         // Online-only since M7: stock is shared with the business, and a
@@ -155,10 +186,12 @@ Route::middleware(['auth'])->group(function () {
         // cycle's baseline. Refused offline by OnlineWrite, not by this route.
         Route::post('inventory/variants/{variant}/stock', [StockAdjustmentController::class, 'store'])->name('stock.adjust');
 
-        Route::post('inventory/categories', [CategoryController::class, 'store'])->name('categories.store');
-        Route::patch('inventory/categories/{category}', [CategoryController::class, 'update'])->name('categories.update');
-        Route::patch('inventory/categories/{category}/archive', [CategoryController::class, 'archive'])->name('categories.archive');
-        Route::patch('inventory/categories/{category}/restore', [CategoryController::class, 'restore'])->name('categories.restore');
+        // Categories moved under /items with the rest of the catalog in M13: a
+        // category groups PRODUCTS, and nothing about it is per-branch.
+        Route::post('items/categories', [CategoryController::class, 'store'])->name('categories.store');
+        Route::patch('items/categories/{category}', [CategoryController::class, 'update'])->name('categories.update');
+        Route::patch('items/categories/{category}/archive', [CategoryController::class, 'archive'])->name('categories.archive');
+        Route::patch('items/categories/{category}/restore', [CategoryController::class, 'restore'])->name('categories.restore');
     });
 
     // Owner-only.

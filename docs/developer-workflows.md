@@ -1,8 +1,9 @@
 # Evitan Plus — developer workflows
 
 > **Scope.** Every command a developer actually runs on this project, what each one
-> proves, and the traps that make one of them lie. Setup and release live in
-> [`../README.md`](../README.md); how the system *works* is
+> proves, and the traps that make one of them lie. Setup lives in
+> [`../README.md`](../README.md); shipping a version to branches is
+> [`releasing.md`](releasing.md); how the system *works* is
 > [`sync-architecture.md`](sync-architecture.md); what the words mean is
 > [`glossary.md`](glossary.md), which is normative.
 
@@ -231,7 +232,8 @@ Each of these has cost real time on this project.
 
 ## 7. Where to look next
 
-- [`../README.md`](../README.md) — setup, the rig, building a release, standing up a branch.
+- [`../README.md`](../README.md) — setup, the rig, standing up a branch.
+- [`releasing.md`](releasing.md) — shipping a version to branches, end to end.
 - [`sync-architecture.md`](sync-architecture.md) — how the sync machinery works, as built.
 - [`glossary.md`](glossary.md) — **normative** on terminology.
 - [`../console/README.md`](../console/README.md) — the console operator runbook.

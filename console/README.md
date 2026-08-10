@@ -312,8 +312,9 @@ Of the pair, **one is checked and one is your judgement**:
   edit is where this call has to be made.
 
 One thing about the floor *is* checked: it may never exceed the app version this repo builds
-(`config/nativephp.php`, the default §"Building a release" step 1 tells you to bump). A floor
-above the newest possible build freezes every branch with nothing to install.
+(`config/nativephp.php`, the default `docs/releasing.md` §2 tells you to bump — that document
+is the runbook this command sits inside). A floor above the newest possible build freezes
+every branch with nothing to install.
 
 ### Re-apply the privilege matrix
 

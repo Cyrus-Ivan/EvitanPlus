@@ -231,61 +231,21 @@ composer rig:clean    # Destroy what a killed rig left behind
 
 ## Building a release
 
-1. Bump the version default in `config/nativephp.php` and add an entry to
-   [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
-2. Run every gate with `composer verify`. It chains them fail-fast, cheapest
-   first: `composer audit` → `pint --test` → `phpstan` →
-   `php artisan test --exclude-group=supabase` → `npm run types` →
-   `npm run lint:check` → `npm run format:check` → `npm run e2e` (which builds
-   the frontend before it starts Playwright). The `supabase` group is the
-   hydration gate, which needs a real project and admin credentials; run it
-   separately with `composer verify:hydrate`, alongside `composer verify:console`.
-   The audit step needs network access and ignores *abandoned* packages —
-   `nativephp/electron` and `nativephp/laravel` are deliberate pins, not
-   oversights. The M0 build gates —
-   [`BuildExclusionTest`](tests/Feature/Build/BuildExclusionTest.php) (no
-   console code or admin credentials in a build) and
-   [`PhpBinaryTest`](tests/Feature/Build/PhpBinaryTest.php) (the shipped PHP
-   runtime carries both `pdo_sqlite` and `pdo_pgsql`) — run inside
-   `php artisan test`.
-3. Build: `php artisan native:build linux` — artifacts land in `dist/` as
-   `Evitan Plus-<version>.AppImage` and `evitan-plus_<version>_amd64.deb`;
-   rename the AppImage to `evitan-plus-<version>.AppImage` (no spaces) before
-   distributing.
-4. Inspect the artifact before shipping: extract the AppImage
-   (`--appimage-extract`) and confirm the bundled `.env` carries no
-   `APP_KEY` / `APP_ENV` / `APP_DEBUG` (stripped via
-   `nativephp.cleanup_env_keys`), no `*.sqlite` files or repo internals are
-   inside, and `public/icon.png` is the Evitan mark. **Also confirm the
-   developer/admin boundary held** — no `console/` directory, no
-   `MULTIBRANCH-*.md`, and no `CONSOLE_*` / `BRANCH_DB_*` / `SUPABASE_*` keys
-   in the bundled `.env`:
+A release is three things, not one: an artifact, a migration of every business
+database, and a physical visit to every till — there is no auto-update. The
+headline commands are
 
-   ```bash
-   ./evitan-plus-<version>.AppImage --appimage-extract >/dev/null
-   # Payload lives at resources/app.asar.unpacked/resources/app; the find keeps
-   # this robust if electron-builder's layout changes.
-   APP=$(find squashfs-root -type d -name app -path '*resources*' | head -1)
+```bash
+composer verify                  # every offline gate, fail-fast
+php console/artisan schema:migrate --all   # before building, always
+php artisan native:build linux   # artifacts land in dist/
+```
 
-   test ! -e "$APP/console" && echo "OK: no console/" || echo "FAIL: console/ shipped"
-   ls "$APP"/MULTIBRANCH-*.md >/dev/null 2>&1 \
-       && echo "FAIL: design docs shipped" || echo "OK: no design docs"
-   grep -qE '^(CONSOLE_|BRANCH_DB_|SUPABASE_)' "$APP/.env" \
-       && echo "FAIL: admin keys shipped" || echo "OK: no admin env keys"
-
-   # The bundled PHP runtime must carry BOTH drivers, or the app cannot read
-   # its own SQLite database / cannot reach its branch Postgres.
-   PHP_BIN=$(find squashfs-root -type f -path '*resources/php/php' | head -1)
-   "$PHP_BIN" -r 'echo implode(",", PDO::getAvailableDrivers()), PHP_EOL;'  # → pgsql,sqlite
-   rm -rf squashfs-root
-   ```
-
-   [`tests/Feature/Build/BuildExclusionTest.php`](tests/Feature/Build/BuildExclusionTest.php)
-   and [`tests/Feature/Build/PhpBinaryTest.php`](tests/Feature/Build/PhpBinaryTest.php)
-   gate the same invariants in `composer verify`; this step is the
-   belt-and-braces check against the real artifact.
-5. Smoke-test the installed app with a scratch `HOME`: the setup wizard
-   (import a branch credentials JSON, optional printer), then a sale.
+**[`docs/releasing.md`](docs/releasing.md) is the procedure of record** — the
+version-pair decision that drives everything else, the migrate-then-install
+ordering and why it reads backwards, the artifact inspection, delivering to a
+till, confirming with `monitor`, and the recovery paths. Follow it rather than
+the summary above.
 
 The packaged app provisions itself on every launch (migrate → stock
 reconcile) and generates a per-install `APP_KEY` on first boot; a device that
@@ -314,8 +274,8 @@ Every branch device is prepared by a developer, in this order:
 2. **Hardware** — prepare the till: OS install, operator account, receipt
    printer, cash drawer.
 3. **AppImage** — build the release and copy it to the device (see
-   "Building a release" above). Credential rotation is delivered the same way:
-   a fresh AppImage plus a new JSON, never an in-place swap.
+   [`docs/releasing.md`](docs/releasing.md)). Credential rotation is delivered
+   the same way: a fresh AppImage plus a new JSON, never an in-place swap.
 4. **Wizard** — launch the app on the device; with no branch identity it opens
    the setup wizard. Give it the path to the JSON (**Browse** opens the OS file
    picker in the desktop build), optionally configure the receipt printer, and

@@ -160,10 +160,11 @@ class SalesFigures
                 $costedNet = $net - $uncostedNet;
 
                 // Net COGS excludes returned goods (credited back); defected goods'
-                // cost is retained (written off, not restored to stock).
+                // cost is retained (written off, not restored to stock). Not emitted:
+                // no screen and no PDF has ever rendered it, so it stays a local term
+                // of the profit arithmetic below.
                 $cogs = $this->centavos($soldCost[$group] ?? 0) - $this->centavos($returnedCost[$group] ?? 0);
 
-                $row['cogs'] = $this->pesos($cogs);
                 // Profit covers costed items only; un-costed sales are reported apart.
                 $row['profit'] = $this->pesos($costedNet - $cogs);
                 $row['uncosted_sales'] = $this->pesos($uncostedNet);
@@ -365,7 +366,6 @@ class SalesFigures
             'returns' => 0,
             'defects' => 0,
             'net_sales' => 0,
-            'cogs' => 0,
             'profit' => 0,
             'uncosted_sales' => 0,
         ];
@@ -377,7 +377,6 @@ class SalesFigures
             $totals['defects'] += $this->centavos($row['defects']);
             $totals['net_sales'] += $this->centavos($row['net_sales']);
             if ($withCost) {
-                $totals['cogs'] += $this->centavos($row['cogs']);
                 $totals['profit'] += $this->centavos($row['profit']);
                 $totals['uncosted_sales'] += $this->centavos($row['uncosted_sales']);
             }
@@ -392,7 +391,6 @@ class SalesFigures
         ];
 
         if ($withCost) {
-            $result['cogs'] = $this->pesos($totals['cogs']);
             $result['profit'] = $this->pesos($totals['profit']);
             $result['uncosted_sales'] = $this->pesos($totals['uncosted_sales']);
         }

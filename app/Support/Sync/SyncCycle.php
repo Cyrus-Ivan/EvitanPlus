@@ -183,7 +183,7 @@ class SyncCycle
     }
 
     /**
-     * Step 4, and it may never be the reason a cycle failed.
+     * Step 3, and it may never be the reason a cycle failed.
      *
      * Swallows everything: a heartbeat is a report ABOUT the cycle, so letting
      * one throw would either mask the failure it was sent to describe or turn a

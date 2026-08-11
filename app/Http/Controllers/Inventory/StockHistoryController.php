@@ -427,7 +427,6 @@ class StockHistoryController extends Controller
                 : $this->actor($users, $row->resolved_by),
             'resolved_at' => $this->localise($row->resolved_at),
             'branch' => $this->branchRef($row->branch_id, $branches),
-            'counterparty_branch' => $this->branchRef($row->counterparty_branch_id, $branches),
             'parent' => $parent === null ? null : [
                 'requested' => (int) $parent->quantity,
                 'approved' => $parent->approved_quantity === null ? null : (int) $parent->approved_quantity,

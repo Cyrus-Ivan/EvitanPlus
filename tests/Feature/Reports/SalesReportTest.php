@@ -260,11 +260,10 @@ class SalesReportTest extends TestCase
             ->get(route('reports', ['period' => 'daily', 'date' => '2026-03-10']))
             ->assertInertia(fn ($page) => $page
                 ->where('canViewCost', true)
-                ->where('rows.0.cogs', '80.00')
+                // COGS is not reported; profit is net of it, so these pin the
+                // same arithmetic (80.00, -40.00, 40.00 respectively).
                 ->where('rows.0.profit', '120.00')
-                ->where('rows.1.cogs', '-40.00')
                 ->where('rows.1.profit', '-60.00')
-                ->where('totals.cogs', '40.00')
                 ->where('totals.profit', '60.00'));
 
         // Admin never receives cost/profit — the keys are absent.
@@ -272,7 +271,6 @@ class SalesReportTest extends TestCase
             ->get(route('reports', ['period' => 'daily', 'date' => '2026-03-10']))
             ->assertInertia(fn ($page) => $page
                 ->where('canViewCost', false)
-                ->missing('rows.0.cogs')
                 ->missing('rows.0.profit')
                 ->missing('rows.0.uncosted_sales')
                 ->missing('totals.profit')
@@ -295,7 +293,6 @@ class SalesReportTest extends TestCase
             ->get(route('reports', ['period' => 'daily', 'date' => '2026-03-10']))
             ->assertInertia(fn ($page) => $page
                 ->where('rows.0.net_sales', '200.00')
-                ->where('rows.0.cogs', '40.00')
                 ->where('rows.0.uncosted_sales', '100.00')
                 ->where('rows.0.profit', '60.00')
                 ->where('totals.uncosted_sales', '100.00')
@@ -465,7 +462,6 @@ class SalesReportTest extends TestCase
             ->assertInertia(fn ($page) => $page
                 ->where('rows.0.net_sales', '180.00')
                 ->where('rows.0.uncosted_sales', '90.00')
-                ->where('rows.0.cogs', '40.00')
                 ->where('rows.0.profit', '50.00'));
     }
 

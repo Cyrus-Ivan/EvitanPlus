@@ -8,6 +8,11 @@
 > longer exists. Left as written because this is a dated record of how the phase
 > was run, not a description of the current app; a branch device is now rebuilt
 > through the setup wizard (`docs/sync-architecture.md` §2).
+>
+> **Superseded in part (M13).** The same applies to the **CSV export**, removed
+> along with the item file's `stock` and `mode` columns — including this plan's
+> "CSV export formula injection" review item and any checklist box naming the
+> export.
 
 Phase 18 is the **final review gate before production**, not just a testing pass. It has five
 jobs: expand test coverage over the invariants, **challenge the spec's assumptions**, review

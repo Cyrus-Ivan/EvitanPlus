@@ -1,5 +1,13 @@
 # Returns, Refunds & Defects — Authoritative Design
 
+> **Product:** written for **Evitan POS** (Phase 10) and still the design of record for
+> **Evitan Plus**, whose after-sales rules are unchanged. One thing does differ upstream:
+> `return_number` is unique **per branch**, not globally — the Postgres table carries a
+> `branch_id` and a `(branch_id, return_number)` unique index, because each branch mints
+> its own sequence. The `RET-YYYYMMDD-000001` format itself is unchanged and deliberately
+> carries no branch prefix, unlike the transaction serial. See `docs/glossary.md` §1 on
+> the two products.
+>
 > **Status:** Design of record — **implemented** (Phase 10, commit `e24d844`, 2026-07-12,
 > plus audit wiring in Phase 15). The schema and rules below match the shipped code;
 > any future change to after-sales behavior must keep this document in sync.

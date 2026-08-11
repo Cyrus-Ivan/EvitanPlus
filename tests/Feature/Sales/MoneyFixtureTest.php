@@ -122,9 +122,9 @@ class MoneyFixtureTest extends TestCase
             'returns' => '90.05',
             'defects' => '0.00',
             'net_sales' => '179.99',
-            // COGS: sold 30.00 + 20.00 + 30.00, credited back 30.00 for the
-            // returned units → 50.00; profit = 179.99 − 50.00.
-            'cogs' => '50.00',
+            // COGS (not reported, but it is what profit is net of): sold
+            // 30.00 + 20.00 + 30.00, credited back 30.00 for the returned units
+            // → 50.00; profit = 179.99 − 50.00.
             'profit' => '129.99',
             'uncosted_sales' => '0.00',
         ]);
@@ -144,7 +144,6 @@ class MoneyFixtureTest extends TestCase
             'gross_sales' => '0.30',
             'net_sales' => '0.30',
             // Both lines are un-costed: excluded from profit, reported apart.
-            'cogs' => '0.00',
             'profit' => '0.00',
             'uncosted_sales' => '0.30',
         ]);
@@ -169,8 +168,8 @@ class MoneyFixtureTest extends TestCase
             'gross_sales' => '0.66',
             'returns' => '0.66',
             'net_sales' => '0.00',
-            // All three units returned: their cost is credited back in full.
-            'cogs' => '0.00',
+            // All three units returned: their cost is credited back in full,
+            // so profit nets to zero.
             'profit' => '0.00',
         ]);
     }

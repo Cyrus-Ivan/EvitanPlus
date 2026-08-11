@@ -152,14 +152,12 @@ class StockBatchController extends Controller
                 'item' => $variant->item?->name,
                 'variant' => $variant->name,
                 'sku' => $variant->sku,
-                'barcode' => $variant->barcode,
+                // Barcode is a SEARCH key (see the query below), not a shipped
+                // field: the picker matches on it but renders item/variant/sku.
                 // Null means "we could not find out", which the dialog says
                 // rather than printing a zero somebody would act on.
                 'stock' => $stock === null ? null : ($stock[(string) $variant->getKey()] ?? 0),
             ])->all(),
-            // So the dialog can label the figure honestly: another branch's is a
-            // baseline and excludes what they have sold since their last sync.
-            'baseline' => $branch !== '' && ! $this->isThisBranch($branch),
         ]);
     }
 

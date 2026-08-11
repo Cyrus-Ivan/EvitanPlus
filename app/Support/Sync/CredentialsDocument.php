@@ -187,9 +187,4 @@ final class CredentialsDocument
     {
         return (string) $this->document['connection']['password'];
     }
-
-    public function issuedAt(): ?string
-    {
-        return isset($this->document['issued_at']) ? (string) $this->document['issued_at'] : null;
-    }
 }

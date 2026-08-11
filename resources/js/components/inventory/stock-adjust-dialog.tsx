@@ -6,7 +6,8 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import type { Branch, Variant } from '@/types';
+import useBranchRoster from '@/hooks/use-branch-roster';
+import type { Variant } from '@/types';
 import { useForm } from '@inertiajs/react';
 import { LoaderCircle } from 'lucide-react';
 import { FormEventHandler, useEffect, useState } from 'react';
@@ -89,8 +90,8 @@ export default function StockAdjustDialog({
     const form = useForm<AdjustForm>({ mode: 'add', value: '', notes: '' });
     const { data, setData, errors, processing, reset, clearErrors } = form;
 
-    const [branches, setBranches] = useState<Branch[]>([]);
     const [target, setTarget] = useState<string>(HERE);
+    const { branches } = useBranchRoster(open);
 
     // Reset on open so values/errors never leak between variants.
     useEffect(() => {
@@ -101,29 +102,6 @@ export default function StockAdjustDialog({
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open, variant?.id]);
-
-    // The roster, on open. A failure is not an error state: an offline device
-    // simply has no other branches to offer, and adjusting this one still works.
-    useEffect(() => {
-        if (!open) {
-            return;
-        }
-
-        let cancelled = false;
-
-        fetch(route('stock-updates.branches'), { headers: { Accept: 'application/json' }, credentials: 'same-origin' })
-            .then((response) => response.json())
-            .then((payload: { branches?: Branch[] }) => {
-                if (!cancelled) {
-                    setBranches(payload.branches ?? []);
-                }
-            })
-            .catch(() => undefined);
-
-        return () => {
-            cancelled = true;
-        };
-    }, [open]);
 
     const elsewhere = target !== HERE;
     const current = variant?.current_stock ?? 0;

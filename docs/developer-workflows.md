@@ -188,14 +188,20 @@ rm database/nativephp.sqlite      # packaged: the app's data directory
 ```
 
 `LaunchProvisioner` re-runs the migrations at launch, finds no `instance` row, and the setup
-wizard runs exactly as it does on a fresh install. You need that branch's **credentials
-JSON** again — `branch:provision --force` re-issues it (which rotates the password; see the
-pooler caching note in §6).
+wizard runs exactly as it does on a fresh install. You need that branch's **credentials JSON**
+again — **`branch:rotate` re-issues it**, which mints a new password for the existing branch. A
+re-created role is unusable for about two minutes; see the pooler caching note in `README.md`.
+
+> **Not `branch:provision --force`.** That flag only skips the confirmation prompt, and the
+> command *creates a branch* — it refuses a code already in use, and given a free one it mints a
+> new `branch_id`. Using it here would leave the business with a phantom second branch and the
+> rebuilt till reporting as a branch that has never traded. The line above said exactly that
+> until the audit that corrected it.
 
 Two things do not come back, and neither is a bug:
 
 - the **printer configuration** — device-local, no upstream row, re-collected in wizard step 2;
-- any **unpushed outbox backlog** — see `docs/sync-architecture.md` §2.
+- any **unpushed outbox backlog** — see `sync-architecture.md` §2.
 
 Everything else does, including the branch's transactions, returns, ledger, login history,
 audit logs and Upload History (M11.6).

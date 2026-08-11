@@ -6,8 +6,10 @@ printing behaviour, this document wins.
 
 ## Target & scope
 
-Evitan Plus runs on **Linux, macOS and Windows** (desktop app; the printer is attached to
-the individual till, so this design is per-device regardless of how many branches exist). The
+Evitan Plus **ships for Linux** (AppImage + deb); the design is written to be
+platform-agnostic and macOS and Windows builds are future work (`ROADMAP.md`,
+`RELEASE-NOTES.md` "Known limitations"). The printer is attached to the individual
+till, so this design is per-device regardless of how many branches exist. The
 supported printer is an **ESC/POS thermal printer** connected by **USB, Bluetooth
 or the network**. In every case the app generates the *same* ESC/POS byte stream
 in PHP; only the transport that carries those bytes to the printer differs.

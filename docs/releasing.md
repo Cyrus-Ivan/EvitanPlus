@@ -58,6 +58,14 @@ freezes the sync of every branch of every business until each device is physical
 > like a branch doing its job. That is what "breaking" means here: not that the old build
 > errors, but that it does the wrong thing silently.
 
+> **The worked example — additive, and the one nobody wrote down.** Schema 22 (M11.8) added
+> `issued_by_branch_id` to `inventory_update_queue`: one nullable column recording which
+> branch a request was issued *from*. A 1.1.0 build against a 22 schema writes null into it
+> and renders "Requested by" without a branch name — it tells no lie and misreads nothing, so
+> the floor stayed at 1.1.0. Recorded here because until the audit that added this paragraph,
+> that judgement existed only in `CLAUDE.md`'s status prose and one docblock; M11.8 had no
+> roadmap section, so there was no spec in which it had ever been decided.
+
 > **The worked example — additive**, which is the call you will actually make most often.
 > Schema 23 (M13) added `batch_id` to `inventory_update_queue` and `inventory_ledger`, so
 > rows issued together can be answered as one card. A 1.1.0 build against a 23 schema writes

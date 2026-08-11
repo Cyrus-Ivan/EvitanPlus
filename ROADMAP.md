@@ -9,7 +9,7 @@ This roadmap prioritizes building a **working application as early as possible**
 > **Scope.** These are the phases that built **Evitan POS**, the single-install offline-only
 > product. They are finished; nothing here is forward-looking, and the document is kept as the
 > per-phase record. The work that turned it into **Evitan Plus** — branches, provisioning,
-> Postgres, sync — is phased separately in `MULTIBRANCH-ROADMAP.md` (`M0–M12`), which is the
+> Postgres, sync — is phased separately in `MULTIBRANCH-ROADMAP.md` (`M0–M13.5`), which is the
 > roadmap to read for current and remaining work. `docs/glossary.md` §1 is normative on the
 > two product names.
 
@@ -242,7 +242,18 @@ Inventory calculations complete.
 
 ---
 
-# Phase 7 — Inventory Import / Export ✅
+# Phase 7 — Inventory Import / Export ✅ → import only (M13)
+
+> **Partly superseded by Evitan Plus M13 (`MULTIBRANCH-ROADMAP.md`).** Shipped in
+> Evitan POS v1.0.0 as described below. In Evitan Plus the **CSV export is gone**,
+> and so are the `stock` and `mode` columns with their "replace stock count" /
+> "add to current stock" modes — a spreadsheet cannot assert what is on a shelf,
+> and since schema 21 every stock movement is a claim somebody at the branch has
+> to confirm. The item file describes **items only**, the import is a modal on
+> `/items` with a preview-then-confirm pass rather than a page of its own, and it
+> writes no ledger rows at all. Opening stock has its own two-column file on
+> `/inventory`, usable only while a branch has never sold anything
+> (`docs/glossary.md` "Opening window").
 
 ## Goal
 
@@ -699,7 +710,7 @@ Release Notes
 
 Create first production release.
 
-**Status: done (2026-07-19), tagged `v1.0.0`.** Linux AppImage + deb built via
+**Status: done (2026-07-19), tagged `v1.0.0`.** *(The release is dated **2026-07-20** in `RELEASE-NOTES.md` and `docs/glossary.md`: the amendment below landed the next day and was folded into the same tag. Both dates are right about different things — use 07-20 for "when v1.0.0 shipped".)* Linux AppImage + deb built via
 `native:build` and verified: bundle inspection (no APP_KEY/APP_ENV/APP_DEBUG in
 the shipped `.env`, no databases/backups/repo-internals inside, Evitan icons)
 and a fresh-`HOME` launch smoke (seeded owner with forced password change, 14
@@ -758,7 +769,7 @@ Inventory
 Inventory Ledger
         │
         ▼
-CSV Import / Export
+CSV Import          (export removed in Evitan Plus — M13)
         │
         ▼
 POS

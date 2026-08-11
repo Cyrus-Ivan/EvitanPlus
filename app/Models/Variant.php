@@ -10,7 +10,6 @@ use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Variant extends Model
@@ -64,22 +63,6 @@ class Variant extends Model
     public function item(): BelongsTo
     {
         return $this->belongsTo(Item::class);
-    }
-
-    /**
-     * @return HasMany<InventoryLedger, $this>
-     */
-    public function ledgerEntries(): HasMany
-    {
-        return $this->hasMany(InventoryLedger::class);
-    }
-
-    /**
-     * @return HasMany<TransactionItem, $this>
-     */
-    public function transactionItems(): HasMany
-    {
-        return $this->hasMany(TransactionItem::class);
     }
 
     /**

@@ -1,7 +1,7 @@
 # Evitan Plus — sync architecture, as built
 
 > **Scope.** How a branch device and the business database actually behave in the code
-> that exists today (M0–M12). `MULTIBRANCH-BRAINSTORM.md` is the spec of record and
+> that exists today (M0–M13.5). `MULTIBRANCH-BRAINSTORM.md` is the spec of record and
 > `MULTIBRANCH-ROADMAP.md` is the phase plan; where either describes an intention this
 > document describes the implementation. On what a *word* means,
 > [`glossary.md`](glossary.md) outranks both.
@@ -68,10 +68,10 @@ The history half exists because hydration is now the **only** way to rebuild a d
 Until M11.6 the Owner could restore a file backup instead, so a hydrate that skipped
 history left a gap somebody else could close; with that feature removed, three-quarters of
 a device is not a recovery. A replacement till used to come up with the right catalog and
-stock but an empty `/transactions`, `/audit-logs` and `/login-history`, no branch-local
+stock but an empty `/sales`, `/audit-logs` and `/login-history`, no branch-local
 report figures, and no receipt to reprint.
 
-Three things make the history copy correct, and each of them fails silently if got wrong:
+Four things make the history copy correct, and each of them fails silently if got wrong:
 
 - **It is scoped to this branch.** Directly by `branch_id` — detected per table through
   `RowMapper::isBranchScoped()` rather than listed — except `transaction_items` and
@@ -327,7 +327,7 @@ Every stock movement is now asked for before it happens, with **one** exception 
 recount typed at this till, an adjustment aimed at another branch, a stock batch, and both legs
 of a transfer all write a `pending` row into `inventory_update_queue`
 (`App\Support\Inventory\AdjustmentQueue`) and stop. (A CSV import did too, until M13 took stock
-out of the catalog file entirely — see §6.1.)
+out of the catalog file entirely — see §6.2.)
 It becomes a ledger entry when a person at the affected branch says it really happened
 (`App\Support\Inventory\AdjustmentResolver`), from `/inventory/stock-updates`.
 
@@ -369,7 +369,7 @@ unrelated pending rows, and twelve copies of one note for the receiving branch t
 not what happened: one delivery left one shop. `batch_id` (nullable, no FK, on both
 `inventory_update_queue` and `inventory_ledger`) is the name of that one act.
 
-`App\Support\Inventory\StockBatchController` mints it and writes one row per line, all sharing
+`App\Http\Controllers\Inventory\StockBatchController` mints it and writes one row per line, all sharing
 one note. A transfer batch writes only the **sending** legs, as one always did; each receiving leg
 is spawned by `AdjustmentResolver::secondLeg()` when the sender confirms, and inherits the batch
 so the receiving branch also sees one card. `AdjustmentResolver::apply()` carries it onto the
@@ -526,17 +526,21 @@ local COMMIT failing after Postgres accepted — which is self-healing, because 
 mirror is the store that may be thrown away.
 
 **`OnlineRead`** (M8) — a live query that mirrors nothing: it asks Postgres a question,
-renders the answer, keeps none of it. Used for `branches` and `inventory_update_queue`
-(including the read the resolver does before it writes),
-both Postgres-only by decision (§1). Same credential, same probe, same `BranchCycle`
+renders the answer, keeps none of it. Two of the tables it serves are Postgres-only by
+decision (§1): `branches` and `inventory_update_queue` (including the read the resolver does
+before it writes). From M11 onwards it also serves the wider **branch scope** on screens whose
+tables *are* mirrored — reports, sales, login history, stock history and inventory stock — since
+a mirror holds only this branch's rows and a consolidated view needs everyone's. See §8. Same credential, same probe, same `BranchCycle`
 owning the connection — **but no version gate**, and that is the one deliberate difference:
 the gate exists so a build below the floor cannot *write* stale data. Refusing to render a
 read-only screen would take away the display of the very problem.
 
-`BranchRoster` is the one query behind both screens that name another branch, and it
+`BranchRoster` is the one query behind every screen that names another branch, and it
 includes **disabled** branches by default: a disabled credential stops a branch receiving
-work, it does not unmake what that branch already did. The flag matters for the opposite
-case — picking a branch to send an adjustment *to*.
+work, it does not unmake what that branch already did. The opposite case — picking a branch to
+send an adjustment *to* — needs the disabled ones gone, which is why `InventoryQueueController`
+keeps a private `roster()` of its own alongside its `BranchRoster` use: one list to choose a
+target from, one to put a name on a card.
 
 The roster is read on **every full render** of a scope-picker screen for a viewer who
 may widen the scope — not only when a wider scope was asked for. It used to ride inside the
@@ -571,9 +575,15 @@ Three things do not port between the two databases, and all three fail **silentl
 - **Bucketing** — `strftime` vs `to_char`; the format is inlined from a constant map and
   the timezone is *bound*, because it is an Owner-editable setting.
 - **Window bounds** — a Postgres bound must carry its **offset** (a naive bound reads as
-  the session's UTC, eight hours out) *and* its **microseconds** (`endOfDay()` is
-  `.999999`, `timestamptz` keeps them, `toIso8601String()` truncates). The filter stays on
-  the raw column so the `(branch_id, created_at)` indexes still apply.
+  the session's UTC, eight hours out). The filter stays on the raw column so the
+  `(branch_id, created_at)` indexes still apply.
+
+  *(This bullet also claimed the bound must carry its **microseconds** — that `endOfDay()`
+  is `.999999`, that `timestamptz` keeps them and that `toIso8601String()` truncates. It is
+  **false for this schema**: `timestampTz` takes Laravel's default precision of 0, so every
+  timestamp column is `timestamp(0) with time zone` and a `.999999` value is unrepresentable
+  rather than merely untested. The offset half above is real, and is what
+  `tests/Integration/ConsolidatedLoginHistoryTest.php` proves.)*
 - **`numeric` SUMs** arrive as exact strings, not floats.
 
 A report row is a time bucket **or a branch** depending on one GROUP BY, so the per-branch
@@ -584,7 +594,7 @@ branches" heading is the one outcome worse than an error.
 Cost, COGS and profit stay Owner-only *here too*: the `$withCost` flag does not hide them,
 it means the cost queries are never run and the keys are absent from the payload.
 
-### The other four screens that take a scope
+### The other five screens that take a scope
 
 Same parameter, same fallback, same trait — different databases underneath, and each one has a
 trap of its own worth naming.
@@ -613,7 +623,8 @@ And the one that is not a dialect difference: **`cost` is guarded by the SELECT 
 nothing else.** `HidesCostFromNonOwners` is a model serialization hook and never runs on a
 query-builder row, so for a non-Owner the key must be *absent*, matching the local path.
 
-**Inventory stock** (M12, `Inventory\ItemController`) is the odd one out twice over. First, the
+**Inventory stock** (M12, `Inventory\InventoryController` — it was `Inventory\ItemController`
+until M13 split the catalog off) is the odd one out twice over. First, the
 scope changes **stock and nothing else**. The item and variant list is read locally in every scope
 — the catalog is mirrored business-wide, so the local rows *are* the upstream rows — and the
 online read is one `whereIn` over `stock_snapshots` for the variant ids already on the page. That
@@ -770,6 +781,6 @@ piece of the above possible.
 - [`developer-workflows.md`](developer-workflows.md) — how to run, verify and inspect all
   of this.
 - [`../MULTIBRANCH-BRAINSTORM.md`](../MULTIBRANCH-BRAINSTORM.md) — the spec of record.
-- [`../MULTIBRANCH-ROADMAP.md`](../MULTIBRANCH-ROADMAP.md) — phases M0–M12 and their "As
+- [`../MULTIBRANCH-ROADMAP.md`](../MULTIBRANCH-ROADMAP.md) — phases M0–M13.5 and their "As
   built" notes.
 - [`../console/README.md`](../console/README.md) — the operator runbook for the other side.

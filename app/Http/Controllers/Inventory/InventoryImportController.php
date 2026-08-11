@@ -148,7 +148,6 @@ class InventoryImportController extends Controller
                 'status' => $entry->status,
                 'total_rows' => $entry->total_rows,
                 'success_count' => $entry->success_count,
-                'error_count' => $entry->error_count,
                 'errors' => $entry->errors,
                 'created_at' => $entry->created_at,
                 'user' => $entry->user?->name ?? $entry->user?->username,

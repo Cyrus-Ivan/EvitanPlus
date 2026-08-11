@@ -26,17 +26,16 @@ use function Laravel\Prompts\confirm;
  *
  * The console had no command base class before this; five near-identical
  * lifecycle commands are what justifies introducing one.
+ *
+ * The shared part is the resolution below, not the `$signature` text: each
+ * subclass spells out its own --business/--schema/--branch/--branch-code/--actor
+ * block. A `TARGET_OPTIONS` constant here tried to centralise that and every
+ * subclass inlined the options anyway, so it was removed as dead rather than
+ * left looking authoritative. Keep the blocks identical by hand — they are what
+ * `--help` prints, and muscle memory transfers between the commands.
  */
 abstract class BranchCommand extends Command
 {
-    /** Options every branch command accepts; kept identical so muscle memory transfers. */
-    protected const TARGET_OPTIONS = '
-        {--business= : Business UUID; the schema name is derived from it}
-        {--schema= : Target an explicit schema name instead}
-        {--branch= : Branch UUID}
-        {--branch-code= : Branch code, e.g. MNL}
-        {--actor= : Recorded as the operator in the provisioning audit}';
-
     /**
      * The business schema this invocation targets.
      *

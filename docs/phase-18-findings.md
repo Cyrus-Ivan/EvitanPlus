@@ -12,6 +12,14 @@ S8 consumes this table in severity order; S9 writes the Phase 19 handoff list at
 > written because this is a dated record of what the review found, not a
 > description of the current app; a branch device is now rebuilt through the
 > setup wizard (`docs/sync-architecture.md` §2).
+>
+> **Superseded in part (M13).** The same applies to the **CSV export**, which was
+> removed along with the item file's `stock` and `mode` columns. Findings and
+> review items naming `InventoryExportController`, `InventoryExportTest` or the
+> route `stock.adjust` — including **F-16** and the CSV-export row of the
+> security summary — describe code that no longer exists. Stock adjustment is now
+> `stock-updates.store` / `stock-batches`, and the item import is a modal on
+> `/items`.
 
 
 **Severity:** Blocker / High / Medium / Low / Accepted-risk. Seed findings outside S1's scope

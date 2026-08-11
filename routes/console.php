@@ -1,8 +1,7 @@
 <?php
 
-use Illuminate\Foundation\Inspiring;
-use Illuminate\Support\Facades\Artisan;
-
-Artisan::command('inspire', function () {
-    $this->comment(Inspiring::quote());
-})->purpose('Display an inspiring quote');
+/*
+ * No console routes. Evitan Plus's commands are classes under app/Console/Commands
+ * (and the Provisioning Console's under console/app/Console/Commands, which never
+ * ships). Laravel's scaffolded `inspire` closure lived here and was never called.
+ */

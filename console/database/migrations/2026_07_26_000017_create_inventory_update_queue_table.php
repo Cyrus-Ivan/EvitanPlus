@@ -43,6 +43,13 @@ use Illuminate\Support\Facades\Schema;
  * real movements have been pushed. It writes the entry upstream only and lets
  * the ordinary pull bring it back down, so `type = 'stock_adjustment'` keeps
  * exactly one writer.
+ *
+ * As built (M11.7): that is no longer how it works, and `QueueProcessor` no
+ * longer exists. A row is answered by a PERSON at the affected branch
+ * (App\Support\Inventory\AdjustmentResolver), not by a cycle step — step 2 was
+ * deleted and the cycle is gate -> push -> pull -> heartbeat. Left as written
+ * because this is the migration that created the table; the schema below is
+ * still current, apart from the columns later migrations add.
  */
 return new class extends Migration
 {

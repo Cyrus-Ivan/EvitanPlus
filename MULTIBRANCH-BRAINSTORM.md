@@ -890,8 +890,12 @@ processes the queue seconds later on the next opportunistic/polled cycle).
 >   for a different reason: it now makes two people pressing Approve at once collide on the
 >   primary key instead of moving stock twice.
 > - **The queue and the branch roster are read live, never mirrored** — an **online read**
->   (`docs/glossary.md` §5). Neither has a local counterpart and neither needs one: both screens
->   are Owner/Admin, and the operation they serve cannot happen offline either.
+>   (`docs/glossary.md` §5). Neither has a local counterpart and neither needs one, since the
+>   operation they serve cannot happen offline either. *As built (M11.7/M11.8): they are not
+>   both Owner/Admin. **Issuing** a movement is Admin+; **answering** one is open to any role at
+>   the affected branch, Cashier included — whether a delivery arrived is known by whoever is in
+>   the shop — so Pending Stocks gates on nothing at all. `docs/glossary.md` "Resolution" is
+>   normative.*
 
 ---
 
@@ -1067,10 +1071,12 @@ The mirrored tables are not listed here either: they keep their v1.0.0 shape and
 >
 > `instance` also gained two columns the ERD does not show — `transaction_number_floor` and
 > `return_number_floor`, the highest serials Postgres already holds for this branch, read once
-> at hydration. They exist because a device replacing existing hardware hydrates with no history
-> and would restart its serial at 1; since the push is insert-only, the resulting collision is
-> *absorbed*, not raised, and the sales are gone with a clean sync to say otherwise. See
-> `MULTIBRANCH-ROADMAP.md` M6.
+> at hydration. They exist because a device replacing existing hardware would otherwise restart
+> its serial at 1; since the push is insert-only, the resulting collision is *absorbed*, not
+> raised, and the sales are gone with a clean sync to say otherwise. *(The original reason given
+> was that such a device "hydrates with no history" — true until M11.6, which made the hydrate
+> copy this branch's transactions. The floors survive that change because they are read from
+> Postgres rather than derived from what came down.)* See `MULTIBRANCH-ROADMAP.md` M6.
 
 > **As built (M5): `instance` and `instance_secret` exist; the other three do not yet.**
 > Both are in `database/migrations/2026_07_29_000001_create_instance_tables.php` and on
@@ -1201,9 +1207,9 @@ without it, and only one of them is fixed by waiting. None of them stop selling.
 > heartbeat is a straight copy rather than a lossy one. Collapsing `branch_status` to
 > `online | offline` would make a branch whose credential you disabled and a branch whose
 > internet is down the same row in the console monitor — two states needing opposite responses.
-> No migration is required, since the column has no check constraint; M10 should add one, which
-> is the only thing that would make the set enforceable rather than conventional. See
-> `docs/glossary.md` §8 and §14.
+> No migration is required, since the column has no check constraint. *As built (M10): the
+> check constraint shipped as console migration `000020`, so the set is enforced rather than
+> conventional.* See `docs/glossary.md` §8 and §14.
 
 **The local `inventory_update_queue` mirror is a proposal with a cost.** §10 lists this table as
 Postgres-only "coordination, not branch data", and `SchemaParityTest::POSTGRES_ONLY` records
@@ -1399,7 +1405,7 @@ provisioning. It requires internet on first run and:
 | Login / logout, local audit | ✅ | All users cached; login_history queued |
 | Branch-local reports | ✅ | Recomputed from local sales−returns−defects |
 | Read catalog / prices | ✅ | From last-pulled mirror (may be slightly stale) |
-| Stock adjustment (in / out) | ❌ | Online-only; subtractive ones mediated via the queue (§10) |
+| Stock adjustment (in / out) | ❌ | Online-only; **all** of them mediated via the queue (§10) — *As built, schema 21: not only the subtractive ones, and not only the cross-branch ones* |
 | User CRUD, item/catalog CRUD | ❌ | Online-only — an **online write** (§5.1 As built, M6.5) |
 | **CSV import** | ❌ | **Online-only** — an online write too; see below |
 | Consolidated cross-branch reports | ❌ | Online-only (queries Postgres across branches) |
@@ -1407,6 +1413,10 @@ provisioning. It requires internet on first run and:
 
 > **Settled: CSV import is an online-only operation, and this row is not a formality.** An
 > in-app import writes `type = 'stock_adjustment'` ledger rows (`reference_type = 'csv_import'`).
+> *As built (M13): the **item** import writes no ledger rows at all — the `stock` column was
+> removed, so there is nothing for it to move. It stays online-only for the other reason in this
+> paragraph, that it is an online write over the shared catalog. The `csv_import` movement kind
+> is now written only by the **opening-stock** import (M13.5), which is also online-only.*
 > §5.1 classifies those as online-authoritative and **pulled down**, so M6's outbox does not
 > carry them — meaning a branch that imported while offline would create local stock movements
 > that could **never** reach Postgres, and its stock would diverge permanently and silently.
@@ -1502,8 +1512,15 @@ here because each carries work into a later phase:
   `BranchGrants::INSERT`, delivered to existing schemas by `schema:reapply-grants`. It widened the
   cross-branch reach by one table, which is now an accepted risk rather than a gap owed a fix.
 - **`connection_state`'s value set** → **four values on both sides**,
-  `online | offline | unauthorized | version_blocked` (§14). No migration needed; M10 may add
-  the check constraint that would make the set enforceable — still outstanding, and M10's.
-- **Whether `import_history` syncs upward** → **no, and CSV import becomes online-only** (§17).
-  The branch role's `SELECT`-without-`INSERT` on that table turns out to be correct. ✓ **Done in
-  M6.5:** the import screen refuses offline, server-side, through `OnlineWrite`.
+  `online | offline | unauthorized | version_blocked` (§14). ✓ **Done in M10:** the check
+  constraint that makes the set enforceable shipped as console migration
+  `2026_08_02_000020_add_connection_state_check_to_branch_status.php` — additive, so
+  `SCHEMA_VERSION` rose to 20 and the floor stayed at 1.0.0. *(This entry read "still
+  outstanding, and M10's" until the audit that corrected it.)*
+- **Whether `import_history` syncs upward** → **yes, and CSV import becomes online-only** (§17).
+  ✓ **Done in M6.5:** the import screen refuses offline, server-side, through `OnlineWrite`, and
+  the row is written to Postgres as part of that write. *(This entry read "**no** … the branch
+  role's `SELECT`-without-`INSERT` on that table turns out to be correct" until the audit that
+  corrected it — and that was false from M6.5 itself: `import_history` is in
+  `BranchGrants::INSERT`. `docs/glossary.md` §8 corrected the same claim at M13.5; this copy was
+  missed, which mattered because the roadmap sends readers here for deferred items.)*

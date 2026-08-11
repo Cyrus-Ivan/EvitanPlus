@@ -23,13 +23,12 @@ export interface NavItem {
     title: string;
     url: string;
     icon?: LucideIcon | null;
-    isActive?: boolean;
     // Gate this item against a server-resolved ability (preferred — the client
     // never re-implements the rule). Use for items whose route maps to a named
     // Gate in Permissions::ABILITIES.
     permission?: Permission;
     // Fallback gate by minimum role, for items without a matching ability (e.g.
-    // Import/Export). Omit both for Cashier-level (visible to everyone).
+    // Categories). Omit both for Cashier-level (visible to everyone).
     minRole?: UserRole;
 }
 
@@ -142,11 +141,10 @@ export interface BatchVariantOption {
     item: string | null;
     variant: string | null;
     sku: string;
-    barcode: string | null;
     // On hand at whichever branch the batch is aimed at. Null means the figure
     // could not be read — shown as such rather than as a zero somebody would act
-    // on. When the branch is not this one it is a BASELINE and reads high; the
-    // feed says so with its own `baseline` flag.
+    // on. When the branch is not this one it is a BASELINE and reads high, which
+    // the dialog knows from its own roster rather than from this feed.
     stock: number | null;
 }
 
@@ -200,7 +198,6 @@ export interface ImportHistoryRow {
     status: 'success' | 'failed' | 'partial';
     total_rows: number | null;
     success_count: number | null;
-    error_count: number | null;
     errors: ImportRowError[] | null;
     created_at: string;
     user: string | null;
@@ -350,7 +347,6 @@ export interface MovementRequest {
     resolved_by: RequestActor | null;
     resolved_at: string | null;
     branch: BranchRef | null;
-    counterparty_branch: BranchRef | null;
     // The sending leg, on a receiving one — and the only place the original
     // requester can be read: a receiving leg's own `issued_by` is the person who
     // confirmed the stock left, and it carries no issuing branch at all.
@@ -510,11 +506,11 @@ export interface TransactionDetail {
 }
 
 // Reports (Phase 12). Sales are recomputed from source tables as
-// net = gross − returns − defects; cogs/profit are Owner-only (absent otherwise).
+// net = gross − returns − defects; profit is Owner-only (absent otherwise).
 export type ReportPeriod = 'daily' | 'weekly' | 'monthly' | 'yearly';
 
 // One bucket (a day for daily, a month for monthly). Money fields are "0.00" strings.
-// cogs/profit/uncosted_sales are Owner-only (absent for everyone else). `profit`
+// profit/uncosted_sales are Owner-only (absent for everyone else). `profit`
 // covers only items with a recorded cost; net sales from items with no cost are
 // reported separately as `uncosted_sales` and excluded from profit.
 export interface ReportRow {
@@ -526,7 +522,6 @@ export interface ReportRow {
     returns: string;
     defects: string;
     net_sales: string;
-    cogs?: string;
     profit?: string;
     uncosted_sales?: string;
 }
@@ -545,7 +540,6 @@ export interface ReportBranchRow {
     returns: string;
     defects: string;
     net_sales: string;
-    cogs?: string;
     profit?: string;
     uncosted_sales?: string;
 }
@@ -582,7 +576,6 @@ export interface ReportTotals {
     returns: string;
     defects: string;
     net_sales: string;
-    cogs?: string;
     profit?: string;
     uncosted_sales?: string;
 }

@@ -424,7 +424,6 @@ class InventoryImportTest extends TestCase
             ->assertJsonPath('history.data.0.mode', 'create')
             ->assertJsonPath('history.data.0.total_rows', 1)
             ->assertJsonPath('history.data.0.success_count', 1)
-            ->assertJsonPath('history.data.0.error_count', 0)
             ->assertJsonPath('history.data.0.user', $owner->name);
     }
 

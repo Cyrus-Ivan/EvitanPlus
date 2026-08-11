@@ -1,9 +1,12 @@
 # Evitan Plus — Release Notes
 
-> **Naming:** the product was renamed from **Evitan POS** to **Evitan Plus**
-> after v1.0.0. The v1.0.0 entry below is left as released — it shipped under
-> the old name, and its file paths (`~/.config/evitan-pos/`) are where a real
-> v1.0.0 install actually stores its database and encryption key.
+> **Naming:** **Evitan POS** and **Evitan Plus** are **different products**, not
+> old and new spellings of one name — `docs/glossary.md` §1 is normative on the
+> split. Evitan POS is the single-install, offline-only product released as
+> v1.0.0; Evitan Plus is the multi-branch, cloud-connected product it was evolved
+> into. The v1.0.0 entry below is left as released — it shipped as Evitan POS,
+> and its file paths (`~/.config/evitan-pos/`) are where a real v1.0.0 install
+> actually stores its database and encryption key.
 > Builds from the rename onward use the name **Evitan Plus**, application id
 > `com.evitan.plus`, artifacts `Evitan Plus-<version>.AppImage` /
 > `evitan-plus_<version>_amd64.deb`, and data under `~/.config/evitan-plus/`.
@@ -41,7 +44,9 @@ sending leg without ever creating the receiving one — stock leaving one branch
 and arriving nowhere, looking from the schema's side exactly like a branch doing
 its job. Migrating first freezes those builds at `version_blocked`, where they
 keep selling offline until somebody swaps the binary. Every other migration has
-been additive and left the floor alone.
+been additive and left the floor alone — including **schema 22** (M11.8,
+`issued_by_branch_id`) and **schema 23** (M13, `batch_id`), both of which an
+older build writes null into and neither of which makes it do anything untrue.
 
 Full procedure — gates, `--pretend`, the re-grant step, confirming with
 `monitor` — is [`docs/releasing.md`](docs/releasing.md).
@@ -147,8 +152,12 @@ NativePHP (Electron) over Laravel 12 + React 19 + SQLite.
 - **Ledger-based inventory** — categories, items, and variants; every stock
   movement (sales, returns, manual adjustments, CSV imports) is an append-only
   ledger entry; snapshots are re-checked against the ledger on every launch.
+  *(In Evitan Plus an adjustment reaches the ledger only once a person at the
+  affected branch confirms it, and the item CSV moves no stock at all.)*
 - **CSV import / export** — bulk catalog upsert by SKU with replace/add stock
-  modes, template download, validation, and upload history.
+  modes, template download, validation, and upload history. *(The export and the
+  stock/mode columns were removed after v1.0.0 — Evitan Plus M13; see the v1.1.0
+  entry above.)*
 - **Immutable sales history** — snapshotted prices/costs, and a continuous,
   gapless, zero-padded transaction serial that doubles as the receipt number
   (BIR-compliant shape). Immutability is enforced by database triggers.

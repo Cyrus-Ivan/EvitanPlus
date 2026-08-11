@@ -4,21 +4,21 @@
 
 **Offline-first means offline-capable, not offline-only.** A till that loses its network keeps selling, queues its work, and catches up when the connection returns. Only shared writes — catalog, staff and settings, which every branch must agree on — require being online. UUID primary keys throughout are what make that reconciliation work.
 
-> **Naming.** **Evitan POS** is the single-install, offline-only product released as `v1.0.0`; **Evitan Plus** is the multi-branch, cloud-connected product it was evolved into by the `M0–M12` initiative. They are **different products**, with different application ids and data directories — not old and new spellings of one name. This README describes **Evitan Plus**; `RELEASE-NOTES.md` records v1.0.0 as it shipped, and `docs/glossary.md` §1 is normative on the split.
+> **Naming.** **Evitan POS** is the single-install, offline-only product released as `v1.0.0`; **Evitan Plus** is the multi-branch, cloud-connected product it was evolved into by the `M0–M13.5` initiative. They are **different products**, with different application ids and data directories — not old and new spellings of one name. This README describes **Evitan Plus**; `RELEASE-NOTES.md` records v1.0.0 as it shipped, and `docs/glossary.md` §1 is normative on the split.
 
 ## Highlights
 
 - **Point of sale** — product grid and search (name / SKU / barcode), barcode scanner support, cart with quantity editing, amount/percentage discounts, cash / cashless / others payment types, cash-received and automatic change, and an optional checkout comment. Out-of-stock products stay visible but disabled.
 - **Ledger-based inventory** — categories, items, and variants with an **append-only** inventory ledger as the single source of stock truth. Current stock is ledger-sum reconciled against a snapshot; **negative inventory is never allowed**. Low-stock thresholds highlight rows that need restocking.
-- **CSV import / export** — bulk catalog upsert by SKU with "replace stock count" and "add to current stock" modes, downloadable template, validation messages, and upload history. Every import funnels through the ledger.
+- **CSV import** — bulk catalog upsert by SKU as a modal on Items, with a preview pass that names every existing product the file would change and refuses to apply until somebody confirms, plus a downloadable template, validation messages, and upload history. Products only: a spreadsheet cannot assert what is on a shelf, so the `stock` and `mode` columns and the CSV export were removed at M13. Opening stock is a separate two-column file on `/inventory`, and only while the branch has never sold anything.
 - **Immutable sales history** — completed transactions and line items never change. Selling price and item cost are snapshotted at time of sale, so later price edits never rewrite past sales. The transaction number is a continuous, gapless, zero-padded running serial (`0000000001`, never resets — the BIR-compliant shape) that doubles as the receipt number.
 - **Returns & defects** — partial and multiple returns (restore stock) and defect write-offs (do not restore stock), recorded in a dedicated `sale_returns` family that references the original sale without ever mutating it.
 - **Receipt printing** — driverless ESC/POS straight to the device (USB / Bluetooth / network socket), 58mm and 80mm, auto-print, cash-drawer kick, and reprint. A printing failure **never** rolls back a completed sale.
 - **Reports** — daily / weekly / monthly / yearly sales on one page with drill-down buckets, a stacked-by-item net-sales chart, and PDF export. Totals are always recomputed from sales minus returns minus defects; COGS and profit are Owner-only.
 - **Roles & permissions** — Owner > Admin > Cashier, enforced at routes, actions, and UI. **Item cost is Owner-only** everywhere, including reports and API responses.
-- **Admin & ops** — user management (create / archive / reset password / change role), login history (login, logout, crash, forced logout, power loss), an immutable audit log of every significant action (Admin+ view, cost redacted for non-Owners).
+- **Admin & ops** — user management (create / archive / reset password / change role), login history (login, logout, crash, forced logout — a power loss is indistinguishable from a crash after the fact and is recorded as one), an immutable audit log of every significant action (Admin+ view, cost redacted for non-Owners).
 - **Multi-branch sync** — every local write is enqueued in an outbox and carried upward by a four-step sync cycle (version gate → push → pull → heartbeat), which also brings down catalog, staff and settings changes made at other branches. The header shows the unsynced count and a **Sync now** button on every screen; receipt serials are branch-prefixed (`MNL-0000000001`).
-- **Branch scope on reports and login history** — `local` (this branch, works offline), `all`, or a single branch. Consolidated scopes are an online read and fall back to the branch-local view, saying so, rather than presenting one branch under an "All branches" heading. Reports are Owner-only beyond `local`; login history is Admin+.
+- **Branch scope on six screens** — reports, login history, stock history, pending stocks, sales and inventory stock each take `local` (this branch, works offline), `all`, or a single branch. Consolidated scopes are an online read and fall back to the branch-local view, saying so, rather than presenting one branch under an "All branches" heading. Reports restrict the wider scopes to the **Owner** (they carry cost and profit); the others allow **Admin+**, and a Cashier asking for one is snapped back to `local` rather than refused. Inventory offers `local` or a branch id but never `all` — a business-wide total per variant says nothing on its own.
 - **Pending stock adjustments** — no stock moves because somebody typed a number. A recount, a stock batch, an adjustment aimed at another branch and both legs of a branch transfer all become *pending* until a person at the affected branch confirms it happened, from **Pending Stocks** in the sidebar. They can approve, approve part of it, or turn it down with a reason; **Approve all** clears a whole card at once. Answering is open to every role — whoever is in the shop is who knows whether the delivery arrived — while asking stays Admin+.
 - **Opening stock from a spreadsheet** — the one exception to the rule above, and the only bulk path into stock. A branch that has never sold anything can set its whole shelf from a `sku, quantity` CSV on Inventory: a quantity is the total that should be there, so re-uploading a corrected file moves only the difference. Every SKU must already exist, and the option disappears at the branch's first sale — after that a shelf has a history, and only a person can speak for it.
 - **Developer-run setup** — a fresh install is connected to its business by importing the credentials JSON the Provisioning Console emits. One atomic submit connects, hydrates the branch's catalog, staff, stock and history into local SQLite, and seals the credential under a per-install `APP_KEY`. Replacing dead hardware is the same flow.
@@ -214,7 +214,7 @@ or re-run to confirm. `branch:provision` still rolls back in full on any failure
 
 ```bash
 php artisan test          # Pest / PHPUnit test suite
-npm run e2e               # Playwright E2E suite (isolated DB copy)
+npm run e2e               # Playwright E2E suite (isolated DB, built fresh)
 npm run lint              # ESLint (auto-fix)
 npm run format            # Prettier
 ./vendor/bin/pint         # Laravel Pint (PHP formatting)
@@ -282,7 +282,9 @@ Every branch device is prepared by a developer, in this order:
    picker in the desktop build), optionally configure the receipt printer, and
    submit. One atomic step connects as the branch role, checks the version gate
    against `schema_meta`, copies the baseline down — catalog, **all** users,
-   business settings, this branch's stock snapshot — seals the credential under
+   business settings, this branch's stock snapshot — **and this branch's
+   history** (transactions, returns, ledger, login history, audit logs and
+   upload history, since M11.6), seals the credential under
    the per-install `APP_KEY`, and records who this device is. Nothing is written
    unless all of it succeeds, so a failure means "fix what the message says and
    submit again" and never leaves a half-set-up device.
@@ -397,9 +399,10 @@ act on its own.
 
 Two things to know while using it:
 
-- **Never run `php artisan inventory:reconcile` against a rig database.** It rebuilds
-  stock from the local ledger, and a hydrated till has stock snapshots with no ledger
-  behind them — it would zero every till.
+- **`php artisan inventory:reconcile` is safe on a hydrated till as of M11.6**, and was
+  not before. It rebuilds stock from the local ledger, and hydration used to copy stock
+  snapshots with no ledger behind them — so the first run zeroed every variant. Hydration
+  now copies the ledger too. `LaunchProvisioner` runs it on every launch regardless.
 - **Read results from the SQLite files directly** (`sync_outbox`, `sync_cursor`,
   `sync_status`). That is where a failed cycle explains itself.
 
@@ -432,14 +435,14 @@ Deeper documentation lives in the repo:
 - [`CLAUDE.md`](CLAUDE.md) — invariants and working guidance
 - [`docs/`](docs/) — after-sales and receipt-printing designs of record, which outrank the specs where they disagree
 - [`MULTIBRANCH-BRAINSTORM.md`](MULTIBRANCH-BRAINSTORM.md) — Evitan Plus (multi-branch, provisioning, sync) spec of record
-- [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md) — Evitan Plus phased build plan (M0–M12)
+- [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md) — Evitan Plus phased build plan (M0–M13.5)
 - [`console/README.md`](console/README.md) — the Provisioning Console operator runbook
 
 ## Project status
 
-**Evitan POS shipped as `v1.0.0`** (see [`RELEASE-NOTES.md`](RELEASE-NOTES.md)) with all 19 [`ROADMAP.md`](ROADMAP.md) phases complete: the full commerce chain (Setup, DB schema, Auth, Authorization, Settings, Inventory, Ledger, CSV Import/Export, POS, Transactions, Returns/Defects, Printing, Reports), the full admin/ops track (User Management, Login History, Audit Logs), UI polish, the Phase 18 final review (DB-level immutability triggers) and release preparation.
+**Evitan POS shipped as `v1.0.0`** (see [`RELEASE-NOTES.md`](RELEASE-NOTES.md)) with all 20 [`ROADMAP.md`](ROADMAP.md) phases (0–19) complete: the full commerce chain (Setup, DB schema, Auth, Authorization, Settings, Inventory, Ledger, CSV Import/Export, POS, Transactions, Returns/Defects, Printing, Reports), the full admin/ops track (User Management, Login History, Audit Logs), UI polish, the Phase 18 final review (DB-level immutability triggers) and release preparation.
 
-**Evitan Plus** has since taken that through `M0–M13.5` of the [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md) initiative: the Provisioning Console, per-business Postgres schemas and least-privilege branch roles, the connect-and-hydrate setup wizard, the four-step sync cycle (push, pull, heartbeat), atomic online writes for shared data, the schema version gate, branch monitoring, consolidated cross-branch reports and login history, the removal of Database Backup in favour of rebuilding a device from its credential, human-confirmed stock adjustments with branch-to-branch transfers, the Items/Inventory split with stock batches, and spreadsheet opening stock for a branch that has not traded yet.
+**Evitan Plus** has since taken that through `M0–M13.5` of the [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md) initiative: the Provisioning Console, per-business Postgres schemas and least-privilege branch roles, the connect-and-hydrate setup wizard, the four-step sync cycle (version gate, push, pull, heartbeat), atomic online writes for shared data, the schema version gate, branch monitoring, consolidated cross-branch reports and login history, the removal of Database Backup in favour of rebuilding a device from its credential, human-confirmed stock adjustments with branch-to-branch transfers, the Items/Inventory split with stock batches, and spreadsheet opening stock for a branch that has not traded yet.
 
 The suite currently runs `composer verify` offline plus 7 Playwright E2E spec files, with `composer verify:console` and `composer verify:hydrate` covering the Supabase-dependent halves.
 

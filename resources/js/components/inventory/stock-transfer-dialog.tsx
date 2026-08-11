@@ -5,7 +5,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import type { Branch, Variant } from '@/types';
+import useBranchRoster from '@/hooks/use-branch-roster';
+import type { Variant } from '@/types';
 import { useForm } from '@inertiajs/react';
 import { LoaderCircle } from 'lucide-react';
 import { FormEventHandler, useEffect, useState } from 'react';
@@ -76,10 +77,9 @@ export default function StockTransferDialog({
     const form = useForm<TransferForm>({ value: '', notes: '' });
     const { data, setData, errors, processing, reset, clearErrors } = form;
 
-    const [branches, setBranches] = useState<Branch[]>([]);
     const [source, setSource] = useState<string>(HERE);
     const [destination, setDestination] = useState<string>('');
-    const [loading, setLoading] = useState(true);
+    const { branches, here: thisBranch, loading } = useBranchRoster(open);
 
     // Reset on open so values/errors never leak between variants.
     useEffect(() => {
@@ -92,37 +92,6 @@ export default function StockTransferDialog({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open, variant?.id]);
 
-    // The roster, on open. A failure is not an error state: it leaves no branches
-    // to send to, which is what the dialog then says.
-    useEffect(() => {
-        if (!open) {
-            return;
-        }
-
-        let cancelled = false;
-
-        setLoading(true);
-
-        fetch(route('stock-updates.branches'), { headers: { Accept: 'application/json' }, credentials: 'same-origin' })
-            .then((response) => response.json())
-            .then((payload: { branches?: Branch[] }) => {
-                if (!cancelled) {
-                    setBranches(payload.branches ?? []);
-                }
-            })
-            .catch(() => undefined)
-            .finally(() => {
-                if (!cancelled) {
-                    setLoading(false);
-                }
-            });
-
-        return () => {
-            cancelled = true;
-        };
-    }, [open]);
-
-    const thisBranch = branches.find((branch) => branch.is_this_branch);
     const others = branches.filter((branch) => !branch.is_this_branch);
     const nowhereToSend = !loading && others.length === 0;
 

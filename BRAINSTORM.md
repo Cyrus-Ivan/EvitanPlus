@@ -5,7 +5,7 @@
 > **Scope.** This is the functional spec of **Evitan POS** — the single-install,
 > offline-only product released as `v1.0.0`. It is **still the spec of record for the
 > commerce chain** (POS, inventory, ledger, returns, discounts, reports, settings, audit,
-> archiving, UUID policy): the `M0–M12` multi-branch initiative did not change those rules,
+> archiving, UUID policy): the `M0–M13.5` multi-branch initiative did not change those rules,
 > and the code still implements what is written below.
 >
 > What it does **not** cover is everything that initiative added — branches, provisioning,
@@ -37,7 +37,7 @@ The project should prioritize:
 * Clean architecture
 * Future compatibility for synchronization and multi-branch support
 
-The application is intentionally designed for a **single business installation**. Multi-branch support and cloud synchronization are future milestones and are **not part of the MVP**. *(Both were subsequently built by the `M0–M12` initiative that turned this product into Evitan Plus — see `MULTIBRANCH-BRAINSTORM.md`. The "future compatibility" bullet above is why that was possible without rewriting the schema.)*
+The application is intentionally designed for a **single business installation**. Multi-branch support and cloud synchronization are future milestones and are **not part of the MVP**. *(Both were subsequently built by the `M0–M13.5` initiative that turned this product into Evitan Plus — see `MULTIBRANCH-BRAINSTORM.md`. The "future compatibility" bullet above is why that was possible without rewriting the schema.)*
 
 ---
 
@@ -344,6 +344,15 @@ Inventory adjustments directly create Ledger entries.
 
 No separate Stock Adjustment table exists.
 
+> **Superseded by Evitan Plus schema 21 (M11.7).** Adjustments no longer create a
+> ledger entry directly. Every stock movement is first a `pending` row on
+> `inventory_update_queue`, and a person **at the affected branch** confirms it
+> happened before it reaches the ledger — approve, partially approve, or reject.
+> The sentence above remains true of Evitan POS v1.0.0, and the second one is
+> still true of both products. The one carve-out is an **opening-stock import**
+> at a branch that has never sold anything (`docs/glossary.md` "Opening window").
+
+
 Fields
 
 * Quantity
@@ -372,7 +381,7 @@ CSV should support
 * Barcode
 * Selling Price
 * Item Cost
-* Initial Stock
+* Initial Stock  *(removed in Evitan Plus — M13)*
 * Unit
 * Description
 * Low Stock Threshold
@@ -387,6 +396,13 @@ Supported Modes
 Replace Stock Count computes the difference and automatically creates Ledger Adjustment entries.
 
 Add To Current Stock creates positive or negative Ledger Adjustment entries.
+
+> **Superseded by Evitan Plus M13.** The item CSV has no `stock` column and no
+> `mode` column, and the import writes **no ledger rows at all** — a spreadsheet
+> cannot assert what is on a shelf. `import_history.mode` survives as a *column*
+> but was repurposed to `create | update | upsert` (plus `unknown`), describing
+> what the file did to the catalog. Opening stock is a separate two-column file,
+> and only while a branch has never sold anything.
 
 CSV uploads must provide user-friendly validation messages.
 
@@ -408,6 +424,10 @@ Every import is recorded in Upload History.
 
 Inventory can be exported as CSV.
 
+> **Removed in Evitan Plus (M13).** There is no CSV export and no
+> `InventoryExportController`. The only export that survives is the sales report
+> PDF/CSV on `/reports`.
+
 ---
 
 # Sales
@@ -426,6 +446,12 @@ Transaction Number Format
 A **continuous, gapless, zero-padded running serial** that never resets (no date component — the timestamp lives in `created_at`). This supersedes the original `YYYYMMDD-HHMMSS-000001` daily-reset spec: a unique, consecutive, non-resetting serial is the shape a BIR-registered CRM/POS document number must take. Full BIR accreditation (ATP range/prefix, machine serial, VAT breakdown) is a deliberate future item — only the number shape is done.
 
 The transaction number doubles as the receipt number; there is no separate receipt-number column.
+
+> **Amended in Evitan Plus (M6).** The serial is prefixed with the branch code and
+> **stored that way** — `MNL-0000000001` — because one business's branches mint
+> serials independently and the number has to be unique across all of them. The
+> shape rule above is otherwise unchanged: continuous, gapless, zero-padded,
+> never resets. Watch the cast: `(int) "MNL-0000000009"` is `0`.
 
 ---
 
@@ -651,7 +677,7 @@ Examples
 * Selling Price Change
 * Item Cost Change
 * CSV Import
-* CSV Export
+* CSV Export  *(removed in Evitan Plus — M13)*
 * Settings Changes
 
 Audit Logs are immutable.

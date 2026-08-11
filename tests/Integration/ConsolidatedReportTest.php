@@ -167,9 +167,9 @@ class ConsolidatedReportTest extends TestCase
                 $this->assertSame('25.00', $props['totals']['defects']);
                 $this->assertSame('125.00', $props['totals']['net_sales']);
 
-                // Cost is Owner-only EVEN HERE. Sold cost 80 + 10, less the 40
-                // credited back by the return; the defect's cost stays written off.
-                $this->assertSame('50.00', $props['totals']['cogs']);
+                // Cost is Owner-only EVEN HERE. COGS is not reported, but profit
+                // is net of it: sold cost 80 + 10, less the 40 credited back by the
+                // return; the defect's cost stays written off, so COGS is 50.00.
                 $this->assertSame('75.00', $props['totals']['profit']);
 
                 // The per-branch cut is the same recompute over a different GROUP

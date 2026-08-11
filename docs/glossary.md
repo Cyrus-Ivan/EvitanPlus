@@ -42,8 +42,24 @@ offline. Application id `com.evitan.plus`, data under `~/.config/evitan-plus/`.
 one. A build of Evitan Plus does not adopt an Evitan POS install's data.
 
 ### The multi-branch initiative
-The programme of work — phases **M0–M12** — that turns Evitan POS into Evitan Plus. Use this
+The programme of work — phases **M0–M13.5** — that turns Evitan POS into Evitan Plus. Use this
 phrase for the *work*; use "Evitan Plus" for the *product*.
+✗ **Not** "M0–M12", which this entry said until the audit that added this line. The initiative
+ran past M12 four times — see [Phase numbering].
+
+### Phase numbering
+**M-numbers are not dense and not chronological.** Work that arrived between planned phases took
+a decimal — M6.5, M11.5, M11.6, M11.7, M11.8, M13.5 — so the sequence reads
+M11 → M11.5 → … → M11.8 → M12 → M13 → M13.5, and a higher number is not always later work.
+*Anchor:* the `# Phase` headings of `MULTIBRANCH-ROADMAP.md`, in order.
+✗ **Not** two meanings of **M12**. It means the **branch scope on sales and inventory stock**
+phase. It briefly also titled a "Hardening, testing & release verification" phase in the roadmap
+while three other documents were using it for the feature work; the hardening tasks are standing
+obligations rather than a milestone, so they became the un-numbered **Ongoing** section and the
+number resolved to the feature phase.
+✗ **Not** a guide to what is built. M11.7 and M11.8 each reversed a decision of the phase before
+— read the `~~strikethrough~~ **No longer true.**` markers, not the earliest section that
+mentions a thing.
 
 ### Developer
 The single human who operates the Provisioning Console, prepares hardware, installs the build
@@ -156,8 +172,13 @@ stops a branch receiving work, it does not unmake what that branch already did.
 *Anchor:* `App\Support\Sync\BranchRoster::read()` (extracted in M11.5 from M11's
 `ReportsController::roster()`).
 ✗ **Not** mirrored, ever. See [online read].
-✗ **Not** the same call everywhere: `InventoryQueueController` excludes disabled branches,
-because that screen picks a branch to send an adjustment *to*.
+✗ **Not** the same call everywhere: `InventoryQueueController` reads it **both** ways. Its
+private `roster()` excludes disabled branches, because that list picks a branch to send an
+adjustment *to*; `BranchRoster::read()` is used alongside it to *name* a branch on a card, and
+must include disabled ones, because a request answered before the credential was disabled still
+has to render. Since M11.8 the screen's main job is answering, so the naming call is the common
+one.
+*Anchor:* `InventoryQueueController::roster()` (excluding) vs its `BranchRoster` use (naming).
 
 ---
 
@@ -261,6 +282,26 @@ and stock but no sales, receipts or audit trail.
 ---
 
 ## 4. Inventory and stock
+
+### The four inventory screens
+One sidebar group, four screens, and the split between them is load-bearing:
+
+| Screen | Route | Is about | Branch scope |
+|---|---|---|---|
+| **Items** (the *catalog*) | `/items` | What the business sells — items, variants, SKUs, prices, categories at `/items/categories` | none |
+| **Inventory** (the *shelf*) | `/inventory` | How many of each variant are on hand, one row per variant | `local` or a branch id, never `all` |
+| **Pending Stocks** | `/inventory/stock-updates` | Movements asked for and not yet answered — the queue, one card per [request] | `local`, `all`, or a branch id |
+| **Stock History** | `/inventory/stock-history` | Movements that already happened — the ledger | `local`, `all`, or a branch id |
+
+*Anchor:* `ItemController`, `InventoryController`, `Inventory\StockHistoryController`,
+`Inventory\InventoryQueueController`; the sidebar group in `resources/js/components/app-sidebar.tsx`.
+✗ **Not** one "Inventory page". Items and Inventory shared a screen until **M13** split them,
+because a total is not a shelf: nothing on the catalog is per-branch, and everything about stock
+is. Do not use "Inventory" for the catalog.
+✗ **Not** "Stock Updates", which is only the route segment. The screen is **Pending Stocks**, and
+it holds unfinished work only — what happened is in Stock History.
+✗ **Not** all gated alike. Issuing a movement is Admin+; *answering* one is open to any role at
+the affected branch, so Pending Stocks itself gates on nothing. See [Resolution].
 
 ### Ledger entry type — the three columns
 The spec's old six-value vocabulary (`restock / manual adjustment / import / sale / return /
@@ -434,11 +475,53 @@ others; `batch_id` is orthogonal to what kind of movement each row is.
 ✗ **Not** the outbox, and not a *request* either — a request is one card, and a batch is what makes
 a card span many products. Reserve "batch" for the issued set. A set of *answers* submitted
 together (what `resolve` takes) is not one.
-✗ **Not** answered as a unit. "Approve all" posts the card's ids as an ordinary batch of decisions
-to the same route one Approve uses, and `AdjustmentResolver` re-reads each of them filtered to this
-branch. There is no batch-shaped write path on the answering side, deliberately.
+✗ **Not** answered as a unit. "Approve all" posts the card's ids to the same route one Approve
+uses, and `AdjustmentResolver` re-reads each of them filtered to this branch. There is no
+batch-shaped write path on the answering side, deliberately — and per the line above, that set of
+answers is not itself "a batch".
 ✗ **Not** derivable. Two rows issued a second apart by the same person are not a batch, which is
 exactly why the column exists rather than a heuristic over `created_at`.
+
+### Request
+**One card on Pending Stocks**: the queue rows that were asked for as a single act, grouped by
+`batch_id ?? parent_id ?? id`. One row for a lone adjustment, two for a transfer, many for a
+[stock batch], and a batch transfer is many rows at each of two branches. Shown while **any** of
+its legs is still pending.
+*Anchor:* the grouping key in `InventoryQueueController`; `resources/js/components/inventory/
+pending-request-card.tsx`; the progress stepper (Requested → Sent → Received).
+✗ **Not** a row. A row is a [leg]; the request is what the legs add up to. This is why `item` and
+`variant` sit on the leg rather than the request — a batch's legs are different products.
+✗ **Not** a Laravel `Request`. `StockHistoryController::request()` and the route
+`stock-history.request` return the *queue row behind a ledger entry*; `IssueTransferRequest` and
+`ResolveAdjustmentRequest` are FormRequests. Three unrelated meanings — say "the request card"
+when the card is meant.
+✗ **Not** a batch. A batch is one *cause* of a card spanning many products; a transfer is
+another, and a lone adjustment is a card too.
+
+### Leg
+**One row of `inventory_update_queue` seen as part of a [request]**, and the unit a person
+actually answers. An adjustment is one leg; a [transfer] is two, linked by `parent_id` and
+answered at two different branches.
+*Anchor:* `inventory_update_queue.parent_id`; `AdjustmentResolver::secondLeg()`.
+✗ **Not** interchangeable with "row". Use "leg" when the pairing matters — that a shortfall on
+the sending leg is what the receiving leg is issued for, and that the sender's answer is shown on
+the receiver's card because the receiver is answering for what the sender said left.
+
+### Line
+**The pairing key on a [leg]'s payload**: `parent_id ?? id`, so a transfer's two legs share one
+`line` and a lone adjustment is a line of its own. It is what lets one [request] card span many
+products and still show the sending and receiving answers for *the same product* side by side —
+without it, a batch transfer of six products is twelve legs with nothing saying which receiving
+leg answers which sending one.
+*Anchor:* `InventoryQueueController` builds it per leg as `(string) ($leg->parent_id ?? $leg->id)`,
+alongside `requested`.
+✗ **Not** a column. `inventory_update_queue` has no `line`; it is derived on the way to the
+screen, from the `parent_id` that already links the pair. Nothing persists or indexes it.
+✗ **Not** the same key the card is grouped by. Grouping is `batch_id ?? parent_id ?? id` — one
+card; `line` subdivides that card into products.
+✗ **Not** a line *item*. Those are `transaction_items` and `sale_return_items`, on a sale.
+✗ **Not** a row of a CSV. That is a **file line**, which both importers call `line` in their own
+row arrays — an unrelated third use.
 
 ### Opening window
 The stretch of a branch's life **before it has sold anything**: no `inventory_ledger` row of
@@ -576,10 +659,17 @@ as equivalent to *reaches Postgres* is the error that left every catalog and sta
 on one device until M6.5.
 
 ### Online read
-A **live query against the business database serving one screen**, keeping nothing. Three things
-are read this way and none has a local counterpart: the branch **roster** (`branches`), the
-**pending stock adjustments** (`inventory_update_queue`), and the [consolidated report].
+A **live query against the business database serving one screen**, keeping nothing. Two of the
+tables read this way have no local counterpart at all — the branch **roster** (`branches`) and
+the **pending stock adjustments** (`inventory_update_queue`) — and from M11 onwards the same
+mechanism also serves the wider [branch scope] on screens whose tables *are* mirrored: reports,
+sales, login history, stock history and inventory stock all read other branches' rows live,
+because a mirror holds only this branch's.
 *Anchor:* `App\Support\Sync\OnlineRead`; `OfflineWriteException::forReading()` (M8).
+✗ **Not** three things, which this entry said until the audit that added this line. It is
+injected into six controllers plus `OffersBranchScope`; the count grew at M11, M11.5, M11.8,
+M12 and M13 without the entry being touched, which is why the entry now names the *rule* rather
+than a list.
 ✗ **Not** a pull. A pull fills the local mirror so the till can read it offline forever; an
 online read mirrors nothing, which is exactly why these two tables need no migration, no
 `sync_cursor` row and no line in the parity guard.
@@ -687,8 +777,13 @@ progress made on `users`, and a table added later starts from zero without re-pu
 else.
 
 ### Heartbeat
-The **upsert of this branch's `branch_status` row** at the end of a cycle — step 4. One row per
-branch — current state, not history (`branch_id` is the primary key).
+The **upsert of this branch's `branch_status` row** at the end of a cycle — step 3 of the four,
+counting from the gate at 0. One row per branch — current state, not history (`branch_id` is the
+primary key).
+✗ **Not** "step 4", which this entry said until the audit that added this line. It was step 4
+when the cycle had five steps; M11.7 deleted the queue-processing step and renumbered everything
+after it, and the cycle diagram above (`0. version gate → 1. push → 2. pull → 3. heartbeat`) is
+the one to trust.
 *Anchor:* `App\Support\Sync\Heartbeat` (M10); the table is
 `console/database/migrations/2026_07_26_000018_create_branch_status_table.php`.
 ✗ **Not** a connection of its own. It runs inside the cycle's connection, on both ways out of
@@ -804,12 +899,18 @@ drift.
 The highest `transaction_number` / `return_number` **Postgres already holds for this branch**,
 read once at hydration and stored on `instance`. Both local generators continue from
 `max(local max, floor)`.
-It exists for one case: a device **replacing** an existing branch's hardware. Hydration copies
-no history, so such a device's local max is empty and it would restart at 1 against serials
-Postgres already has — and because the push is insert-only, that collision is *absorbed* rather
-than raised, losing the sales behind a clean sync and a zero backlog.
+It exists for one case: a device **replacing** an existing branch's hardware, which would
+otherwise restart at 1 against serials Postgres already has — and because the push is
+insert-only, that collision is *absorbed* rather than raised, losing the sales behind a clean
+sync and a zero backlog.
 *Anchor:* `instance.transaction_number_floor`, `instance.return_number_floor`;
 `App\Support\Sync\Hydrator::serialFloors()`.
+✗ **Not** justified by "hydration copies no history", which is what this entry said until the
+audit that added this line, and which stopped being true at M11.6 — the hydrate copies this
+branch's `transactions` and `sale_returns`, so a rebuilt till's local max is **not** empty. The
+floor survives that change because it is read from Postgres rather than derived from what came
+down, so it is still right when a row is unpushed, filtered out, or lost. See
+`TransactionNumberGenerator`'s docblock, which names the same correction.
 ✗ **Not** a ceiling. Once the device has outrun it, it stops applying; the return floor also
 stops applying at midnight, when the daily prefix moves on.
 
@@ -832,8 +933,13 @@ Three quantities, two of which are routinely confused. The gate compares exactly
 
 ### App version
 The **build on a branch device**. A semver string.
-*Anchor:* `config('nativephp.version')` (`NATIVEPHP_APP_VERSION`, default `1.0.0`);
-recorded in `branch_status.app_version`.
+*Anchor:* `config('nativephp.version')` (`NATIVEPHP_APP_VERSION`, default `1.1.0`);
+recorded in `branch_status.app_version`. The default **is** the app version — the env key is set
+nowhere in the repo, and `console/tests/Unit/SchemaVersionTest.php` reads that default out with a
+regex to assert the floor never exceeds it.
+✗ **Not** `1.0.0`, which this entry said until the audit that added this line. M11.7 raised the
+build to 1.1.0 alongside the floor, and this anchor — inside the section that is normative on the
+version pair — was the one place left declaring the old value.
 
 ### Schema version
 The **integer** state of the Postgres table structure, raised by migrations — concretely, **the
@@ -1001,6 +1107,13 @@ where there is one (`counterparty_branch_id`), and the asking user (`issued_by`)
 console-side actor, and no fourth permission role. Both words meant this one actor.
 ✗ **Not the same actor as the one who ANSWERS.** Asking is Admin+; answering is any role at the
 affected branch, and `resolved_by` records who. See [Resolution] in §4.
+✗ **Not one word for three things.** `issued_by` is the **user** who asked; `issued_by_branch_id`
+is the **device's branch** they asked from (schema 22); the **issuing branch** is this entry's
+actor concept. They come apart routinely — an Owner at head office can arrange a transfer between
+two branches that are neither of them the one they are standing in, which is precisely why
+`issued_by_branch_id` could not be derived from `branch_id` or `counterparty_branch_id` and had to
+be stored. Prefer the explicit column name over the bare noun "issuer" when a specific one is
+meant.
 ✓ **Built (M8, widened at schema 21).** `inventory_update_queue` is in `BranchGrants::INSERT`,
 delivered to existing businesses with `schema:reapply-grants`. It knowingly widened the deferred
 RLS gap — grants stop at the schema boundary, so a credential able to queue an adjustment for its
@@ -1015,8 +1128,12 @@ refused; `offline` = no connectivity. The heartbeat copies the local value strai
 The distinction earns its place twice: at the till all three failure kinds look identical and
 only one is fixed by waiting; in the console monitor, a disabled credential and a dead internet
 connection would otherwise be the same row. **None of the four stop the till selling.**
-⚠ No migration needed — the column has no check constraint. M10 should add one, since that is
-what makes the set enforceable rather than conventional.
+✓ **Enforced (M10).** The four words are a check constraint on both sides, not a convention —
+console migration `2026_08_02_000020_add_connection_state_check_to_branch_status.php`. That
+migration is also the first exercise of M9's stamp-and-re-grant machinery: additive, so it raised
+`SCHEMA_VERSION` to 20 and left `MIN_APP_VERSION` at 1.0.0.
+✗ **Not** "M10 should add one", which this entry said until the audit that added this line — M10
+did add it, and the entry was never updated.
 
 ### CSV import — online-only
 **Both** CSV imports are **online-only operations**, alongside catalog and user CRUD: the item
@@ -1089,7 +1206,25 @@ keeps live Postgres equal to the matrix, so nothing widens quietly;
 `test_it_can_issue_a_queued_adjustment_for_any_branch_of_its_business` asserts the accepted reach
 rather than describing it.
 
-### Open: nothing currently
+### Open: four, all deferred rather than decided against
 
-Items deferred for scheduling rather than decided against live in
-`MULTIBRANCH-BRAINSTORM.md` §19.
+Unlike the entries above, none of these is a settled decision — they are work not yet done, and
+they are recorded here because the previous version of this section said "nothing currently"
+while `MULTIBRANCH-BRAINSTORM.md` §19 held two claims that had themselves gone stale. This list
+is the one to trust.
+
+- **The user-facing guide is pre-multi-branch.** `docs/Evitan-POS-Demo.pdf` predates every M
+  phase: it documents the removed Database Backup page and the old Owner-creation setup flow, and
+  says nothing about branches, sync, the queue or Pending Stocks. It is the only artifact in the
+  repo that still describes Evitan POS as if it were the shipping product.
+- **No E2E for the credential lifecycle.** `tests/e2e/` covers the wizard funnel
+  (`setup.spec.ts`) but not **rotation** (fresh build + re-issued JSON) or **disable/enable**,
+  both of which touch a device's ability to sync at all. The console side is unit-tested; the
+  device side of those two is not exercised end to end.
+- **There is no branch-closure command.** `branch:disable` suspends a credential on suspicion of
+  a leak; a branch that has genuinely *closed* is a different event and has no verb. Deferred at
+  M3 and never picked up — the console has provision / rotate / disable / enable / revoke / list /
+  monitor / migrate and nothing that means "this shop is shut".
+- **`sync_outbox` is never pruned.** `Outbox::markSynced()` sets `synced_at` and nothing ever
+  deletes the row, so the table grows for the life of the install. Harmless at one shop's volume,
+  unbounded in principle.

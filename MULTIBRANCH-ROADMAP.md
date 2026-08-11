@@ -10,13 +10,16 @@ validation → permissions/grants → audit → tests) and keep the system runna
 Don't open several of these at once.
 
 These phases follow the shipped `v1.0.0` (`ROADMAP.md` phases 0–19). They are numbered
-**M0–M12** to keep them distinct from the original phases.
+**M0–M13.5** to keep them distinct from the original phases. The numbering is not dense: work
+that arrived between planned phases took a decimal (M6.5, M11.5–M11.8, M13.5), and **M12 means
+the branch-scope phase** — the hardening tasks that once held that number are the un-numbered
+**Ongoing** section near the end of this file.
 
 **Read `docs/glossary.md` before starting a phase.** It is **normative** for the vocabulary
 these phases are written in, and it outranks both this file and `MULTIBRANCH-BRAINSTORM.md`
 where they disagree about what a word means. A large share of M1–M3's "As built" corrections
 were not design changes but a word meaning one thing in the spec and another in Postgres. The
-terms most likely to be assumed wrong in M4–M12 specifically:
+terms most likely to be assumed wrong in the later phases specifically:
 
 - **mirrored** (14 tables, parity-guarded) ≠ **readable** (18, `BranchGrants::SELECT`) ≠
   **pulled** (online-authoritative) — M4, M5, M7.
@@ -31,10 +34,12 @@ terms most likely to be assumed wrong in M4–M12 specifically:
 **Global constraints that apply to every phase**
 - The Provisioning Console **never** ships in any build (structural separation + verified
   build exclusion + `cleanup_env_keys`).
-- Branch DB roles stay **least-privilege** (SELECT/INSERT broadly; UPDATE only on
-  `branch_status`, `stock_snapshots`, `inventory_update_queue.status`; **no DELETE**; one
-  schema only). *As built (M2): the queue grant is four columns, not `status` alone — a check
-  constraint makes `status` alone unusable. `BranchGrants` is the operative matrix; see M2's
+- Branch DB roles stay **least-privilege** (SELECT/INSERT broadly; UPDATE narrowly; **no
+  DELETE**, on any table, ever; one schema only). *As built, and widened twice since: the queue
+  grant is column-level on **six** columns, not `status` alone — a check constraint makes `status`
+  alone unusable (M2: four columns; schema 21 added `approved_quantity` and `resolved_by`). UPDATE
+  also covers `branch_status`, `stock_snapshots` and the five shared tables widened at M6.5.
+  `BranchGrants` is the operative matrix and `docs/glossary.md` §9 is normative on it; see M2's
   note and `MULTIBRANCH-BRAINSTORM.md` §7.*
 - Original Evitan Plus invariants (immutable history, append-only ledger, ledger-derived
   inventory, never delete records, UUID PKs, one Owner, Item Cost Owner-only, negative
@@ -555,8 +560,8 @@ Local-first writes with reliable, idempotent upward sync.
 >   UNIQUE index rejects it, and `PosController`'s bounded retry absorbs the whole thing. The
 >   symptom is checkouts that intermittently fail for no stated reason. Pinned by a regression
 >   test rather than by the docblock that describes it.
-> - **A replacement device would have lost its first day's takings, silently.** Hydration
->   copies no history, so a device swapped in for existing hardware restarts its serial at 1
+> - **A replacement device would have lost its first day's takings, silently.** A device
+>   swapped in for existing hardware would restart its serial at 1
 >   against numbers Postgres already holds — and the push is insert-only, so the collision is
 >   absorbed rather than raised: a clean sync, a zero backlog, and the sales gone. M5's note
 >   said "M6 must not assume a replacement device is the same case as a new one"; this is what
@@ -1410,7 +1415,7 @@ Keeping both meant maintaining a second recovery path with its own failure modes
 
 But "restored via the wizard" was only three-quarters true. `Hydrator` copied the
 baseline and skipped history, so a replacement till came up with the right catalog
-and stock and an empty `/transactions`, `/audit-logs` and `/login-history` — no
+and stock and an empty `/sales`, `/audit-logs` and `/login-history` — no
 branch-local report figures and no receipt to reprint. Removing backup makes
 hydration the whole answer, so hydration has to carry history too.
 
@@ -1466,38 +1471,7 @@ file any more.
 
 ---
 
-# Phase M12 — Hardening, testing & release verification
-
-## Goal
-Prove the whole loop and lock the security boundary before shipping the custom binary.
-
-## Tasks
-- Backend tests: provisioning, least-privilege grants (negative tests: no DELETE / no
-  cross-schema), parity test, version gate, stock reconciliation, inventory-queue accept/reject,
-  idempotent push, offline-login for any user.
-- E2E: developer onboarding (provision → wizard → hydrate → sell offline → reconnect → sync →
-  consolidated report), rotation (fresh AppImage + JSON), disable/enable.
-- **Release verification:** confirm the packaged app contains **no** console code and **no**
-  admin credentials; branch creds are runtime-only and encrypted at rest.
-- Update `README.md` / release notes for the Evitan Plus build — including the product split
-  itself. **`README.md` half done** (post-M11.6 doc sweep): its opener, naming banner, tech
-  stack, highlights and status now describe Evitan Plus, and `BRAINSTORM.md` / `ROADMAP.md`
-  were retitled to **Evitan POS** with scope banners, per `docs/glossary.md` §1. Still open:
-  release notes for the Evitan Plus build itself — `RELEASE-NOTES.md` currently records only
-  `v1.0.0`, which is correct until there is a second release to write up.
-- Regenerate the user-facing guide. `docs/Evitan-POS-Demo.pdf` is the 22-page screen-by-screen
-  walkthrough shipped for `v1.0.0`; it is correct *as of that release* and is kept as its
-  artifact, but it documents the removed Backup page and the old Owner-creation setup flow, and
-  says nothing about branches or sync. Evitan Plus needs its own guide, not an edit of that one.
-
-## Milestone
-A green test suite and a verified build in which a single provisioned branch runs offline,
-syncs on reconnect, and the console monitors it — with the powerful provisioning surface
-provably absent from the shipped binary.
-
----
-
-# Phase M11.7 — Pending stock adjustments, human resolution, branch transfers
+# Phase M11.7 — Pending stock adjustments, human resolution, branch transfers ✅
 
 ## Goal
 Stop stock from moving because somebody typed a number. Every stock movement is asked for
@@ -1516,6 +1490,10 @@ first, and a person at the affected branch confirms it happened before it reache
   the CSV importer, the manual adjust screen, and the sync cycle's step 2. Single-writer-per-
   table was already an invariant; this is the first phase in which that class of row actually
   has one.
+  ~~**ONE writer.**~~ **No longer true — there are two.** M13.5 added
+  `OpeningStockImporter` as a deliberate second door, bounded by the [opening window]: a branch
+  that has never sold anything has no past for a second voice to check a claim against. The count
+  is normative at **two** (`docs/glossary.md` §4); do not add a third.
 
 - **THE FLOOR ROSE, AND THAT IS THE PHASE'S REAL COST.** `MIN_APP_VERSION` 1.0.0 → **1.1.0**,
   the first raise since M1. Not because of the `rejection_reason` → `resolution_reason` rename,
@@ -1537,6 +1515,12 @@ first, and a person at the affected branch confirms it happened before it reache
   `inventory_ledger` to one branch, so a rejection recorded at the target is invisible to the
   branch that asked — the one reader who needs it. The queue row is the record instead, and the
   dialog grew a **"Sent to other branches"** section so an issuer can see it at all.
+  ~~**The tempting fix is wrong.**~~ **No longer true — M11.8 took it.** The reasoning above is
+  sound about `Puller` and wrong about the remedy: M11.8 gave Stock History its own **branch
+  scope**, so the issuer can read the target branch's ledger directly and the visibility argument
+  dissolves. A rejection now writes a ledger row of **quantity 0** — the ledger is append-only,
+  zero sums to zero everywhere stock is derived from it, and the "Sent to other branches" section
+  was deleted along with the `?resolved=1` toggle.
 
 - **The resolver reads before it writes, and that filter is load-bearing.** `OnlineWrite` does
   its local writes before any connection exists and stamps `branch_id` from `instance`, so a
@@ -1554,11 +1538,18 @@ first, and a person at the affected branch confirms it happened before it reache
 - **Grant widened to six columns**, per §9's standing rule that any widening states its reason:
   `approved_quantity` (the whole of how a partial approval is stored) and `resolved_by` (a
   different user from `issued_by`, once a person answers). Still far below table-level, which
-  would expose `quantity`, `branch_id` and `counterparty_branch_id` — a branch that could
+  would expose `quantity`, `variant_id`, `branch_id` and `issued_by` — a branch that could
   rewrite those could approve itself more than it was sent, or aim a transfer elsewhere.
+  *(Column list corrected to match `docs/glossary.md` §9, which is normative on the grant matrix.)*
 
 - **`issuing_branch_id` was considered and dropped** as redundant: `counterparty_branch_id`
   plus `issued_by` answer every question it would have.
+  ~~**Dropped as redundant.**~~ **No longer true — M11.8 added it** as `issued_by_branch_id`
+  (schema 22, additive, floor unchanged). It is not derivable: `IssueTransferRequest` takes both
+  branch ids as free choices, so an Owner at head office can arrange a move between two branches
+  that are **neither of them theirs** — and then `branch_id`, `counterparty_branch_id` and the
+  issuer's own branch are three different values. `issued_by` names the *user*, not the device's
+  branch.
 
 - **Partial approval is derived, not a fourth status.** `status` has a real CHECK constraint;
   deriving "partial" from `approved_quantity` disagreeing with `quantity` costs one nullable
@@ -1588,6 +1579,10 @@ first, and a person at the affected branch confirms it happened before it reache
 
 - **`/inventory/stock-updates` is gone.** The list is a dialog on Stock History, whose table lost
   its By and Notes columns to a per-row detail modal. The sidebar entry went with the page.
+  ~~**Gone.**~~ **No longer true — it came back at M11.8, one milestone later**, as
+  **Pending Stocks**: a page again, in the sidebar again, and reworked so a card is a whole
+  [request] rather than a row. A dialog could show the rows a ledger entry produced; it could not
+  show work that has produced no ledger entry yet, which is the entire content of that screen.
 
 - **A new test stand-in was needed.** `Tests\TestCase`'s `OnlineWrite` fake DROPS
   `afterMirroring` closures, which is exactly where a pending row is now written — so under the
@@ -1600,7 +1595,147 @@ tests including the full transfer with its write-off (`tests/Integration/Invento
 
 ---
 
-# M13.5 Opening stock ✅
+# Phase M11.8 — Pending Stocks: a card is a request ✅
+
+> **Written up retrospectively (audit sweep).** M11.8, M12 and M13 shipped without roadmap
+> sections; their decisions lived only in `CLAUDE.md`'s status paragraph and in docblocks. That
+> is how **schema 22's additive-vs-breaking judgement came to be recorded nowhere that is a
+> spec**. These three sections close that gap; they describe what was built rather than plan it.
+
+## Goal
+Make the unit on screen match the unit a person asked for, and give a refusal somewhere to land.
+
+## As built
+
+- **A card is a [request], not a row.** Queue rows are grouped by `parent_id ?? id` — one row for
+  an adjustment, two for a transfer — with a progress stepper (Requested → Sent → Received) and
+  the **sender's answer shown on the receiver's card**, because the receiving branch is answering
+  for what the sender said actually left.
+- **A rejection writes a ledger row of quantity 0.** This reverses M11.7's explicit decision; see
+  the strikethrough in that section for why the reasoning behind it dissolved once Stock History
+  gained a scope. The ledger is append-only and zero sums to zero everywhere stock is derived
+  from it, and zero-quantity rows are not new — defect audit entries have written them since
+  Phase 11.
+- **Stock History gained a branch `scope`** (`local | all | branch id`, Admin+, Cashier snapped
+  back to `local`), modelled directly on `LoginHistoryController`. This is what made the two
+  sections and the `?resolved=1` toggle deletable: an answered row is now reachable as a ledger
+  row at the branch whose stock moved, and a rejection is reachable as a zero.
+- **Two filters, both on the URL**: branch scope — **ungated here**, since every row was already
+  visible to every role and what bounds *answering* one is the branch, not the role — and
+  transfer/adjustment.
+- **`/inventory/stock-history/{entry}/request`** is a lazy JSON read of the queue row behind one
+  ledger entry. It needs no join: `AdjustmentResolver` forces the ledger id to **be** the queue
+  row's id. It renders one block per voice (Requested / Sent / Received), each carrying that
+  person's name, role and branch, and **replaces** the row's Notes box rather than sitting under
+  it, since the resolver composes that string from exactly the same pieces.
+- **The middle voice was unrecorded.** `secondLeg()` copies the *requester's* note onto the
+  receiving leg and leaves the sender's answer in a ledger this device never pulls, so the
+  resolver now joins the parent leg and writes a `Sent: 2 of the 3 asked for.` line into the
+  offline string too. A transfer has up to three voices at three branches.
+- **"Ask again" is gone** — route, controller action and `can_reissue` with it. Re-asking a
+  refused transfer leg would offer stock whose shortfall the sender has already written off; for
+  an adjustment it duplicated the dialog that issues one.
+- **Schema 22 adds `issued_by_branch_id`.** Additive; **`MIN_APP_VERSION` stays 1.1.0**; no grant
+  change, because INSERT and SELECT are table-level. Not derivable — see the M11.7 strikethrough.
+
+## Milestone
+One list of unfinished work, and every answer — including a refusal — reachable afterwards.
+
+---
+
+# Phase M12 — Branch scope on sales and inventory stock; device-rebuild gaps ✅
+
+> **This is what "M12" means** in `CLAUDE.md`, `docs/glossary.md` and `docs/sync-architecture.md`.
+> The hardening tasks that held the number are now the un-numbered "Ongoing" section below.
+
+## Goal
+Give the last two operational screens the same branch scope, and close what M11.6's rebuild path
+still dropped.
+
+## As built
+
+- **`/sales` takes `local | all | branch id`** (Admin+, Cashier snapped back — a sales *list*
+  carries no cost or profit, so it is not Owner-only like reports). A remote row opens a
+  **read-only** detail: no reprint, no return, because neither the receipt nor the stock is this
+  branch's to act on. `{transaction}` is no longer model-bound, since under a wider scope it names
+  a row that is not on this device; `sales.print` and `sales.returns.store` keep their binding so
+  a remote id 404s there.
+- **Three silent traps**, all dialect, all found the hard way: the remote search must be
+  **`ilike`** (SQLite's LIKE is case-insensitive for ASCII and Postgres's is not, so `mnl` matches
+  locally and nothing upstream — and `LikeQuery`'s macros are Eloquent-only, so only `escape()` is
+  shared); **`withCount` does not exist on a query builder**, so the line count is a second
+  `whereIn` inside the same read rather than a join `paginate()`'s own `count(*)` would drag
+  through twice; and ordering needs an **`id` tiebreak** at `timestamptz` precision 0.
+- **`cost` is guarded by the SELECT column list alone**, because `HidesCostFromNonOwners` is a
+  model hook and never runs on query-builder rows.
+- **`/inventory` takes the same parameter minus `all`**, and changes **stock and nothing else** —
+  see `docs/glossary.md` "Branch scope", which is normative on why `all` was shipped and then
+  removed, and on why the figure lands on `scoped_stock` rather than `current_stock`.
+- **Rebuild fixes.** `Hydrator` now upserts on the row's **real identity** (`CONFLICT_TARGET`),
+  because `stock_snapshots` is the one mirrored table whose uuid the two databases mint
+  independently — so on any device that had traded, a re-hydrate keyed on `id` hit the `UNIQUE`
+  index over `variant_id` and 500'd past the wizard's own error handling. **Failed** CSV imports
+  now reach Postgres too, as a separate best-effort one-row write, since every failure path
+  records outside the import's online write where `OnlineWrite::mirror()` has nothing to attach
+  to. The supported rebuild — delete the local SQLite file and relaunch — is written down, with
+  the two things it does not restore (printer configuration, unpushed outbox).
+- **No schema, grant or console change** — the first phase since M6.5 of which that is true. It
+  also means the consolidated reads here rest on **app-layer authority alone**, leaning on §9's
+  accepted no-RLS risk by design.
+
+## Verified
+`tests/Integration/ConsolidatedSalesTest.php`, `ConsolidatedStockTest.php` — provable only against
+two really provisioned branches.
+
+---
+
+# Phase M13 — The catalog and the shelf stop sharing a screen ✅
+
+## Goal
+Split what the business sells from how many are on the shelf, and stop the item CSV asserting
+stock it cannot know.
+
+## As built
+
+- **The catalog is `/items`** (`ItemController`, page `items/index`), with Categories at
+  `/items/categories`. It **lost the branch `scope`**, the stock and low-stock columns, and the
+  three per-variant actions, because nothing on it is per-branch.
+- **Stock keeps `/inventory`** under a new `InventoryController` — the old stock half lifted
+  whole — over a **variant-first** query: one row per variant, flat, no expansion, since stock
+  lives on the variant and a row that is an item has to hide every figure behind a chevron.
+- **That query joins `items`, which is why `Variant::scopeActive()` had to qualify its column**
+  (`variants.archived_at`): `items` carries one too, and the unqualified version is an
+  ambiguous-column error at runtime rather than at boot.
+- **The CSV import lost `stock` and `mode` outright** — a spreadsheet cannot assert what is on a
+  shelf, and since schema 21 the column was only *asking* anyway — **lost its page and its
+  export**, and became a modal on Items with a two-post flow: `items.import.preview` parses,
+  validates and stops so the modal can name every existing product the file would change, and
+  `items.import.store` refuses to apply unless `confirm_updates` says somebody looked — enforced
+  inside `CsvInventoryImporter`, not in the modal, so a hand-built request is refused the same
+  way. The file is **re-uploaded** on confirm rather than parked server-side: the second parse is
+  authoritative, the apply stays all-or-nothing, and there is no temp-file lifecycle.
+- **`import_history.mode` was repurposed** to the values the Postgres migration always documented
+  — `create | update | upsert`, plus `unknown` for a file that never parsed far enough to tell.
+- **A stock batch** is many movements asked for as one act, sharing a nullable `batch_id` on both
+  `inventory_update_queue` and `inventory_ledger` (**schema 23, additive, floor stays 1.1.0, no
+  grant change** because INSERT/SELECT are table-level and nothing ever UPDATEs the column). A
+  transfer batch writes only the **sending** legs; `AdjustmentResolver::secondLeg()` carries the
+  batch onto each receiving leg as the sender confirms, so both branches see one card.
+- **Pending Stocks' grouping key widened to `batch_id ?? parent_id ?? id`**, which made a card
+  span many products — so `item`/`variant` moved from the request onto the **leg**, and each leg
+  gained `line` (the pairing key) and `requested`.
+- **`set` ("readjust to this number") is offered in a batch only for this branch**, matching
+  `IssueStockAdjustmentRequest` since M8: another branch's figure is a baseline missing its
+  unsynced sales, so a delta derived from it is wrong by exactly what the network has not caught
+  up with, and wrong silently.
+- **The consequence to know:** this left **no bulk path for opening stock** — closed by M13.5.
+
+## Milestone
+Two screens, each answering one question, and an item file that only ever describes items.
+
+---
+
+# Phase M13.5 — Opening stock ✅
 
 The hole M13 left, closed as narrowly as it can be closed.
 
@@ -1661,3 +1796,46 @@ but that **the branch can still sync**, which is exactly what the M7 rig defect 
 - OS network-change listeners.
 - Auto credential rotation over a bootstrap channel.
 - Cross-timezone branches.
+
+---
+
+# Ongoing — Hardening, testing & release verification
+
+> **Not a numbered phase, and renamed from "Phase M12".** It was M12 while it was the last thing
+> planned; then feature work kept arriving and **M12 was reused** for the sales/inventory branch
+> scope in `CLAUDE.md`, `docs/glossary.md` and `docs/sync-architecture.md` — three documents
+> against this one. Since the tasks below are standing obligations rather than a milestone that
+> completes, the number was the wrong thing about it. **M12 now means the branch-scope phase,
+> everywhere.**
+
+## Goal
+Prove the whole loop and lock the security boundary before shipping the custom binary.
+
+## Tasks
+- Backend tests: provisioning, least-privilege grants (negative tests: no DELETE / no
+  cross-schema), parity test, version gate, stock reconciliation, inventory-queue accept/reject,
+  idempotent push, offline-login for any user.
+- E2E: developer onboarding (provision → wizard → hydrate → sell offline → reconnect → sync →
+  consolidated report), rotation (fresh AppImage + JSON), disable/enable.
+- **Release verification:** confirm the packaged app contains **no** console code and **no**
+  admin credentials; branch creds are runtime-only and encrypted at rest.
+- Update `README.md` / release notes for the Evitan Plus build — including the product split
+  itself. **Done.** `README.md` describes Evitan Plus throughout; `BRAINSTORM.md` / `ROADMAP.md`
+  were retitled to **Evitan POS** with scope banners, per `docs/glossary.md` §1; and
+  `RELEASE-NOTES.md` now carries a `v1.1.0` entry alongside `v1.0.0`. *(The line here previously
+  read "Still open: release notes … `RELEASE-NOTES.md` currently records only `v1.0.0`" — that
+  stopped being true when the v1.1.0 entry was written.)*
+- **Still open — regenerate the user-facing guide.** `docs/Evitan-POS-Demo.pdf` is the 22-page
+  screen-by-screen walkthrough shipped for `v1.0.0`; it is correct *as of that release* and is
+  kept as its artifact, but it documents the removed Backup page and the old Owner-creation setup
+  flow, and says nothing about branches or sync. Evitan Plus needs its own guide, not an edit of
+  that one. Tracked in `docs/glossary.md` §9.
+- **Still open — E2E for rotation and disable/enable.** The two lifecycle cases in the E2E bullet
+  above have no spec; `tests/e2e/` covers the wizard funnel only. Tracked in `docs/glossary.md` §9.
+
+## Milestone
+A green test suite and a verified build in which a single provisioned branch runs offline,
+syncs on reconnect, and the console monitors it — with the powerful provisioning surface
+provably absent from the shipped binary.
+
+---

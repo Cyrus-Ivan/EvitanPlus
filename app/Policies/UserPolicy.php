@@ -26,15 +26,6 @@ class UserPolicy
     }
 
     /**
-     * Whether the actor may create new employees. Which roles they may assign is
-     * constrained separately (see UserRole::assignableRoles()).
-     */
-    public function create(User $actor): bool
-    {
-        return $this->viewAny($actor);
-    }
-
-    /**
      * Whether the actor may manage (archive/restore/change role/reset password)
      * the target user.
      */

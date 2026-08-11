@@ -313,7 +313,7 @@ class ReportsController extends Controller
             'returns' => '0.00',
             'defects' => '0.00',
             'net_sales' => '0.00',
-        ] + ($canViewCost ? ['cogs' => '0.00', 'profit' => '0.00', 'uncosted_sales' => '0.00'] : []);
+        ] + ($canViewCost ? ['profit' => '0.00', 'uncosted_sales' => '0.00'] : []);
 
         $described = [];
         foreach ($branches as $id => $branch) {

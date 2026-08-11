@@ -336,8 +336,9 @@ class StockBatchTest extends TestCase
             ->assertJsonCount(1, 'variants')
             ->assertJsonPath('variants.0.id', $variant->id)
             ->assertJsonPath('variants.0.sku', 'FIZZ-1')
-            ->assertJsonPath('variants.0.stock', 6)
-            // This branch's own figure is reconciled, not a baseline.
-            ->assertJsonPath('baseline', false);
+            // This branch's own figure is the reconciled one, not a baseline —
+            // the dialog tells the two apart from its own roster, so the feed
+            // carries the number and not a flag about it.
+            ->assertJsonPath('variants.0.stock', 6);
     }
 }

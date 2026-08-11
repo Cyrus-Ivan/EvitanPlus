@@ -1,7 +1,9 @@
 import { BranchScopeSelect } from '@/components/branch-scope-select';
 import EmptyState from '@/components/empty-state';
+import BatchAdjustDialog from '@/components/inventory/batch-adjust-dialog';
+import BatchTransferDialog from '@/components/inventory/batch-transfer-dialog';
+import ImportOpeningStockDialog from '@/components/inventory/import-opening-stock-dialog';
 import StockAdjustDialog from '@/components/inventory/stock-adjust-dialog';
-import StockBatchDialog from '@/components/inventory/stock-batch-dialog';
 import StockTransferDialog from '@/components/inventory/stock-transfer-dialog';
 import { OfflineNotice } from '@/components/offline-notice';
 import Pagination from '@/components/pagination';
@@ -14,7 +16,7 @@ import { usePermissions } from '@/hooks/use-permissions';
 import AppLayout from '@/layouts/app-layout';
 import type { BranchScope, BreadcrumbItem, Category, Paginated, RosterBranch, Variant } from '@/types';
 import { Head, Link, router } from '@inertiajs/react';
-import { ArrowLeftRight, History, Info, Layers, Package, SlidersHorizontal, WifiOff } from 'lucide-react';
+import { ArrowLeftRight, History, Info, Package, SlidersHorizontal, Upload, WifiOff } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 
 const breadcrumbs: BreadcrumbItem[] = [{ title: 'Inventory', href: '/inventory' }];
@@ -101,6 +103,7 @@ export default function InventoryIndex({
     canViewAll,
     branches,
     consolidatedOnline,
+    openingWindow,
 }: {
     variants: Paginated<Variant>;
     categories: Pick<Category, 'id' | 'name'>[];
@@ -112,6 +115,10 @@ export default function InventoryIndex({
     canViewAll: boolean;
     branches: RosterBranch[];
     consolidatedOnline: boolean | null;
+    // Whether this branch has yet to sell anything, and so may still set its
+    // stock from a spreadsheet. Server-decided; the control below is a
+    // convenience, not the rule.
+    openingWindow: boolean;
 }) {
     const { hasRoleAtLeast } = usePermissions();
     const canManage = hasRoleAtLeast('admin');
@@ -122,8 +129,19 @@ export default function InventoryIndex({
     // dialogs — an adjustment is one claim about one shelf, a transfer is two
     // claims about two, answered by two people.
     const [transferTarget, setTransferTarget] = useState<Variant | null>(null);
-    const [batching, setBatching] = useState(false);
+    // And again for the batch pair, for the same reason: one branch and a
+    // direction is not two branches and no direction, and a quantity on a line
+    // does not mean the same thing in both.
+    const [adjustBatching, setAdjustBatching] = useState(false);
+    const [transferBatching, setTransferBatching] = useState(false);
+    const [importing, setImporting] = useState(false);
     const isFirstRender = useRef(true);
+
+    // Only ever true on a branch that has never sold anything, and only for an
+    // Admin or the Owner. The import is scoped to this device's shelf, so it is
+    // offered on the local scope alone — under another branch's heading the
+    // button would look like it set that branch's stock, and it does not.
+    const canImportOpeningStock = canManage && openingWindow && scope === LOCAL;
 
     const applyFilters = (next: Partial<Filters> & { scope?: string }) => {
         const merged = { search, category: filters.category, status: filters.status, ...next };
@@ -213,12 +231,35 @@ export default function InventoryIndex({
                         )}
                     </div>
 
-                    {canManage && (
-                        <Button onClick={() => setBatching(true)}>
-                            <Layers className="size-4" /> New stock batch
-                        </Button>
-                    )}
+                    <div className="flex flex-wrap items-center gap-2">
+                        {canImportOpeningStock && (
+                            <Button variant="outline" onClick={() => setImporting(true)}>
+                                <Upload className="size-4" /> Import opening stock
+                            </Button>
+                        )}
+                        {/* The same pair as the per-row actions below, asked for
+                            many products at once. */}
+                        {canManage && (
+                            <>
+                                <Button variant="outline" onClick={() => setTransferBatching(true)}>
+                                    <ArrowLeftRight className="size-4" /> Batch transfer
+                                </Button>
+                                <Button onClick={() => setAdjustBatching(true)}>
+                                    <SlidersHorizontal className="size-4" /> Batch adjustment
+                                </Button>
+                            </>
+                        )}
+                    </div>
                 </div>
+
+                {/* Said once, where the button is, because it is the whole reason
+                    the button is there and the whole reason it will go away. */}
+                {canImportOpeningStock && (
+                    <p className="text-muted-foreground text-sm">
+                        This branch has not sold anything yet, so its opening stock can still be set from a spreadsheet. After the first sale, stock
+                        moves only through a request somebody at the branch confirms.
+                    </p>
+                )}
 
                 {consolidatedOnline === false && <OfflineStockNotice />}
                 {consolidatedOnline === true && <BaselineNotice />}
@@ -331,9 +372,12 @@ export default function InventoryIndex({
                         variant={transferTarget}
                         itemName={transferTarget?.item?.name}
                     />
-                    <StockBatchDialog open={batching} onOpenChange={setBatching} />
+                    <BatchTransferDialog open={transferBatching} onOpenChange={setTransferBatching} />
+                    <BatchAdjustDialog open={adjustBatching} onOpenChange={setAdjustBatching} />
                 </>
             )}
+
+            {canImportOpeningStock && <ImportOpeningStockDialog open={importing} onOpenChange={setImporting} online={online} scope={scope} />}
         </AppLayout>
     );
 }

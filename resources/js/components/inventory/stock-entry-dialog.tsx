@@ -132,7 +132,9 @@ function EntryBody({ entry }: { entry: StockLedgerEntry }) {
                 row's own notes — `AdjustmentResolver::notes()` composes that
                 string out of exactly these pieces — so showing the two together
                 prints every sentence twice. The notes are the fallback: offline,
-                and on a sale, return or defect that never had a request. */}
+                and on any movement that never had a request — a sale, return or
+                defect, or an opening-stock import, which writes the ledger
+                directly because there was no shelf history to confirm against. */}
             {request === null ? (
                 <div className="space-y-0.5">
                     <p className="text-muted-foreground text-xs">Notes</p>

@@ -12,7 +12,12 @@ return new class extends Migration
             $table->uuid('id')->primary();
             $table->foreignUuid('user_id')->constrained()->restrictOnDelete();
             $table->string('filename')->nullable();
-            // Allowed: replace_stock_count | add_to_current_stock
+            // What kind of file this was. Item imports classify themselves as
+            // create | update | upsert, or `unknown` when the file never parsed
+            // far enough to tell; an opening-stock import is `opening_stock`.
+            // Repurposed in M13 from the CSV's old stock-mode column, and
+            // unconstrained on both sides — the Postgres twin is a bare string
+            // too, so the values are the app's rule rather than the schema's.
             $table->string('mode');
             // Allowed: success | failed | partial
             $table->string('status');

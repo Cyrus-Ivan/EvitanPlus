@@ -164,6 +164,26 @@ export interface ImportPreview {
     errors: ImportRowError[];
 }
 
+/**
+ * What an opening-stock file would do, from `opening-stock.preview`.
+ *
+ * Unlike `ImportPreview` this carries no warning to confirm. Every quantity is a
+ * resulting on-hand applied as a delta, so re-uploading the file is a no-op and
+ * a wrong number is fixed by uploading again — there is nothing here that one
+ * more upload cannot undo. What the lines are for is letting somebody see the
+ * arithmetic before it happens: what the shelf says now, what the file says, and
+ * the movement between them.
+ */
+export interface OpeningStockPreview {
+    total: number;
+    /** Lines that would write a ledger entry. */
+    moves: number;
+    /** Lines the shelf already agrees with. */
+    unchanged: number;
+    lines: { sku: string; product: string; variant: string | null; current: number; quantity: number; delta: number }[];
+    errors: ImportRowError[];
+}
+
 /** One rejected CSV row. `row` is the 1-based line, or null for a whole-file problem. */
 export interface ImportRowError {
     row: number | null;

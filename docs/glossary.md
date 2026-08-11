@@ -286,13 +286,18 @@ And **`batch_id`** (schema 23, nullable, no FK): the stock batch this movement w
 carried from the queue row by the resolver so "these came off the shelf together" reads offline
 too. Null on anything issued singly. See §"Stock batch".
 
-`csv_import` stays in the `reference_type` list and **nothing writes it any more** (M13). An
-import describes products; a spreadsheet cannot assert what is on a shelf. Rows written before
-M13 still carry it, which is the whole reason the value remains.
+`csv_import` stayed in the `reference_type` list through M13 with **nothing writing it**, because
+the item file describes products and a spreadsheet cannot assert what is on a shelf. It is
+written again by the **opening-stock import**, and only inside the opening window — see
+§"Opening stock" and §"Opening window" below. Which is why keeping the value was worth doing:
+these rows render on every screen and on every build back to Phase 7 without a change anywhere.
 
 *Anchor:* `console/database/migrations/2026_07_26_000010_create_inventory_ledger_table.php`;
-`app/Support/Inventory/StockLedger::record()`. Since schema 21 there is exactly **one** writer of
-`type = 'stock_adjustment'`: `App\Support\Inventory\AdjustmentResolver`. There were three.
+`app/Support/Inventory/StockLedger::record()`. Since schema 21 there are exactly **two** writers
+of `type = 'stock_adjustment'`: `App\Support\Inventory\AdjustmentResolver`, and
+`App\Support\Inventory\OpeningStockImporter` while the opening window is open. There were three
+before schema 21, one after it, and the second one back is a deliberate carve-out with a stated
+reason — see §"Opening window". Do not add a third.
 
 ✗ **`restock` is not a term.** It appears in no code path. A restock is a *positive*
 `stock_adjustment` with `reference_type = manual_adjustment` — a UI framing of an existing
@@ -357,9 +362,10 @@ inventory history and double-count against the pulled adjustment rows.
 
 ### Pending stock adjustment
 A row of `inventory_update_queue`: a stock movement that has been **asked for and has not
-happened**. Since schema 21 **every** stock movement starts as one — a recount typed at this
-till, a CSV import, an adjustment aimed at another branch, and both legs of a transfer. It
-becomes a ledger entry only when a person at the affected branch says it really happened.
+happened**. Since schema 21 every stock movement starts as one — a recount typed at this till,
+an adjustment aimed at another branch, a stock batch, and both legs of a transfer — with the
+single exception of an **opening-stock import** (see §"Opening window"). It becomes a ledger
+entry only when a person at the affected branch says it really happened.
 *Anchor:* the `inventory_update_queue` table; `check ((status = 'pending') = (resolved_at is
 null))`; `App\Support\Inventory\AdjustmentQueue` writes them,
 `App\Support\Inventory\AdjustmentResolver` answers them,
@@ -433,6 +439,60 @@ to the same route one Approve uses, and `AdjustmentResolver` re-reads each of th
 branch. There is no batch-shaped write path on the answering side, deliberately.
 ✗ **Not** derivable. Two rows issued a second apart by the same person are not a batch, which is
 exactly why the column exists rather than a heuristic over `created_at`.
+
+### Opening window
+The stretch of a branch's life **before it has sold anything**: no `inventory_ledger` row of
+`type = 'sale'` exists. While it is open, and only while it is open, opening stock may be imported
+from a spreadsheet straight to the ledger.
+*Anchor:* `App\Support\Inventory\OpeningWindow::isOpen()`; the `openingWindow` prop on
+`/inventory`; `OpeningStockImportRequest::authorize()`; `OpeningStockImporter::assertWindowOpen()`.
+**Why it exists.** The queue's rule — that a stock figure is a claim about a shelf somebody has to
+go and look at — is right about a shelf with a history and empty about a shelf with none. A device
+off the setup wizard has every variant at zero: for a new business because `business:provision`
+seeds no catalog, for a new branch because a branch that has never traded has no `stock_snapshots`
+rows to hydrate. Routing an opening count through the queue would make one person confirm a file
+they typed a moment earlier, and would run a six-hundred-line catalog into a hundred-line batch cap.
+✗ **Not** stored. It is asked of the ledger on every render, so it cannot drift. Two things fall
+out: a **rebuilt** device at an established branch hydrates that branch's sales (M11.6) and so is
+correctly shut, and a genuinely new branch stays open across as many sittings as onboarding takes.
+✗ **Not** a general exemption from schema 21. It is one carve-out with one reason, and the reason
+expires the moment the branch trades. A second writer of `type = 'stock_adjustment'` outside it
+would be the thing §"Ledger entry type" says not to add.
+✗ **Not** closed by a sale alone: a return or a defect closes it too. All three are `type = 'sale'`
+and split on `sale_type`, and any of them means the branch is trading.
+
+### Opening stock
+The starting count a branch's shelf is set to before it trades, and the **only bulk path into
+stock** there is. A two-column CSV — `sku, quantity` — imported from `/inventory` while the
+opening window is open, written straight to `inventory_ledger` through `StockLedger` inside one
+online write and mirrored upward with `RemoteStock::recompute()` behind it.
+*Anchor:* `App\Support\Inventory\OpeningStockImporter`; `OpeningStockCsvSchema`;
+`App\Http\Controllers\Inventory\OpeningStockController`; `import_history.mode = 'opening_stock'`;
+`reference_type = 'csv_import'` on the rows it writes.
+✗ **Not** the item CSV, and deliberately a second file. That one describes **products** and is the
+same at every branch; this one describes **one branch's shelf**. Columns it does not recognise are
+ignored, so one spreadsheet with a `quantity` column added can be uploaded to both in turn — but a
+`stock` column on the item file still does nothing, as it has since M13.
+✗ **Not** an amount to add. A quantity is the **resulting on-hand**, applied as
+`quantity − current stock` — the `set` semantics of §"Stock batch", legal here because the shelf
+being subtracted from is this device's own reconciled figure. Which makes the file re-uploadable:
+run it twice and every delta is zero, so a mistyped count is fixed by uploading again.
+✗ **Not** written for a quantity that changes nothing. A line already matching the shelf writes
+**no** ledger row, including a zero on a variant at zero — the absence of a movement, not a
+movement of nothing (`MULTIBRANCH-ROADMAP.md` M7). A snapshot with no ledger behind it makes the
+upstream recompute go negative and refuses every cycle the branch ever runs again.
+✗ **Not** able to create products. Every SKU must already exist; an unknown one fails the whole
+file. That is what makes the new-branch case "the stocks of the current catalog" rather than a
+second way into the catalog.
+✗ **Not** possible offline, like every other write to shared data.
+✗ **Not** aimable at another branch, and the request must **say so**. It carries a `scope` that
+`OpeningStockImportRequest` refuses unless it is `local` or this branch's own id — including when
+it is absent, since omission would be the one bypass a stated intent must not have. This is the
+only place a branch scope is an *assertion by the caller* rather than a choice: `/inventory` shows
+another branch's stock under that branch's heading while the rest of the page stays local, and an
+import fired from there would be stamped `branch_id` from `instance` by `OnlineWrite`, land on
+this branch, and report success. Hiding the button under a wider scope is the convenience; the
+refusal is the rule.
 
 ### Write-off in transit
 The gap when a transfer's receiving branch approves less than was sent. The sender is down three,
@@ -959,20 +1019,29 @@ connection would otherwise be the same row. **None of the four stop the till sel
 what makes the set enforceable rather than conventional.
 
 ### CSV import — online-only
-A CSV import is an **online-only operation**, alongside catalog and user CRUD. Consequently
-`import_history` **is** online-authoritative and does **not** sync upward; the branch role's
-`SELECT`-without-`INSERT` on it is correct and stays.
-*Anchor:* `BranchGrants::SELECT` includes `import_history`; `BranchGrants::INSERT` does not.
-**Why:** an in-app import writes `type = 'stock_adjustment'` ledger rows, which are
-online-authoritative and pulled down — so the outbox would never carry them, and a branch that
-imported while offline would create stock movements that could never reach Postgres and would
-diverge permanently and silently. Pushing them instead would give `stock_adjustment` rows **two
-writers**, breaking the single-writer-per-table rule that is the reason no last-write-wins
-exists anywhere in this system.
-✓ **The connectivity gate this entry owed is built** (M6.5): `InventoryImportController` refuses
-on `ConnectivityProbe::online()`, `import.tsx` renders `OfflineNotice` and disables the form, and
-`CsvInventoryImporter` runs inside an `OnlineWrite` — so an offline import is refused by the
-server, not merely discouraged by the screen.
+**Both** CSV imports are **online-only operations**, alongside catalog and user CRUD: the item
+import (products, business-wide) and the opening-stock import (this branch's shelf, and only
+inside the §"Opening window"). Each runs inside an `OnlineWrite`, so an offline one is refused by
+the server rather than discouraged by the screen.
+*Anchor:* `InventoryImportController::store()` and `OpeningStockController::store()` both re-probe
+`ConnectivityProbe::online()`; `CsvInventoryImporter` and `OpeningStockImporter` both run inside
+`OnlineWrite::run()`; both modals render `OfflineNotice` and disable the button.
+**Why:** an import that reaches only this device diverges from the business permanently and
+silently. For the item import that is catalog every branch sells from. For opening stock it is
+sharper: those are `type = 'stock_adjustment'` ledger rows, which are online-authoritative and
+**pulled down**, so the outbox does not carry them — written offline they would be the branch's
+whole opening balance sitting in a local ledger, waiting to be reverted by the first pull's
+baseline. Pushing them instead was rejected because it would give `stock_adjustment` rows a
+second *direction of travel*, and the single-writer rule is about a class of row having one
+authoring path.
+✗ **Not** "`import_history` does not sync upward", which this entry said until the opening-stock
+work and which had been false since M6.5. `BranchGrants::INSERT` includes `import_history`; a
+successful import mirrors its row inside its own online write (`mirrorImport()`) and a failed one
+afterwards as a rescued single-row write (`mirrorFailure()`). Both matter for a **rebuilt** device,
+where hydration is the only recovery path.
+✗ **Not** true any more that "an in-app import writes `stock_adjustment` ledger rows" without
+qualification. The *item* import has written none since M13 — it describes products. The
+opening-stock import writes them, and only while the branch has never sold anything.
 
 ---
 

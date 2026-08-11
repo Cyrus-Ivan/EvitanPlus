@@ -66,7 +66,14 @@ Full procedure — gates, `--pretend`, the re-grant step, confirming with
   transfer — is now *asked for* and confirmed by a person at the branch whose
   shelf it is, under **Pending Stocks**. Three answers: approve, approve part of
   it, or turn it down, the last two with a reason that follows the movement into
-  Stock History.
+  Stock History. The one exception is opening stock, below.
+- **Opening stock from a spreadsheet.** A branch that has not sold anything yet
+  can set its whole shelf from a two-column file — SKU and quantity — on the
+  Inventory page. A quantity is the total that should be there, not an amount to
+  add, so a wrong number is fixed by uploading the file again. Every SKU has to
+  exist already: a new business imports its products first, and a new branch
+  already has the catalog. **The option disappears at the branch's first sale**,
+  after which stock moves only through a request somebody confirms.
 - **Transfers between branches.** One request, two confirmations: the sending
   branch says what left, and only then is the receiving branch asked what
   arrived. A shortfall in transit is written off rather than bounced back,
@@ -85,8 +92,8 @@ Full procedure — gates, `--pretend`, the re-grant step, confirming with
   request is bounded by which branch you are standing in rather than by rank.
 - **CSV import is products only.** It creates and updates the catalog, names
   every existing product a file would change and asks before applying it, and
-  lives in a modal on Items. The stock columns and the CSV **export** are gone —
-  see Known limitations.
+  lives in a modal on Items. The stock columns and the CSV **export** are gone;
+  stock has its own file now, under Opening stock above.
 
 ### Removed
 
@@ -97,10 +104,11 @@ Full procedure — gates, `--pretend`, the re-grant step, confirming with
 
 ### Known limitations
 
-- **No bulk path for opening stock.** A newly imported product starts at zero and
-  gets its first count from the stock batch dialog on Inventory, one line per
-  variant. A spreadsheet cannot assert what is on a shelf, and since schema 21
-  nothing sets stock without a person confirming it.
+- **No bulk path for stock after the first sale.** Opening stock can be imported
+  from a spreadsheet only until the branch sells something; after that a product
+  gets its count from the stock batch dialog on Inventory, one line per variant.
+  A spreadsheet cannot assert what is on a shelf that has a history, and from
+  that point nothing sets stock without a person confirming it.
 - **Work done offline on hardware that then dies is unrecoverable.** Anything a
   till had not yet synced is only on that machine. Rebuilding a device restores
   everything the business database holds and nothing it does not.

@@ -17,6 +17,10 @@ const MODE_LABELS: Record<string, string> = {
     create: 'New products',
     update: 'Updates',
     upsert: 'New + updates',
+    // Not from this dialog: an opening-stock file, imported from Inventory. The
+    // two share one history because what happened to this device's data is more
+    // useful in one list than split by which screen did it.
+    opening_stock: 'Opening stock',
     unknown: '—',
 };
 

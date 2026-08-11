@@ -323,10 +323,11 @@ push, the next baseline contains them and the correction converges to zero on it
 
 ## 6. Pending stock adjustments
 
-**Every** stock movement is now asked for before it happens. A recount typed at this till, an
-adjustment aimed at another branch, a stock batch, and both legs of a transfer all write a
-`pending` row into `inventory_update_queue` (`App\Support\Inventory\AdjustmentQueue`) and
-stop. (A CSV import did too, until M13 took stock out of the catalog file entirely — see §6.1.)
+Every stock movement is now asked for before it happens, with **one** exception named in §6.2. A
+recount typed at this till, an adjustment aimed at another branch, a stock batch, and both legs
+of a transfer all write a `pending` row into `inventory_update_queue`
+(`App\Support\Inventory\AdjustmentQueue`) and stop. (A CSV import did too, until M13 took stock
+out of the catalog file entirely — see §6.1.)
 It becomes a ledger entry when a person at the affected branch says it really happened
 (`App\Support\Inventory\AdjustmentResolver`), from `/inventory/stock-updates`.
 
@@ -407,8 +408,9 @@ agreed to would make the button look broken. So it is an ordinary online write �
 and snapshot first, mirrored up in the same act.
 
 That does not reintroduce a second writer: the rule is about a class of row having one authoring
-path, not one direction of travel, and `AdjustmentResolver` is now the **only** writer of
-`type = 'stock_adjustment'` (there were three). Nothing double-counts either — the outbox stays
+path, not one direction of travel, and `AdjustmentResolver` is the writer of
+`type = 'stock_adjustment'` for every movement on a shelf that has a history (there were three
+before schema 21; §6.2 is the one deliberate second door). Nothing double-counts either — the outbox stays
 empty because `shouldPush()` is false for adjustments, `Puller` `insertOrIgnore`s the row it
 re-reads, and `RemoteStock` recomputes with a `sum()` that converges.
 
@@ -439,6 +441,65 @@ unit no longer exists. Nothing bounces back.
 - **Timestamps come from the server's clock** (`CURRENT_TIMESTAMP`), never PHP's. These are
   `timestamptz` and this app's convention is a naive local string; stamping one with the other is
   the eight-hour drift M6 spent a phase finding.
+
+### 6.2 Opening stock is the one movement nobody confirms
+
+A device off the setup wizard has every variant at **zero**. For a new business because
+`business:provision` seeds no catalog at all; for a new branch because `stock_snapshots` hydrates
+scoped to a branch that has never traded, and upstream a snapshot is only written the first time
+stock moves. Since M13 took stock out of the item CSV there was no bulk way off zero: six hundred
+SKUs meant six hundred dialog lines, through a batch capped at a hundred.
+
+`App\Support\Inventory\OpeningStockImporter` is that path, and it writes the ledger **directly**
+— the only thing besides `AdjustmentResolver` that writes `type = 'stock_adjustment'`. What
+bounds it is the **opening window** (`App\Support\Inventory\OpeningWindow`): no `type = 'sale'`
+row exists for this branch. One sale, return or defect and the route 403s.
+
+The argument is narrow on purpose. The queue exists so a second voice can check a claim against a
+shelf that has a past; a branch that has never sold anything has no past for the claim to
+contradict, the person uploading is the person standing at the branch, and asking them to confirm
+a file they typed a moment earlier is the ceremony without the second voice. The window is what
+keeps that from becoming a standing route around schema 21.
+
+Four consequences worth knowing:
+
+- **A quantity is the resulting on-hand**, written as `quantity − current stock` — the `set`
+  semantics of §6.1, legal here because the figure being subtracted from is this device's own
+  reconciled one. So the file is **re-uploadable**: run it twice and every delta is zero. A
+  mistyped count is fixed by fixing the cell and uploading again.
+- **A line that moves nothing writes nothing**, including a zero on a variant at zero. That is §4's
+  rule, and it is the rule the M7 rig defect proved: a snapshot with no ledger behind it makes
+  `RemoteStock::recompute()` sum an incomplete ledger, go negative, and
+  `stock_snapshots_non_negative` refuse every cycle the branch ever runs again. The import writes
+  through `StockLedger` and recomputes from Postgres's own ledger for exactly that reason.
+- **It cannot create products.** Every SKU must already exist, which is what makes the new-branch
+  case "the stocks of the current catalog." A new business runs the item CSV first; a new branch
+  hydrated the catalog and runs only this one.
+- **Nothing here needed a schema, grant or console change.** `reference_type = 'csv_import'` is
+  unconstrained and has been a live movement kind since Phase 7 — nothing wrote it between M13 and
+  this, but every screen and every build back to v1.0.0 still renders it. `inventory_ledger` has
+  had INSERT since M2 and `stock_snapshots` INSERT/UPDATE since M6. The version pair does not move.
+
+**The request has to name the branch it means.** `/inventory` carries a branch scope that changes
+only the Stock column — the product list, the filters and the paging stay local in every scope —
+so under `?scope=<other branch>` the screen is this device's catalog wearing another branch's
+numbers, under that branch's heading. An import fired from there cannot write that branch and
+every layer beneath would hide it: the delta is computed against this device's shelf,
+`OnlineWrite` stamps `branch_id` from `instance` whatever the URL said, and `OpeningWindow` reads
+the local ledger and so answers only for this branch. The failure is not an error but six hundred
+rows on the wrong branch under a toast saying they succeeded.
+
+So both posts carry a `scope`, and `OpeningStockImportRequest` refuses anything but `local` or
+this branch's own id — **including its absence**, because omission is the one bypass a stated
+intent must not have. It is the same shape as `confirm_updates` on the item import: the caller
+states what it believes, the server checks the belief, and the modal is not where the rule lives.
+The window is checked first, so a branch that has traded is told the true reason rather than sent
+to fix a scope that was fine.
+
+Proved in `tests/Feature/Inventory/OpeningStockImportTest.php` (the window, the arithmetic, the
+refusals) and `tests/Integration/OpeningStockImportTest.php` (the round trip against a real
+provisioned business, ending in a full `SyncCycle::run()` — the assertion that matters is not that
+the numbers are right but that the branch can **still sync** afterwards).
 
 ---
 

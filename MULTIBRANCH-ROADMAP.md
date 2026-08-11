@@ -1600,6 +1600,61 @@ tests including the full transfer with its write-off (`tests/Integration/Invento
 
 ---
 
+# M13.5 Opening stock ✅
+
+The hole M13 left, closed as narrowly as it can be closed.
+
+Taking `stock` and `mode` out of the item CSV was right — that file describes products, and a
+spreadsheet cannot assert what is on a shelf. What it left behind was written down as a known
+limitation and never scheduled: **there was no bulk path into stock at all.** A device off the
+setup wizard has every variant at zero (for a new business because `business:provision` seeds no
+catalog; for a new branch because a branch that has never traded has no `stock_snapshots` rows to
+hydrate), and getting six hundred SKUs off zero meant six hundred lines through a dialog capped at
+a hundred per batch.
+
+`App\Support\Inventory\OpeningStockImporter` takes a two-column file — `sku, quantity` — and
+writes `inventory_ledger` **directly**, through `StockLedger`, inside one `OnlineWrite`, with
+`RemoteStock::recompute()` behind the mirror. It is offered on `/inventory` and refused everywhere
+else.
+
+- **This is the second writer of `type = 'stock_adjustment'`**, and the first deliberate one since
+  schema 21 made `AdjustmentResolver` the only one. The carve-out is bounded by the **opening
+  window** (`OpeningWindow::isOpen()`): no `type = 'sale'` row exists for this branch. The queue
+  exists so a second voice can check a claim against a shelf with a past; a branch that has never
+  sold anything has no past to contradict, the uploader is the person at the branch, and confirming
+  a file you typed a moment ago is ceremony without a second voice. **Do not add a third writer.**
+  `docs/glossary.md` §4 is normative on both the count and the reason.
+- **Derived, not stored.** The window is asked of the ledger on every render, so it cannot drift —
+  and a *rebuilt* device at an established branch hydrates that branch's sales (M11.6) and is
+  correctly shut, which a flag would have had to be told.
+- **A quantity is a total, not a change** — `quantity − current stock`, the `set` semantics of the
+  batch dialog, legal here because the figure underneath is this device's own reconciled one. The
+  file is therefore re-uploadable and a typo is fixed by fixing the cell. A line that moves nothing
+  writes nothing, which is M7's rule about zero opening balances and is what keeps
+  `stock_snapshots_non_negative` from freezing the branch forever.
+- **Two files, not two more columns.** Folding stock back onto the item CSV would put a column
+  there whose meaning changed over the life of the install — honoured during the window, ignored
+  after it — which is a file that works once and then silently does nothing. Unrecognised columns
+  are ignored, so one spreadsheet with a `quantity` column added serves both uploads.
+- **Nothing schema-side moved.** `reference_type = 'csv_import'` is an unconstrained string and
+  stayed a live movement kind through M13 with nothing writing it; `inventory_ledger` has had
+  INSERT since M2 and `stock_snapshots` INSERT/UPDATE since M6. **No migration, no grant change,
+  no console change, and the version pair does not move** — which also means these rows render on
+  builds back to v1.0.0.
+- **Two stale docs were corrected on the way through.** `docs/glossary.md` §8 had claimed since
+  M6.5 that `import_history` does not sync upward and that the branch role has SELECT without
+  INSERT on it; both have been false since M6.5 itself. It also still described the item import as
+  writing ledger rows, which stopped at M13.
+
+## Verified
+708 offline tests (23 new in `tests/Feature/Inventory/OpeningStockImportTest.php`, one more in
+`OfflineCsvImportTest`), plus `tests/Integration/OpeningStockImportTest.php` against a real
+provisioned business: item file, opening file, upstream ledger and recomputed snapshot, and a full
+`SyncCycle::run()` at the end. That last assertion is the point — not that the numbers are right
+but that **the branch can still sync**, which is exactly what the M7 rig defect could not.
+
+---
+
 ## Deferred (post-M12, tracked in `MULTIBRANCH-BRAINSTORM.md` §19)
 - Multiple tills per branch (shared-stock coordination).
 - Supabase Realtime channel (instant reconnect + live console↔branch monitor/command).

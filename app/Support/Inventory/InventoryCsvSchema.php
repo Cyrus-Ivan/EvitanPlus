@@ -21,11 +21,17 @@ namespace App\Support\Inventory;
  * the catalog and the shelf on separate screens, both columns described the
  * wrong screen.
  *
- * The consequence is real and is not a gap to fill later: **there is no bulk
- * path for opening stock.** A newly imported product appears at zero, and the
- * stock batch dialog on the Inventory page is how it gets its first count. That
- * is one dialog row per variant, deliberately — a stock figure is a claim about
- * a shelf somebody looked at.
+ * A newly imported product appears at zero, and how it gets its first count
+ * depends on whether the branch has ever sold anything. Before its first sale,
+ * {@see OpeningStockCsvSchema} — a separate two-column file, because that one
+ * describes a shelf and this one describes products, and a column whose meaning
+ * expired partway through the install's life is the thing M13 removed. After it,
+ * the stock batch dialog on the Inventory page, one row per variant and
+ * deliberately so: a stock figure on a shelf with a history is a claim somebody
+ * has to go and look at.
+ *
+ * A leftover `stock` column here is still ignored, which is what lets one
+ * spreadsheet be uploaded to both screens in turn.
  */
 final class InventoryCsvSchema
 {

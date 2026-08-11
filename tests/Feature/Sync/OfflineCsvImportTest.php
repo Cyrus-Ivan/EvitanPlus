@@ -4,8 +4,11 @@ namespace Tests\Feature\Sync;
 
 use App\Models\ImportHistory;
 use App\Models\InventoryLedger;
+use App\Models\Item;
 use App\Models\User;
+use App\Models\Variant;
 use App\Support\Inventory\InventoryCsvSchema;
+use App\Support\Inventory\StockLedger;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Tests\TestCase;
@@ -92,5 +95,37 @@ class OfflineCsvImportTest extends TestCase
 
         $this->assertStringContainsString('needs a connection', $errors[0]);
         $response->assertRedirect();
+    }
+
+    /**
+     * The opening-stock import is refused offline for a sharper version of the
+     * same reason.
+     *
+     * It writes `type = 'stock_adjustment'` rows directly — the one path allowed
+     * to, while the branch has never sold anything — and those are pulled DOWN,
+     * never pushed up. Written offline they would be the branch's whole opening
+     * balance, sitting in a local ledger the outbox does not carry, waiting to
+     * be silently reverted by the first pull's baseline.
+     */
+    public function test_an_offline_opening_stock_import_is_refused_and_writes_nothing(): void
+    {
+        $owner = User::factory()->owner()->create();
+        $variant = Variant::factory()->for(Item::factory()->create())->create(['sku' => 'WATER-500']);
+
+        $file = UploadedFile::fake()->createWithContent('opening-stock.csv', "sku,quantity\nWATER-500,24\n");
+
+        // The stated target is `local`, so the refusal under test is the
+        // connectivity one and not the scope guard standing in front of it.
+        $response = $this->actingAs($owner)->post(route('opening-stock.store'), [
+            'scope' => 'local',
+            'file' => $file,
+        ]);
+
+        $response->assertRedirect()->assertSessionHasErrors('file');
+        $this->assertStringContainsString('needs a connection', session('errors')->get('file')[0]);
+
+        $this->assertSame(0, InventoryLedger::query()->count());
+        $this->assertSame(0, ImportHistory::query()->count());
+        $this->assertSame(0, app(StockLedger::class)->currentStock($variant));
     }
 }

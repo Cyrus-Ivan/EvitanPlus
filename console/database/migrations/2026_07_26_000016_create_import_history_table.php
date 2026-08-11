@@ -24,7 +24,10 @@ return new class extends Migration
             $table->foreignUuid('branch_id')->constrained()->restrictOnDelete();
             $table->foreignUuid('user_id')->constrained()->restrictOnDelete();
             $table->string('filename')->nullable();
-            // Allowed: create | update | upsert
+            // Allowed: create | update | upsert | unknown (an item import), or
+            // opening_stock. Not a check constraint: the values are the app's
+            // rule, and a schema that froze them would need a breaking
+            // migration every time the app grew a kind of file.
             $table->string('mode');
             // Allowed: pending | completed | failed
             $table->string('status');

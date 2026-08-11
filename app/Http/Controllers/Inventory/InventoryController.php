@@ -8,6 +8,7 @@ use App\Models\Category;
 use App\Models\Concerns\HidesCostFromNonOwners;
 use App\Models\Instance;
 use App\Models\Variant;
+use App\Support\Inventory\OpeningWindow;
 use App\Support\Sync\BranchRoster;
 use App\Support\Sync\OnlineRead;
 use App\Support\Sync\OnlineWrite;
@@ -161,6 +162,14 @@ class InventoryController extends Controller
             'canViewAll' => $canViewAll,
             'branches' => $this->pickerBranches($this->read, $roster, $canViewAll && Instance::isHydrated()),
             'consolidatedOnline' => $stock['consolidatedOnline'],
+            // Whether the opening-stock import is still on offer: true only
+            // while this branch has never sold anything. A device off the setup
+            // wizard has every variant at zero and this is how it gets off it;
+            // one sale and the control goes, because from then on a stock figure
+            // is a claim about a shelf with a past and belongs in the queue.
+            // Cheap enough to ask on every render (one indexed existence check),
+            // and asking beats storing — see OpeningWindow.
+            'openingWindow' => OpeningWindow::isOpen(),
         ]);
     }
 

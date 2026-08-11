@@ -19,7 +19,8 @@
 - **Admin & ops** — user management (create / archive / reset password / change role), login history (login, logout, crash, forced logout, power loss), an immutable audit log of every significant action (Admin+ view, cost redacted for non-Owners).
 - **Multi-branch sync** — every local write is enqueued in an outbox and carried upward by a four-step sync cycle (version gate → push → pull → heartbeat), which also brings down catalog, staff and settings changes made at other branches. The header shows the unsynced count and a **Sync now** button on every screen; receipt serials are branch-prefixed (`MNL-0000000001`).
 - **Branch scope on reports and login history** — `local` (this branch, works offline), `all`, or a single branch. Consolidated scopes are an online read and fall back to the branch-local view, saying so, rather than presenting one branch under an "All branches" heading. Reports are Owner-only beyond `local`; login history is Admin+.
-- **Pending stock adjustments** — no stock moves because somebody typed a number. A recount, a CSV import, an adjustment aimed at another branch and both legs of a branch transfer all become *pending* until a person at the affected branch confirms it happened, from **Pending Stock Adjustments** in the sidebar. They can approve, approve part of it, or turn it down with a reason; **Approve all** clears the hundreds of rows one CSV import makes. Answering is open to every role — whoever is in the shop is who knows whether the delivery arrived — while asking stays Admin+.
+- **Pending stock adjustments** — no stock moves because somebody typed a number. A recount, a stock batch, an adjustment aimed at another branch and both legs of a branch transfer all become *pending* until a person at the affected branch confirms it happened, from **Pending Stocks** in the sidebar. They can approve, approve part of it, or turn it down with a reason; **Approve all** clears a whole card at once. Answering is open to every role — whoever is in the shop is who knows whether the delivery arrived — while asking stays Admin+.
+- **Opening stock from a spreadsheet** — the one exception to the rule above, and the only bulk path into stock. A branch that has never sold anything can set its whole shelf from a `sku, quantity` CSV on Inventory: a quantity is the total that should be there, so re-uploading a corrected file moves only the difference. Every SKU must already exist, and the option disappears at the branch's first sale — after that a shelf has a history, and only a person can speak for it.
 - **Developer-run setup** — a fresh install is connected to its business by importing the credentials JSON the Provisioning Console emits. One atomic submit connects, hydrates the branch's catalog, staff, stock and history into local SQLite, and seals the credential under a per-install `APP_KEY`. Replacing dead hardware is the same flow.
 
 ## Tech stack
@@ -286,6 +287,16 @@ Every branch device is prepared by a developer, in this order:
    unless all of it succeeds, so a failure means "fix what the message says and
    submit again" and never leaves a half-set-up device.
    *(shipped — Phase M5.)*
+5. **Stock it** — log in as the Owner and set the shelf, because hydration
+   copies whatever the business database holds and a new branch has nothing.
+   For a **new business** that is two files: the item CSV on `/items` (products,
+   business-wide), then the opening-stock CSV on `/inventory` (`sku, quantity`).
+   For a **new branch** it is only the second — the catalog came down with the
+   hydrate. A quantity is the total that should be on the shelf, so a wrong
+   number is fixed by uploading the file again. **This option disappears at the
+   branch's first sale**; after that stock moves only through a request somebody
+   at the branch confirms. Both files need a connection.
+   *(shipped — Phase M13.5.)*
 
 The business then simply powers on a ready device and logs in as the Owner
 created during provisioning. The credentials JSON is one-time: the wizard offers
@@ -428,7 +439,7 @@ Deeper documentation lives in the repo:
 
 **Evitan POS shipped as `v1.0.0`** (see [`RELEASE-NOTES.md`](RELEASE-NOTES.md)) with all 19 [`ROADMAP.md`](ROADMAP.md) phases complete: the full commerce chain (Setup, DB schema, Auth, Authorization, Settings, Inventory, Ledger, CSV Import/Export, POS, Transactions, Returns/Defects, Printing, Reports), the full admin/ops track (User Management, Login History, Audit Logs), UI polish, the Phase 18 final review (DB-level immutability triggers) and release preparation.
 
-**Evitan Plus** has since taken that through `M0–M11.7` of the [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md) initiative: the Provisioning Console, per-business Postgres schemas and least-privilege branch roles, the connect-and-hydrate setup wizard, the four-step sync cycle (push, pull, heartbeat), atomic online writes for shared data, the schema version gate, branch monitoring, consolidated cross-branch reports and login history, the removal of Database Backup in favour of rebuilding a device from its credential, and human-confirmed stock adjustments with branch-to-branch transfers. `M12` remains.
+**Evitan Plus** has since taken that through `M0–M13.5` of the [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md) initiative: the Provisioning Console, per-business Postgres schemas and least-privilege branch roles, the connect-and-hydrate setup wizard, the four-step sync cycle (push, pull, heartbeat), atomic online writes for shared data, the schema version gate, branch monitoring, consolidated cross-branch reports and login history, the removal of Database Backup in favour of rebuilding a device from its credential, human-confirmed stock adjustments with branch-to-branch transfers, the Items/Inventory split with stock batches, and spreadsheet opening stock for a branch that has not traded yet.
 
 The suite currently runs `composer verify` offline plus 7 Playwright E2E spec files, with `composer verify:console` and `composer verify:hydrate` covering the Supabase-dependent halves.
 

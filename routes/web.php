@@ -7,6 +7,7 @@ use App\Http\Controllers\Inventory\InventoryController;
 use App\Http\Controllers\Inventory\InventoryImportController;
 use App\Http\Controllers\Inventory\InventoryQueueController;
 use App\Http\Controllers\Inventory\ItemController;
+use App\Http\Controllers\Inventory\OpeningStockController;
 use App\Http\Controllers\Inventory\StockAdjustmentController;
 use App\Http\Controllers\Inventory\StockBatchController;
 use App\Http\Controllers\Inventory\StockHistoryController;
@@ -174,6 +175,20 @@ Route::middleware(['auth'])->group(function () {
         // a batch resolves as an ordinary set of decisions.
         Route::get('inventory/stock-batches/variants', [StockBatchController::class, 'variants'])->name('stock-batches.variants');
         Route::post('inventory/stock-batches', [StockBatchController::class, 'store'])->name('stock-batches.store');
+
+        // OPENING STOCK: the one bulk path onto a shelf, and the one movement
+        // that reaches the ledger without a person confirming it. Open only
+        // while this branch has never sold anything (App\Support\Inventory\
+        // OpeningWindow) — a device off the setup wizard has every variant at
+        // zero, and getting a real catalog off zero was one dialog line each.
+        //
+        // The window is checked by OpeningStockImportRequest (a 403, because a
+        // closed window is a route this branch no longer has) and again by the
+        // importer. Same two-post shape as the item import above and for the
+        // same reason; `preview` is deliberately not gated on connectivity.
+        Route::post('inventory/opening-stock/preview', [OpeningStockController::class, 'preview'])->name('opening-stock.preview');
+        Route::post('inventory/opening-stock', [OpeningStockController::class, 'store'])->name('opening-stock.store');
+        Route::get('inventory/opening-stock/template', [OpeningStockController::class, 'template'])->name('opening-stock.template');
 
         Route::get('items/{item}/edit', [ItemController::class, 'edit'])->name('items.edit');
         Route::patch('items/{item}', [ItemController::class, 'update'])->name('items.update');

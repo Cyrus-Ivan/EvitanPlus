@@ -143,7 +143,7 @@ export default function ImportGuide() {
                 </Callout>
                 <Callout title="It imports products, never stock" tone="warn">
                     There is no <Mono>stock</Mono> column. An imported product opens at <strong>zero</strong>, and its first count comes from{' '}
-                    <strong>New stock batch</strong> on the Inventory page — where somebody at the branch confirms what is actually on the shelf.
+                    <strong>Batch adjustment</strong> on the Inventory page — where somebody at the branch confirms what is actually on the shelf.
                 </Callout>
                 <Callout title="What an update can change" tone="warn">
                     For an <strong>existing SKU</strong>, an update only touches <Mono>selling_price</Mono>, <Mono>cost</Mono>,{' '}

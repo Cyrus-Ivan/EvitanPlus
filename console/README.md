@@ -437,8 +437,8 @@ timing table.
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `EMAXCONNSESSION` part-way through a run | The admin session pooler is **15 clients** wide and Supavisor frees them lazily. A cancelled run, an open `tinker`, or a psql session holds slots. | Close them and wait a minute. `Tests\TestCase::tearDownAfterClass` purges four connections per class precisely to avoid this. |
-| Leftover `biz_test_*` schemas | A run cancelled before `tearDownAfterClass`. There is no reaper, by choice. | `select schema_name from information_schema.schemata where schema_name like 'biz_test_%';` then drop them. |
-| Leftover `biz_<uuid>` schemas and `branch_*` roles | **A second, less obvious leak.** The provisioning tests do not use the `biz_test_` prefix — `ProvisionsBusiness` runs the real `business:provision`, so its schema is named from a freshly minted UUID and is indistinguishable by name from a real business. A run cancelled mid-provision therefore leaks a schema the `biz_test_%` sweep will never find. | See the sweep in §7 — identify them by their fixture branch codes (`FIX`, `LIFE`) in the audit trail, not by their names. |
+| Leftover `biz_test_*` schemas | A run cancelled before `tearDownAfterClass`. | `composer rig:clean:all` (or `php tests/manual/pg.php sweep`) destroys every schema in the disposable namespace. Safe to run unasked — see §7. |
+| Leftover `biz_<uuid>` schemas and `branch_*` roles | **Closed as of the disposable namespace, and worth knowing it existed.** `ProvisionsBusiness` runs the real `business:provision`, so until it passed `--disposable` its schema was named from a freshly minted UUID and was indistinguishable by name from a real business — a run cancelled mid-provision leaked a schema the `biz_test_%` sweep could never find. Every provisioning fixture now passes `--disposable`, so new leaks land in the swept namespace. | Nothing new leaks here. A **pre-existing** one still needs a human: §7's trail query, then `php tests/manual/pg.php drop <schema>`. |
 | Leftover `biz_<uuid>` schemas from an interrupted **`composer rig`** (not a suite, but the same symptom and the same aisle) | Third source of the leak above. A SIGINT kills `business:provision` at PHP's default disposition — there is no `SignalableCommandInterface` anywhere in `console/` — so `BusinessProvisioner`'s undo stack, reached only from its `catch`, never runs, and no audit row is written either: it records on terminal outcomes only. **Fixed in the rig**, which now passes `--business` and records the schema name before the provision call; leaks from before that fix are still out there and have no trail entry at all. | `php tests/manual/pg.php orphans` lists every `biz_` schema with no completed audit row, no `branches` row or no `schema_meta`, and prints the drop line for each. It only ever prints — a schema mid-build in a concurrent suite is indistinguishable from a leak, which is this section's rule restated. |
 | The same leak from a run that **completed** | **Fixed, and worth knowing it existed.** `ProvisionsBusiness` is not self-cleaning: its docblock requires every using class to call `tearDownProvisionedBusiness()` from its own `tearDownAfterClass`. `SchemaReapplyGrantsTest` never did, so a fully green suite still left one real `biz_*` schema and one branch role in Supabase **on every run** — eight had accumulated before anyone counted. Nothing fails when this happens, which is the whole problem. | Fixed by adding the teardown. If a new class uses that trait, give it a `tearDownAfterClass` or it will do this again silently. |
 | A green run that tested nothing | The bare suite skips silently without credentials. | Always use `composer verify:console`, which passes `--fail-on-skipped`. This exact shape is why the parity guard sat unrun from M1 to M4. |
@@ -518,10 +518,26 @@ select rolname, rolcanlogin from pg_roles where rolname like 'branch\_%';
 ls -la console/storage/app/credentials/   # stranded 0600 JSONs from failed or undelivered runs
 ```
 
-**Telling a leaked test schema from a real business.** There is no business registry —
-deliberately — so a surviving `biz_<uuid>` schema cannot be classified by name. Use the
-trail instead: the fixtures always provision branch code `FIX` ("Fixture Branch") and the
-lifecycle test uses `LIFE`, and neither belongs to any real business.
+**First, sweep what says it is sweepable.** Every throwaway business this repo provisions —
+the rig's, the console fixture's, the integration fixture's — passes `--disposable`, which
+names its schema `biz_test_<hex>` instead of `biz_<hex>`:
+
+```bash
+composer rig:clean:all          # or: php tests/manual/pg.php sweep
+```
+
+That is not the reaper the rest of this section refuses to build. `SchemaName::forBusiness()`
+cannot produce a `biz_test_` name without the flag, so the namespace is unreachable for a real
+business by construction — no actor, business name or branch code can put one there. The mark
+being the *name* also means it exists from `CREATE SCHEMA` onward, so a provision killed by a
+SIGINT is swept too. Refuse the temptation to widen it to `biz_%`.
+
+**Then: telling a leaked test schema from a real business.** Only needed for schemas outside
+that namespace — a `biz_<uuid>` leaked by a build predating `--disposable`, or by something
+that provisioned without it. There is no business registry — deliberately — so such a schema
+cannot be classified by name. Use the trail instead: the fixtures always provision branch code
+`FIX` ("Fixture Branch") and the lifecycle test uses `LIFE`, and neither belongs to any real
+business.
 
 ```sql
 -- Surviving schemas, annotated with what the trail says was done to them.

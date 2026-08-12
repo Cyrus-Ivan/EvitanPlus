@@ -55,6 +55,7 @@ class BusinessProvisionCommand extends Command
         {--branch-address= : First branch address}
         {--out= : Write the credentials JSON here instead of the default path}
         {--actor= : Recorded as the operator in the provisioning audit}
+        {--disposable : THROWAWAY: name the schema biz_test_* so rig:clean --all may destroy it}
         {--force : Skip the confirmation prompt}';
 
     protected $description = 'Provision a business: schema, migration, seed, branch role and credentials JSON';
@@ -75,7 +76,11 @@ class BusinessProvisionCommand extends Command
             $businessId = $this->resolveBusinessId();
             $branchId = (string) Str::orderedUuid();
 
-            $schema = SchemaName::forBusiness($businessId);
+            // The disposability decision is made HERE, before any DDL, because
+            // it is spelt in the schema name itself — there is nothing to write
+            // afterwards and nothing to forget to write. See
+            // SchemaName::DISPOSABLE_PREFIX for why the name carries it.
+            $schema = SchemaName::forBusiness($businessId, (bool) $this->option('disposable'));
             $role = RoleName::forBranch($branchId);
         } catch (InvalidArgumentException $e) {
             $this->components->error($e->getMessage());
@@ -114,6 +119,10 @@ class BusinessProvisionCommand extends Command
         $data['business_id'] = $businessId;
         $data['branch_id'] = $branchId;
         $data['out'] = $this->stringOption('out');
+        // Travels with the two identities because the provisioner re-derives the
+        // schema name from them; without it the preflight and the CREATE would
+        // disagree about which schema this is.
+        $data['disposable'] = (bool) $this->option('disposable');
 
         if (! $this->confirmSummary($data, $schema)) {
             $this->components->warn('Aborted. Nothing was created.');
@@ -334,6 +343,16 @@ class BusinessProvisionCommand extends Command
             return true;
         }
 
+        // Said before the table rather than as a row in it: this is the one
+        // property of the business that cannot be changed afterwards without
+        // re-provisioning, and the one that makes it destroyable in bulk.
+        if (SchemaName::isDisposable($schema)) {
+            $this->components->warn(
+                'DISPOSABLE: this business lands in the biz_test_ namespace and '
+                .'`composer rig:clean:all` will destroy it without asking. Do not use --disposable for anything real.'
+            );
+        }
+
         table(
             headers: ['', 'Value'],
             rows: [
@@ -357,6 +376,12 @@ class BusinessProvisionCommand extends Command
     {
         $this->newLine();
         $this->components->info('Business provisioned');
+
+        // --force and --no-interaction both skip confirmSummary(), and those are
+        // exactly how the suites and the rig call this, so say it here too.
+        if (SchemaName::isDisposable((string) $summary['schema'])) {
+            $this->components->warn('DISPOSABLE — `composer rig:clean:all` will destroy this business.');
+        }
 
         $this->components->twoColumnDetail('Business', (string) $summary['business_name']);
         $this->components->twoColumnDetail('Business id', (string) $summary['business_id']);

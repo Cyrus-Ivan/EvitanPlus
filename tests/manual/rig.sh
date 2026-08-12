@@ -5,6 +5,7 @@
 #   rig.sh wizard   two un-hydrated devices + the credential paths, you drive
 #                   /setup yourself
 #   rig.sh clean    destroy what a killed run left behind
+#   rig.sh clean --all  ALSO sweep every disposable (biz_test_*) schema
 #
 # `ready` and `wizard` provision a REAL throwaway business with two branches on
 # the live Supabase project, then stay in the foreground. Ctrl-C destroys all of
@@ -35,17 +36,27 @@
 # even when the required file throws, so its exit code proves nothing. hydrate.php
 # asserts its own work and prints a marker; only that marker is trusted.
 #
-# NO `inventory:reconcile`, EVER. It rebuilds stock snapshots from the local
-# ledger, and a hydrated till has snapshots with no ledger behind them (M5 copies
-# stock_snapshots, not inventory_ledger). Running it would zero every till.
+# `ready` AND `wizard` SEED DIFFERENT WORLDS. `ready` gets a year of sales;
+# `wizard` deliberately does not. A branch with sales has no opening window
+# (OpeningWindow::isOpen()), so seeding both would put M13.5's opening-stock
+# import permanently out of the rig's reach. The mode is passed to pg.php for
+# exactly that one decision.
 
 set -euo pipefail
 
 MODE="${1:-}"
+SWEEP_ALL=0
 
 case "$MODE" in
-    ready|wizard|clean) ;;
-    *) echo "usage: rig.sh <ready|wizard|clean>" >&2; exit 64 ;;
+    ready|wizard) ;;
+    clean)
+        case "${2:-}" in
+            --all) SWEEP_ALL=1 ;;
+            '')    ;;
+            *)     echo "usage: rig.sh clean [--all]" >&2; exit 64 ;;
+        esac
+        ;;
+    *) echo "usage: rig.sh <ready|wizard|clean [--all]>" >&2; exit 64 ;;
 esac
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -152,20 +163,69 @@ teardown() {
 
 # ── clean ──────────────────────────────────────────────────────────────────
 if [[ "$MODE" == clean ]]; then
+    # --all destroys schemas nobody named, so before it runs: is a suite using
+    # one? `verify:console` and `verify:hydrate` provision DISPOSABLE businesses
+    # and hold them for the length of a class, so a sweep landing mid-run would
+    # pull a schema out from under a passing test — and the failure would look
+    # like a sync bug, not a cleanup one.
+    #
+    # This is the check pg.php's own orphans output has always told a human to
+    # do by hand. It only sees THIS machine: a suite running elsewhere against
+    # the same Supabase project is invisible to it, which is why the sweep says
+    # what it is about to do rather than doing it quietly.
+    #
+    # Matched on `vendor/phpunit/phpunit` rather than the bare word "phpunit",
+    # and on a rig only in its SERVING modes, so that neither this script's own
+    # command line nor its parent's can satisfy the pattern — a guard that trips
+    # on itself refuses every time and gets deleted. `|| true` because pgrep
+    # exits 1 when it matches nothing, which under `set -e` would be fatal.
+    if [[ "$SWEEP_ALL" == 1 ]]; then
+        BUSY="$(pgrep -f 'vendor/phpunit/phpunit' || true)"
+        BUSY+=" $(pgrep -f 'rig\.sh (ready|wizard)' || true)"
+
+        if [[ -n "${BUSY// /}" ]]; then
+            echo "rig: a phpunit or another rig is running — it may be USING a disposable" >&2
+            echo "rig: schema right now. Wait for it to finish, then re-run." >&2
+            echo "rig:   pgrep -af 'vendor/phpunit/phpunit|rig\.sh'" >&2
+            exit 1
+        fi
+    fi
+
+    # Asked ONCE and remembered: a successful teardown deletes $STATE, so a
+    # second `-f` test below would report "no state file" about a run it had
+    # just cleaned up perfectly.
+    HAD_STATE=0; [[ -f "$STATE" ]] && HAD_STATE=1
+
     # No state file is not the same as nothing to clean, and answering it that
     # way is what let an interrupted provision disappear. Ask Postgres instead:
     # a schema that never finished provisioning is visible there even when
     # nothing local remembers it.
-    if [[ ! -f "$STATE" ]]; then
+    if [[ "$HAD_STATE" == 0 ]]; then
         echo "rig: no state file — this run left nothing behind locally."
+    else
+        set -a; . "$STATE"; set +a
+        teardown
+    fi
+
+    # The sweep goes SECOND: the state-file teardown is the precise one, and it
+    # is the only path that also removes servers, SQLite files and credential
+    # JSONs. By the time this runs, this run's own schema is already gone and
+    # the sweep is dealing with what earlier runs left.
+    if [[ "$SWEEP_ALL" == 1 ]]; then
+        echo
+        echo "rig: sweeping every disposable (biz_test_*) schema…"
+        echo
+        php "$ROOT/tests/manual/pg.php" sweep
+        exit "${TEARDOWN_FAILED:-0}"
+    fi
+
+    if [[ "$HAD_STATE" == 0 ]]; then
         echo "rig: checking Postgres for schemas that never finished provisioning…"
         echo
         php "$ROOT/tests/manual/pg.php" orphans
         exit 0
     fi
 
-    set -a; . "$STATE"; set +a
-    teardown
     exit "${TEARDOWN_FAILED:-0}"
 fi
 
@@ -231,10 +291,15 @@ jread() { php -r 'echo json_decode(file_get_contents($argv[1]), true)[$argv[2]][
 # that whenever teardown can fire it already has a schema name. Nothing above
 # this line reaches Supabase, so there is nothing for a trap to clean up yet.
 BUSINESS_ID="$(php "$ROOT/tests/manual/pg.php" uuid)"
-# SchemaName::forBusiness — `biz_` plus the UUID with its dashes stripped.
-# Derived rather than read back, because the schema exists about a second into a
-# fifteen-second call. pg.php's drop assertion already hard-codes the same shape.
-SCHEMA="biz_${BUSINESS_ID//-/}"
+# SchemaName::forBusiness with $disposable — the DISPOSABLE_PREFIX plus the UUID
+# with its dashes stripped. Derived rather than read back, because the schema
+# exists about a second into a fifteen-second call. pg.php's drop assertion
+# hard-codes the same shape.
+#
+# The prefix is why `rig:clean --all` can sweep a rig that died without its
+# state file: the name itself says the business is throwaway, and no real one
+# can ever be named this way (SchemaName::DISPOSABLE_PREFIX).
+SCHEMA="biz_test_${BUSINESS_ID//-/}"
 
 remember BUSINESS_ID "$BUSINESS_ID"
 remember SCHEMA "$SCHEMA"
@@ -287,8 +352,12 @@ ROLE_A="$(jread "$JSON_A" role name)"; remember ROLE_A "$ROLE_A"
 
 echo "rig: adding the second branch…"
 
+# --schema, not --business: the business is DISPOSABLE, so its schema is
+# biz_test_<hex> and SchemaName::forBusiness() maps a UUID to biz_<hex> only.
+# The reverse derivation handles both prefixes; the forward one cannot know
+# which was meant, so the caller names the schema it already recorded.
 php "$ROOT/console/artisan" branch:provision \
-    --business="$BUSINESS_ID" \
+    --schema="$SCHEMA" \
     --branch-name="$NAME_B" \
     --branch-code="$CODE_B" \
     --branch-address="2 Rig Street, $NAME_B" \
@@ -299,9 +368,15 @@ php "$ROOT/console/artisan" branch:provision \
 ROLE_B="$(jread "$JSON_B" role name)"; remember ROLE_B "$ROLE_B"
 
 # A provisioned business holds only its branches row, the Owner and settings —
-# no catalog. Without this both tills would hydrate with nothing to sell.
-echo "rig: seeding a catalog and per-branch stock…"
-php "$ROOT/tests/manual/pg.php" seed "$JSON_A" "$JSON_B"
+# no catalog and one user. Without this both tills would hydrate with nothing to
+# sell, nobody but the Owner to sell it, and no history to look at.
+if [[ "$MODE" == ready ]]; then
+    echo "rig: seeding a catalog, staff, per-branch stock and a year of sales (~30s)…"
+else
+    echo "rig: seeding a catalog, staff and per-branch stock…"
+fi
+
+php "$ROOT/tests/manual/pg.php" seed "$JSON_A" "$JSON_B" "$MODE"
 
 # ── Local devices ──────────────────────────────────────────────────────────
 migrate_device() {
@@ -367,12 +442,21 @@ echo "  Branch $CODE_B ($NAME_B)     http://$HOST_B:$PORT_B"
 echo
 
 if [[ "$MODE" == ready ]]; then
-    echo "  Sign in on either, same account:  $OWNER_USERNAME / $OWNER_PASSWORD"
+    echo "  Four accounts, all password '$OWNER_PASSWORD', either till:"
+    echo "    $OWNER_USERNAME      Owner    admin      Admin"
+    echo "    cashier1   Cashier  cashier2   Cashier"
     echo
     echo "  Same catalog on both, hydrated from Postgres. Stock differs per"
     echo "  branch — $CODE_B is short of a few things, and out of Party Size"
     echo "  chips entirely, so the low-stock and out-of-stock states are"
     echo "  already visible."
+    echo
+    echo "  Both tills carry a YEAR of sales, ending today, rung up by all four"
+    echo "  accounts — $CODE_A busier than $CODE_B. Reports, the consolidated"
+    echo "  per-branch table and deep pagination all have weight behind them."
+    echo "  The opening-stock import is closed here, as it is at any branch"
+    echo "  that has ever sold anything; 'composer rig:wizard' is where to"
+    echo "  look at that."
 else
     echo "  Both devices are un-hydrated; each opens on /setup."
     echo
@@ -388,14 +472,21 @@ else
     echo "  \"delete the file after import\" unticked to retry without"
     echo "  re-provisioning."
     echo
-    echo "  Owner account, once hydrated:  $OWNER_USERNAME / $OWNER_PASSWORD"
+    echo "  Accounts once hydrated, all password '$OWNER_PASSWORD':"
+    echo "    $OWNER_USERNAME (Owner), admin (Admin), cashier1 + cashier2 (Cashier)"
+    echo
+    echo "  No sales here, on purpose: a branch that has never sold anything"
+    echo "  still has its opening window, so this is the mode to look at the"
+    echo "  opening-stock import in. 'composer rig' is the one with a year of"
+    echo "  history behind it."
 fi
 
 echo
 echo "  Sales do NOT cross between the two windows: each till mirrors only its"
 echo "  own branch. They DO both reach Postgres — sync now on the header, or"
 echo "  automatically after each checkout — so watch the unsynced count fall."
-echo "  Receipts are branch-prefixed, so each till counts from its own 1."
+echo "  Receipts are branch-prefixed, and each till continues its own serial —"
+echo "  in 'ready' that is wherever the seeded year left off, not 1."
 echo
 echo "  business  $BUSINESS_ID"
 echo "  schema    $SCHEMA"

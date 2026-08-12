@@ -44,6 +44,20 @@ cheapest one unrunnable.
 | `composer verify:console` | `console/.env` + live Supabase admin credentials | The provisioning console's whole suite, plus schema parity |
 | `composer verify:hydrate` | the same credentials | The real round trip: provision a throwaway business, hydrate a device from it, push, pull, queue, report |
 
+**All three of the throwaway-business paths — the rig, `verify:console`, `verify:hydrate` —
+provision with `--disposable`**, so their schemas are named `biz_test_<hex>` and a run that
+dies before its teardown leaves something sweepable:
+
+```bash
+composer rig:clean:all    # this run's artifacts, then every biz_test_* schema and its roles
+```
+
+Run it after any interrupted suite. It refuses while a `phpunit` or a rig is running,
+because those hold disposable schemas for the length of a test class. What it can *not*
+reach is a `biz_<hex>` leak from a build predating the flag — `php tests/manual/pg.php
+orphans` still reports those, read-only, for a human to decide about. See `docs/glossary.md`
+§3 "Disposable schema" for why sweeping that namespace is safe when sweeping `biz_%` is not.
+
 ### `composer verify`
 
 Chains fail-fast, cheapest first:
@@ -142,9 +156,12 @@ Two things worth knowing before you touch a real business:
   every schema it *advances*, and says which app builds a raised floor has just frozen —
   but which *tills* are on them needs `monitor`. See
   [`sync-architecture.md`](sync-architecture.md) §9–§11.
-- **There is no reaper.** A `biz_%` schema is indistinguishable from a real customer's, so
-  nothing sweeps by name pattern. Leaked test schemas are cleaned by hand
-  (`console/README.md` §5).
+- **There is no reaper over `biz_%`.** Such a schema is indistinguishable from a real
+  customer's, so nothing sweeps it by name pattern, and nothing ever should. What
+  `rig:clean:all` sweeps is the **disposable** namespace `biz_test_*`, which
+  `SchemaName::forBusiness()` cannot produce without `--disposable` — a namespace no real
+  business can enter, rather than a guess about which names look like litter. A leaked
+  `biz_<hex>` from before that flag is still cleaned by hand (`console/README.md` §5).
 
 ---
 

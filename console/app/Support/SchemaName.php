@@ -41,12 +41,51 @@ final class SchemaName
     private const PATTERN = '/^biz_[a-z0-9_]{1,58}$/';
 
     /**
+     * The prefix that marks a schema as THROWAWAY, and the only thing standing
+     * between `rig:clean --all` and a real customer's data.
+     *
+     * ## Why the name carries this and not a registry
+     *
+     * A sweep over `biz_%` is forbidden and always will be: a fixture and a real
+     * business are indistinguishable there, which is the whole reason
+     * tests/manual/pg.php has no reaper. A sweep over `biz_test_%` is different
+     * in KIND, because forBusiness() cannot produce a name in this namespace —
+     * `test` is not hex, so the only door in is the explicit --disposable option
+     * on business:provision. No actor name, business name or branch code can put
+     * a real business here by accident, which is exactly what those free-text
+     * fields could never guarantee.
+     *
+     * The mark being the NAME also means it exists from `CREATE SCHEMA` onward.
+     * A mark written to the provisioning audit could not: ProvisioningAudit
+     * records only on a terminal outcome, so a run killed mid-provision writes
+     * no row at all — the leak this whole arrangement exists to sweep.
+     *
+     * The spelling is not new. console/tests/TestCase.php has minted
+     * `biz_test_<random>` for its pre-migrated fixtures since M1 and
+     * console/README.md §7 already documents sweeping those by name; this
+     * extends the same convention to the schemas business:provision creates,
+     * which is the gap README §5 named and could not close.
+     */
+    public const DISPOSABLE_PREFIX = 'biz_test_';
+
+    /**
      * The schema holding one business: biz_<32 hex>, derived from its UUID.
      *
      * Dashes are stripped rather than replaced so the result is 36 characters,
      * comfortably inside MAX_LENGTH, and the mapping stays reversible.
+     *
+     * A disposable business is `biz_test_<32 hex>` — 41 characters, and the SAME
+     * hex tail, which is what keeps toBusinessUuid() reversible for it. The
+     * credentials JSON that branch:provision emits carries `business.id`, and
+     * that value is recovered from the schema name and nowhere else.
+     *
+     * Note the asymmetry this creates, and it is deliberate: the reverse
+     * direction handles both prefixes, the FORWARD direction does not know
+     * which one a caller means. So a disposable business is targeted with
+     * `--schema=biz_test_<hex>`, never `--business=<uuid>` — see
+     * BranchCommand::schemaProblem(), which says so when it happens.
      */
-    public static function forBusiness(string $businessUuid): string
+    public static function forBusiness(string $businessUuid, bool $disposable = false): string
     {
         $normalized = strtolower(str_replace('-', '', trim($businessUuid)));
 
@@ -56,7 +95,20 @@ final class SchemaName
             );
         }
 
-        return 'biz_'.$normalized;
+        return ($disposable ? self::DISPOSABLE_PREFIX : 'biz_').$normalized;
+    }
+
+    /**
+     * Is this schema one `rig:clean --all` may destroy without asking?
+     *
+     * Prefix alone, deliberately: the console suite's own `biz_test_<random>`
+     * fixtures are disposable too, and they carry no UUID tail. Every schema
+     * this returns true for was created by something that declared itself
+     * throwaway.
+     */
+    public static function isDisposable(string $schema): bool
+    {
+        return str_starts_with($schema, self::DISPOSABLE_PREFIX);
     }
 
     /**
@@ -68,12 +120,20 @@ final class SchemaName
      * businesses registry to look it up in — deliberately, see
      * console/database/migrations-admin/ — and re-prompting for a UUID the schema name
      * already contains invites a mismatch nothing would catch.
+     *
+     * Handles both prefixes, because a disposable business provisions branches
+     * and emits credentials exactly as any other does. The suite's own
+     * `biz_test_<12 random>` fixtures still throw here and must keep throwing —
+     * twelve random characters are not 32 hex, so they never reach the tail
+     * check as a valid UUID (IdentifierSafetyTest asserts precisely this).
      */
     public static function toBusinessUuid(string $schema): string
     {
         $schema = self::validate($schema);
 
-        $hex = substr($schema, strlen('biz_'));
+        $prefix = self::isDisposable($schema) ? self::DISPOSABLE_PREFIX : 'biz_';
+
+        $hex = substr($schema, strlen($prefix));
 
         if (! preg_match('/^[0-9a-f]{32}$/', $hex)) {
             throw new InvalidArgumentException(

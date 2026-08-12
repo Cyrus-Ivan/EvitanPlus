@@ -101,8 +101,10 @@ admin screens" for the surface and "an Admin" for the person.
 The two-server **development harness** that runs **two tills of one throwaway business** against
 the live Supabase project — `MNL` on `127.0.0.1:8131`, `CEB` on `127.0.0.2:8132` — and destroys
 the business schema, both branch roles and both local SQLite files on Ctrl-C.
-*Anchor:* `tests/manual/rig.sh`; `composer.json` `scripts.rig` / `rig:wizard` / `rig:clean`;
-`tests/manual/.runtime/state.env`.
+*Anchor:* `tests/manual/rig.sh`; `composer.json` `scripts.rig` / `rig:wizard` / `rig:clean` /
+`rig:clean:all`; `tests/manual/.runtime/state.env`.
+Its business is a **disposable schema** (§3), which is what lets `rig:clean:all` recover a run
+that died leaving no state file at all.
 ✗ **Not** a till, a branch device or an install. One rig serves **two** of each, from two
 `php -S` servers over two SQLite files — which is the whole point of it, and the reason §2's
 four words have to stay apart when writing about it.
@@ -191,6 +193,33 @@ its own phrase.
 The Postgres schema **`biz_<32-hex of the business UUID>`** holding every table and **every
 branch's** data for one business. A business never spans more than one.
 *Anchor:* `console/app/Support/SchemaName.php` (`forBusiness()`, `/^biz_[a-z0-9_]{1,58}$/`).
+
+### Disposable schema
+A business schema named **`biz_test_<tail>`** instead of `biz_<hex>`, declaring itself
+**throwaway**: `composer rig:clean:all` destroys every one of them, unasked and without
+looking at what is inside.
+
+Created by exactly two things — `business:provision --disposable` (the rig, the console
+fixture, the integration fixture), which puts the 32-hex tail there; and
+`console/tests/TestCase.php`'s own pre-migrated fixtures, which put twelve random
+characters there. Both are throwaway, so the sweep tests the **prefix** and not the tail.
+
+The point is that the namespace is **unreachable by accident**. `forBusiness()` maps a UUID
+to `biz_<hex>` and cannot produce `biz_test_` without the flag, so no real business can land
+in the swept namespace whatever its actor, business name or branch code. That is what makes
+`sweep` a different act from the reaper `tests/manual/pg.php` refuses to be: a sweep over
+`biz_%` is forbidden and always will be.
+
+Two consequences worth knowing. The mark is the **name**, so it exists from `CREATE SCHEMA`
+onward and a provision killed by a SIGINT is still swept — a mark in `provisioning_audit`
+could not manage that, since it is written only on a terminal outcome. And a disposable
+business is targeted by **`--schema=biz_test_<hex>`, never `--business=<uuid>`**: the reverse
+derivation handles both prefixes, but the forward one cannot know which was meant.
+*Anchor:* `SchemaName::DISPOSABLE_PREFIX` / `isDisposable()`; `tests/manual/pg.php sweep`;
+`composer.json` `scripts.rig:clean:all`.
+✗ **Not** a signal about the data. A disposable business is a real, fully migrated business
+with real sales in it — the rig seeds a year of them. Disposable says who may delete it, not
+what it holds.
 
 ### Console schema
 **`evitan_console`** — the developer-side schema holding `provisioning_audit` and
@@ -742,6 +771,10 @@ the query-builder rows a cross-branch read returns.
 > like to see everything" but that a **refusal is unreadable without it**. The pull filters the
 > ledger to one branch, so the branch that asked another branch to move stock can only ever read
 > the answer upstream.
+> [Report email] takes the same parameter with the same Owner-only widening, refused by the same
+> `ReportsController::normalizeScope()` before a document is built — so an emailed report can
+> only ever cover branches its sender was entitled to read. The **scheduled** send is `local`
+> always: there is no actor to authorize a wider one and no screen to fall back on (§10).
 
 ### Pull
 Fetching **deltas** of pulled tables by `updated_at`, plus the recomputed stock baseline.
@@ -1228,3 +1261,132 @@ is the one to trust.
 - **`sync_outbox` is never pruned.** `Outbox::markSynced()` sets `synced_at` and nothing ever
   deletes the row, so the table grows for the life of the install. Harmless at one shop's volume,
   unbounded in principle.
+
+---
+
+## 10. Report delivery
+
+The sales report leaves the device by **email** and by nothing else. The PDF download
+(`reports.export`) was removed outright when this was built; there is no fallback, and no other
+export remains in the product — CSV export went at M13 and Database Backup at M11.6.
+
+Everything in this section is a **device-local setting**, which is the load-bearing term the whole
+design rests on and which had no entry before now.
+
+### Device-local setting
+A key/value row in the local `settings` table whose key is **not** in
+`App\Support\Settings\BusinessSettings::KEYS`. Two enforcement points make that membership
+meaningful rather than a naming convention: `Puller::scope()` narrows the settings *read* to those
+six keys and `Puller::applySettings()` upserts by `key`, and `Hydrator::copySettings()` does both
+again. A key outside the list is therefore invisible to a pull and to a re-hydrate.
+*Anchor:* `App\Support\Printing\PrinterSettings::DEFAULTS` (Phase 11) and
+`App\Support\Email\ReportEmailSettings::DEFAULTS`. Two tests assert the guarantee rather than
+reasoning about it: `PullTest`'s
+`test_settings_are_restricted_to_the_business_keys_and_leave_the_device_local_ones_alone` and
+`HydrationTest::test_the_device_local_settings_survive_the_settings_copy`.
+✗ **Not** a business setting. Those six are SHARED: an edit is an [online write], mirrored to
+Postgres and pulled down by every other branch. These are this device's own, writable offline,
+mirrored nowhere.
+✗ **Not** a second table. Both live in `settings`, which is exactly why the two enforcement points
+above exist — the local table is deliberately **wider by row** than the Postgres one.
+✗ **Not** a candidate for tidying into `KEYS` later. Folding the printer keys in would retune
+every branch's receipt printer from one device; folding the report-email keys in would do the same
+to every branch's mail account, and would put an SMTP password into a schema every branch role can
+`SELECT`. The password is sealed under the **per-install** `APP_KEY`, which does not travel
+between installs, so a mirrored copy would be unopenable at the far end anyway.
+
+### Report email
+Emailing the sales report on screen, as a PDF attachment, to a list of recipients. Admin+ like
+`/reports` itself, with the consolidated [branch scope] still Owner-only and still refused inside
+the controller.
+*Anchor:* `ReportsController::email()`, `App\Mail\SalesReportMail`,
+`App\Support\Email\ReportMailer`.
+✗ **Not** a download. `reports.export` is gone, route and action, and there is no secondary
+button: a report that lands in the Downloads folder of a shop counter has not left the building.
+✗ **Not** queued. `config/nativephp.php` starts no queue worker and nothing in the app is
+`ShouldQueue`, so the send is **synchronous** inside the request, bounded by
+`SmtpTransportConfig::TIMEOUT_SECONDS`.
+✗ **Not** one message per recipient. One message carries them all on `To:` — they are the
+business's own people and the document is identical, and N sends would only add a partial-success
+state with nothing honest to show for it.
+✗ **Not** allowed to fail loudly. A refused or failed send is an error toast plus a
+`report.email_failed` audit row, never a 500 and never a lost page — the same rule the receipt
+printer has had since Phase 11.
+
+### Default recipients
+The stored address list a send starts from. The dialog ticks them all on open and lets the sender
+untick, remove, or add one **for that send only**.
+*Anchor:* `ReportEmailSettings::recipients()`, key `report_email_recipients`, stored
+newline-separated; `resources/js/components/reports/email-report-dialog.tsx`.
+✗ **Not** users. `App\Models\User` has no email column — authentication is by username — and
+nothing derives an address from an account.
+✗ **Not** changed by sending. `ReportsController::email()` reads the recipients from the request
+and never writes back; the list is the Owner's to manage in Business Settings.
+✗ **Not** JSON. A blob that fails to parse has to fail somewhere, and the two available failures
+are a 500 on the settings page or a silent degrade to "no recipients" that stops the scheduled
+send forever. `explode()` is total, and `email:rfc` forbids a newline inside an address.
+
+### Sending period
+How often the report goes out **on its own**: `off | daily | weekly | monthly | yearly`.
+*Anchor:* key `report_email_period`; `App\Console\Commands\SendScheduledSalesReport`;
+`bootstrap/app.php`'s `withSchedule()`, the app's first.
+✗ **Not** the report's `period`. That one is *what window* a report covers; this one is *how
+often* one is sent. They share a vocabulary and are different settings — a monthly schedule sends
+a monthly report, but only because the command uses one value for both.
+✗ **Not** a background service. NativePHP ticks `artisan schedule:run` once a minute **while the
+app window is open** and not otherwise, which is why the command is marker-driven rather than
+fired at an instant it could simply miss.
+✗ **Not** cost-free by default. The scheduled report omits cost, COGS and profit unless the Owner
+has ticked `report_email_include_cost`: Item Cost is Owner-only to *view*, and an emailed report
+has no viewer whose role that could be true of. A report sent by hand follows the sender's own
+gate, exactly as the download did.
+
+### Last sent period marker
+The record of which period has already gone out, as `"<period>:<window start Y-m-d>"` — e.g.
+`weekly:2026-08-03`.
+*Anchor:* `ReportEmailSettings::lastPeriod()`, key `report_email_last_period`, deliberately
+outside `DEFAULTS` so no form can write it and no settings diff can mention it.
+✗ **Not** a timestamp of the send. It names the *window*, which is what makes the question
+answerable at any moment rather than only at one.
+✗ **Not** a date alone. It carries the period **kind** too, because a weekly window's start can
+equal a daily window's start, and a date-only marker would suppress the first send after the
+Owner switched daily → weekly.
+✗ **Not** a backlog. The window is always the last *complete* period relative to now, so a device
+that was off for three weeks sends **one** report — last week's — not three. A marker holds a
+position, not a queue; the missed windows are still on the device and any of them can be emailed
+by hand.
+> **Known consequence.** Every device with a period set sends its own branch-local report. One
+> device per branch (§2 "Till") makes that one email per branch; the day that constraint ends it
+> becomes N duplicates, and this is the entry to come back to.
+
+### Sender credentials
+The SMTP account the report is sent from: host, port, encryption, username, password, from-address
+and from-name. The password is sealed with `Crypt::encryptString()` and never leaves the device
+in the clear or otherwise.
+*Anchor:* `ReportEmailSettings::password()` / `::seal()`, key `report_email_smtp_password`;
+`App\Support\Email\SmtpTransportConfig` builds the runtime mailer from them.
+✗ **Not** the [branch credential] (§7). Different secret, different scope, different lifecycle,
+and the console knows nothing about this one. Collapsing the two into "the credential" is exactly
+the failure §0 exists to prevent.
+✗ **Not** something the frontend ever sees. `forDisplay()` omits the key entirely and reports only
+`password_set`; a blank field on submit means "keep the stored one" and the request omits the key
+so the ciphertext is never handled.
+✗ **Not** something the audit log ever sees either. `forAudit()` substitutes `(set)`/`(unset)`
+before the diff is taken, because `App\Models\AuditLog` is pushed upward and anything in
+`old_values`/`new_values` reaches a schema every branch role can `SELECT`.
+✗ **Not** guaranteed openable. Settings rows moved to an install with a different `APP_KEY`
+decrypt to nothing; `password()` reports and returns null rather than throwing, so the Owner can
+still open the page that fixes it.
+✗ **Not** "encryption: none means plaintext". Symfony's ESMTP transport opportunistically
+STARTTLSes when the server advertises it and there is no knob that forbids it, so the field says
+*"the server may still upgrade it"* rather than promising a plain connection.
+
+### Test email
+A short message with no attachment and no figures, sent to the stored [default recipients] from
+Business Settings, to prove the [sender credentials] work.
+*Anchor:* `ReportEmailSettingsController::test()`, `App\Mail\TestReportEmailMail`; the analogue of
+`PrinterSettingsController::test()`, and worded the same way when it refuses.
+✗ **Not** a report. No PDF, no totals — a recipient who gets one should not have to wonder
+whether it was.
+✗ **Not** a substitute for `isConfigured()`. That answers whether a send can be *attempted*;
+credentials are only ever proven by trying them, which is what this is for.

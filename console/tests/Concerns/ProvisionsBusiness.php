@@ -70,6 +70,12 @@ trait ProvisionsBusiness
         $exit = Artisan::call('business:provision', [
             '--no-interaction' => true,
             '--force' => true,
+            // Names the schema biz_test_<hex>, which is what makes a fixture a
+            // run of this suite abandoned part-way leaves behind sweepable by
+            // `composer rig:clean:all`. Before this, the fixture ran the real
+            // command and got a real biz_<uuid> name, indistinguishable from a
+            // customer's — README §5 named that leak and could not close it.
+            '--disposable' => true,
             '--owner-name' => 'Fixture Owner',
             '--username' => 'fixture_owner',
             '--owner-password' => self::OWNER_PASSWORD,

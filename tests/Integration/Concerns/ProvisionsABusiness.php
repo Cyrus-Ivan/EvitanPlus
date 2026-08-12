@@ -133,6 +133,9 @@ trait ProvisionsABusiness
             '--branch-address=1 Test Street',
             '--out='.$out,
             '--actor='.$actor,
+            // biz_test_<hex>, so an integration run killed before its teardown
+            // leaves something `composer rig:clean:all` can sweep.
+            '--disposable',
             '--force',
             '--no-interaction',
         ]);

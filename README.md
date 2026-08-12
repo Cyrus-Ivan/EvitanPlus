@@ -14,7 +14,8 @@
 - **Immutable sales history** — completed transactions and line items never change. Selling price and item cost are snapshotted at time of sale, so later price edits never rewrite past sales. The transaction number is a continuous, gapless, zero-padded running serial (`0000000001`, never resets — the BIR-compliant shape) that doubles as the receipt number.
 - **Returns & defects** — partial and multiple returns (restore stock) and defect write-offs (do not restore stock), recorded in a dedicated `sale_returns` family that references the original sale without ever mutating it.
 - **Receipt printing** — driverless ESC/POS straight to the device (USB / Bluetooth / network socket), 58mm and 80mm, auto-print, cash-drawer kick, and reprint. A printing failure **never** rolls back a completed sale.
-- **Reports** — daily / weekly / monthly / yearly sales on one page with drill-down buckets, a stacked-by-item net-sales chart, and PDF export. Totals are always recomputed from sales minus returns minus defects; COGS and profit are Owner-only.
+- **Reports** — daily / weekly / monthly / yearly sales on one page with drill-down buckets and a stacked-by-item net-sales chart. Totals are always recomputed from sales minus returns minus defects; COGS and profit are Owner-only.
+- **Reports by email** — the report leaves the device as an emailed PDF and by no other route; the download is gone, and it was the last export in the product. Sending starts from a configured list of recipients, each tickable, with room to add one for that send only. The Owner manages the list, the sending account, and an optional schedule (daily / weekly / monthly / yearly) that emails this branch's last complete period on its own. All of it is configured per device in Business Settings, the sending password sealed under the per-install `APP_KEY`. Cost and profit follow the sender's own permission when a report is sent by hand, and are left out of the scheduled one unless the Owner opts in.
 - **Roles & permissions** — Owner > Admin > Cashier, enforced at routes, actions, and UI. **Item cost is Owner-only** everywhere, including reports and API responses.
 - **Admin & ops** — user management (create / archive / reset password / change role), login history (login, logout, crash, forced logout — a power loss is indistinguishable from a crash after the fact and is recorded as one), an immutable audit log of every significant action (Admin+ view, cost redacted for non-Owners).
 - **Multi-branch sync** — every local write is enqueued in an outbox and carried upward by a four-step sync cycle (version gate → push → pull → heartbeat), which also brings down catalog, staff and settings changes made at other branches. The header shows the unsynced count and a **Sync now** button on every screen; receipt serials are branch-prefixed (`MNL-0000000001`).
@@ -228,6 +229,7 @@ php console/artisan business:provision  # Provision a business + its first branc
 composer rig          # Two tills of a throwaway business, 8131 + 8132 (Ctrl-C tears down)
 composer rig:wizard   # As rig, but un-hydrated — drive the setup wizard yourself
 composer rig:clean    # Destroy what a killed rig left behind
+composer rig:clean:all # …and sweep every leftover disposable (biz_test_*) schema
 ```
 
 ## Building a release
@@ -318,18 +320,29 @@ composer verify:hydrate
 
 The same flow, rehearsed on your own machine. `composer rig` provisions a **real
 throwaway business** with two branches on the live Supabase project, seeds a catalog
-with different stock per branch, hydrates two local SQLite databases, and serves them
-as two tills:
+with different stock per branch, four staff accounts and **a year of sales**, hydrates
+two local SQLite databases, and serves them as two tills:
 
 | Branch | URL | Local database |
 |---|---|---|
 | **MNL** (Manila) | `http://127.0.0.1:8131` | `tests/manual/.runtime/branch-a.sqlite` |
 | **CEB** (Cebu) | `http://127.0.0.2:8132` | `tests/manual/.runtime/branch-b.sqlite` |
 
-Sign in on either as **`owner` / `password`** — the same account, because it is one
-business. It runs in the **foreground**, and **Ctrl-C destroys everything it made**:
+Sign in on either as **`owner`**, **`admin`**, **`cashier1`** or **`cashier2`**, all with
+password **`password`** — the same four accounts on both tills, because users are
+business-wide. It runs in the **foreground**, and **Ctrl-C destroys everything it made**:
 both servers, both SQLite files, both credentials JSONs, the Postgres schema and both
 branch roles.
+
+The seeded year ends **today** and is busier at MNL than CEB, so `/reports` has twelve
+months of shape to step through, the consolidated per-branch table has two rows that
+differ, and `/sales` paginates properly. Stock is worked **backwards** from it: each
+branch's opening quantity is its published figure minus everything the year moved, so
+the tills still come up on exactly the numbers above — CEB short of a few things and out
+of Party Size chips — and every snapshot equals the ledger sum behind it, which is the
+one thing a seeded branch must get right or it can never sync (`RemoteStock::recompute()`).
+The trade-off is that a branch which has sold something has no opening window, so the
+opening-stock import is only reachable from `rig:wizard`.
 
 This is a **perception tool, not a gate** — CI never runs it and it asserts nothing.
 Correctness belongs to `composer verify`, `verify:hydrate` and `verify:console`; the rig
@@ -340,7 +353,7 @@ AppImage for every look.
 Three modes:
 
 ```bash
-composer rig          # Both tills hydrated, ready to sell
+composer rig          # Both tills hydrated, a year of trading behind them, ready to sell
 composer rig:wizard   # Stops before hydrating: both devices open on /setup, and the
                       # banner prints the two credentials JSON paths for you to type in
 composer rig:clean    # Destroy what a run killed before its Ctrl-C teardown left behind
@@ -350,6 +363,11 @@ composer rig:clean    # Destroy what a run killed before its Ctrl-C teardown lef
 the JSON paths **absolute** on purpose: the wizard takes a filesystem path, not an
 upload, and the **Browse** button exists only in the desktop runtime. Leave "delete the
 file after import" unticked and you can retry without re-provisioning.
+
+It also seeds **no sales**, and that is the second reason to reach for it: the two modes
+are two different worlds. `rig` is a branch a year into its life; `rig:wizard` is a
+brand-new one, which is the only kind that still has an **opening window** and can
+therefore show the opening-stock import.
 
 **Before the first run** you need `npm run build` (the rig serves a production build),
 `(cd console && composer install)`, a `console/.env` carrying `CONSOLE_DB_*`, the
@@ -396,6 +414,24 @@ provisioning (no completed audit row, no `branches` row, no `schema_meta`) with 
 line for each. It **only prints**. Run it while a suite or another rig is going and you
 will see healthy schemas mid-build under the same flag, which is exactly why it does not
 act on its own.
+
+For everything else there is `composer rig:clean:all`, which does all of the above and
+then sweeps **every disposable schema**:
+
+```bash
+composer rig:clean:all   # this run's artifacts, then every biz_test_* schema and its roles
+```
+
+The rig provisions with `--disposable`, so its business is named `biz_test_<hex>` rather
+than `biz_<hex>` — and so do `verify:console` and `verify:hydrate`. That prefix is the
+whole licence to sweep: `SchemaName::forBusiness()` cannot produce it without the flag, so
+a real customer's schema can never be in the swept namespace, whatever its actor or branch
+code. Because the mark is the *name*, it is there from `CREATE SCHEMA` onward — the one
+leak the paragraphs above describe, a SIGINT during provisioning, is swept too even when
+no state file and no audit row were ever written.
+
+It refuses to run while a `phpunit` or another rig is alive, since those hold disposable
+schemas for the length of a test class; that check only sees this machine.
 
 Two things to know while using it:
 

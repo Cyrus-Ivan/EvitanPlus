@@ -84,6 +84,19 @@ abstract class BranchCommand extends Command
     protected function schemaProblem(string $schema): ?string
     {
         if (! SchemaConnection::exists($schema)) {
+            // The one near-miss worth naming, because --business is how an
+            // operator would reflexively target it and the derivation only runs
+            // one way: SchemaName::forBusiness() maps a UUID to biz_<hex>, never
+            // to the disposable twin. Only offered when that twin actually
+            // exists, so this can never be a misleading guess.
+            $disposable = SchemaName::DISPOSABLE_PREFIX.substr($schema, strlen('biz_'));
+
+            if (! SchemaName::isDisposable($schema) && SchemaConnection::exists($disposable)) {
+                return "Schema [{$schema}] does not exist, but [{$disposable}] does — that business is "
+                    ."disposable, and a disposable business is targeted with --schema={$disposable} "
+                    .'rather than --business.';
+            }
+
             return "Schema [{$schema}] does not exist. Check the business UUID, or create it with: "
                 .'php console/artisan business:provision';
         }

@@ -10,6 +10,7 @@ use Provisioning\Support\BusinessSettingKeys;
 use Provisioning\Support\CredentialIssuance;
 use Provisioning\Support\ProvisioningAudit;
 use Provisioning\Support\SchemaConnection;
+use Provisioning\Support\SchemaName;
 use Provisioning\Support\SchemaVersion;
 use Provisioning\Support\SupabaseEndpoint;
 use Tests\Concerns\ProvisionsBusiness;
@@ -32,6 +33,34 @@ class BusinessProvisionTest extends TestCase
         self::tearDownProvisionedBusiness();
 
         parent::tearDownAfterClass();
+    }
+
+    /**
+     * The fixture provisions with --disposable, and this asserts the one thing
+     * that makes a leaked fixture recoverable: the flag reached the real DDL and
+     * the schema is genuinely IN the swept namespace.
+     *
+     * Worth a Feature test rather than leaving it to IdentifierSafetyTest,
+     * because the unit test proves SchemaName's arithmetic and this proves the
+     * option is actually wired to it. A silently-ignored --disposable would
+     * leave every suite naming schemas `biz_<uuid>` again, and nothing else here
+     * would notice — the business works perfectly either way. It is only
+     * `rig:clean --all` that stops being able to find it.
+     */
+    public function test_the_fixture_business_lands_in_the_disposable_namespace(): void
+    {
+        $this->assertTrue(
+            SchemaName::isDisposable($this->schema()),
+            "The fixture schema [{$this->schema()}] is not disposable, so a run that dies "
+            .'before tearDownAfterClass leaks a schema `composer rig:clean:all` cannot sweep.'
+        );
+
+        // The hex tail survives the prefix, which is what keeps the credentials
+        // JSON's business.id recoverable for branch:provision.
+        $this->assertSame(
+            $this->provisioned()['business']['id'],
+            SchemaName::toBusinessUuid($this->schema())
+        );
     }
 
     public function test_it_creates_and_fully_migrates_the_business_schema(): void

@@ -164,10 +164,59 @@ class IdentifierSafetyTest extends TestCase
     public function test_a_schema_not_derived_from_a_uuid_has_no_business_uuid(): void
     {
         // Valid to interpolate, but not something forBusiness ever produced —
-        // the test schemas are exactly this shape.
+        // the suite's own biz_test_<random> fixtures are exactly this shape, and
+        // they must keep throwing now that the disposable prefix is understood:
+        // twelve random characters are not a UUID however the name begins.
         $this->expectException(InvalidArgumentException::class);
 
         SchemaName::toBusinessUuid('biz_test_abcdef123456');
+    }
+
+    /**
+     * The disposable namespace is the ONLY thing standing between
+     * `rig:clean --all` and a real customer's schema, so the property that
+     * matters is not that the prefix is applied — it is that it is applied ONLY
+     * when asked for.
+     */
+    public function test_a_business_schema_is_never_disposable_unless_asked(): void
+    {
+        $uuid = '0198f4c2-3a1b-7c4d-8e9f-0a1b2c3d4e5f';
+
+        $this->assertSame('biz_0198f4c23a1b7c4d8e9f0a1b2c3d4e5f', SchemaName::forBusiness($uuid));
+        $this->assertFalse(SchemaName::isDisposable(SchemaName::forBusiness($uuid)));
+
+        $this->assertSame(
+            'biz_test_0198f4c23a1b7c4d8e9f0a1b2c3d4e5f',
+            SchemaName::forBusiness($uuid, disposable: true)
+        );
+        $this->assertTrue(SchemaName::isDisposable(SchemaName::forBusiness($uuid, disposable: true)));
+    }
+
+    /**
+     * A disposable business provisions branches and emits credentials like any
+     * other, and `business.id` in that JSON is recovered from the schema name
+     * and nowhere else — so the reverse derivation has to handle both prefixes
+     * or `branch:provision` breaks against exactly the businesses the suites use.
+     */
+    public function test_a_disposable_schema_still_yields_its_business_uuid(): void
+    {
+        $uuid = '0198f4c2-3a1b-7c4d-8e9f-0a1b2c3d4e5f';
+
+        $this->assertSame(
+            $uuid,
+            SchemaName::toBusinessUuid(SchemaName::forBusiness($uuid, disposable: true))
+        );
+    }
+
+    /**
+     * `biz_test` without its trailing underscore is an ordinary business schema
+     * name, and treating it as disposable would strip four characters off a hex
+     * tail and quietly report the wrong business.
+     */
+    public function test_the_disposable_prefix_needs_its_separator(): void
+    {
+        $this->assertFalse(SchemaName::isDisposable('biz_testing_a_thing'));
+        $this->assertTrue(SchemaName::isDisposable('biz_test_abcdef123456'));
     }
 
     /**

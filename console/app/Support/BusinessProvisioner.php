@@ -107,10 +107,18 @@ final class BusinessProvisioner
     {
         // Both identities are minted by the caller, before the preflight, so the
         // schema and role names checked for collisions are the ones actually used.
+        //
+        // `disposable` has to travel with them for that to stay true: this
+        // re-derives the schema name rather than taking the caller's string, so
+        // a flag known only to the command makes the preflight check
+        // biz_test_<hex> while this creates biz_<hex>. Not a hypothetical — the
+        // first cut of --disposable did exactly that, and the only visible
+        // symptom was a fixture nobody could sweep. Anything else that varies
+        // the schema name has to come through $data for the same reason.
         $businessId = (string) ($data['business_id'] ?? Str::orderedUuid());
         $branchId = (string) ($data['branch_id'] ?? Str::orderedUuid());
 
-        $schema = SchemaName::forBusiness($businessId);
+        $schema = SchemaName::forBusiness($businessId, (bool) ($data['disposable'] ?? false));
         $role = RoleName::forBranch($branchId);
         $code = BranchCode::validate((string) $data['branch_code']);
 

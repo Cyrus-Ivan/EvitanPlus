@@ -387,11 +387,18 @@ class HydrationTest extends TestCase
         $this->assertSame(42, (int) DB::table('stock_snapshots')->where('variant_id', self::$variantId)->value('quantity'));
     }
 
-    public function test_the_printer_configuration_survives_the_settings_copy(): void
+    public function test_the_device_local_settings_survive_the_settings_copy(): void
     {
         // settings is the one table where the local mirror is deliberately wider
-        // than Postgres: the printer lives in it and has no upstream row. A
-        // whole-table copy would erase it.
+        // than Postgres: the printer lives in it, and so does the report-email
+        // configuration, and neither has an upstream row. A whole-table copy
+        // would erase both.
+        //
+        // The report-email keys are written directly because the wizard does
+        // not collect them — which is exactly the case that matters, a rebuilt
+        // device re-hydrating over configuration it already had.
+        Setting::query()->create(['key' => 'report_email_smtp_host', 'value' => 'smtp.manila.test']);
+
         $this->post(route('setup.store'), $this->payload([
             'configure_printer' => '1',
             'receipt_paper_size' => '80mm',
@@ -408,8 +415,9 @@ class HydrationTest extends TestCase
 
         $this->assertSame('80mm', $printer['receipt_paper_size']);
         $this->assertSame('192.168.1.50', $printer['receipt_network_host']);
+        $this->assertSame('smtp.manila.test', Setting::query()->where('key', 'report_email_smtp_host')->value('value'));
 
-        // Both sets of keys, in the same table, neither having eaten the other.
+        // All three sets of keys, in the same table, none having eaten another.
         $this->assertSame(self::BUSINESS_NAME, Setting::query()->where('key', 'business_name')->value('value'));
     }
 

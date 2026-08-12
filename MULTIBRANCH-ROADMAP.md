@@ -1790,6 +1790,76 @@ but that **the branch can still sync**, which is exactly what the M7 rig defect 
 
 ---
 
+# Phase M14 — The report leaves the building ✅
+
+The last export in the product, and the first thing it does is stop being an export.
+
+`GET reports/export` handed the Owner a PDF that landed in the Downloads folder of a machine
+that is a shop counter rather than a desk. Nobody wanted the file *there*; they wanted the report
+somewhere they could read it, which is an inbox. So the download is **deleted — route, action and
+`Pdf::download()`, with no fallback** — and `POST reports/email` sends the same document as an
+attachment to a list of recipients. CSV export went at M13 and Database Backup at M11.6; this was
+the third and last of them.
+
+- **The dialog is the feature.** Sending starts from the configured [default recipients], each one
+  ticked and untickable, removable, and joinable by an address typed for **that send only**.
+  `ReportsController::email()` reads the list from the request and never writes back — the stored
+  list is the Owner's to manage in Business Settings, not something a send edits by accident.
+- **Same route group, same authority.** It sits in `role:admin` beside `/reports` itself, because
+  the consolidated [branch scope] is refused *inside* the controller by `normalizeScope()` — which
+  runs **first**, so an Admin asking for `all` is refused before a document is built rather than
+  after. Cost follows the sender's own gate, exactly as the download did.
+- **Three thin lifts, gated on a no-op.** `ReportPeriods`, `SalesReportBuilder` and
+  `SalesReportPdf` came out of the controller so the screen, the manual send and the scheduled one
+  land on one document; the consolidated read stayed behind, because it needs an online read, the
+  roster and the fall-back-and-say-so behaviour that a console command has no business growing.
+  The extraction was not allowed to proceed until the existing reports tests passed **unchanged**.
+- **Every setting is device-local, and that is a decision.** New `report_email_*` rows in the local
+  `settings` table, deliberately *not* in `BusinessSettings::KEYS`, which is what makes them
+  invisible to `Puller::scope()` and `Hydrator::copySettings()`. So: **no migration, no
+  `SCHEMA_VERSION` bump, no `BranchGrants` change, no console parity edit, nothing mirrored** —
+  the first phase since M11 of which all of that is true. A mirrored SMTP password would sit in
+  Postgres readable by every branch role, and it is sealed under the **per-install `APP_KEY`**,
+  which does not travel between installs anyway. `docs/glossary.md` §10 is normative, and its
+  "device-local setting" entry exists to stop a future phase tidying these keys into `KEYS`.
+- **The trap: `AuditLog` is pushed upward.** A settings diff taken over `all()` would have copied
+  the sealed password into `audit_logs.new_values` and straight off the device. The diff is taken
+  over `forAudit()`, which substitutes `(set)`/`(unset)`, and there is a regression test for
+  exactly that and nothing else.
+- **Synchronous, because there is no worker.** `config/nativephp.php` starts none and nothing in
+  the app is `ShouldQueue`, so a queued mail would sit in the jobs table and the only symptom would
+  be a report that never arrived. The cost is a blocked request, bounded by an explicit 15s
+  transport timeout — `config/mail.php` ships `null`, which is PHP's own socket timeout. A
+  `Mail::purge()` in a `finally` covers the other half: `MailManager` caches resolved mailers and
+  the NativePHP PHP process is long-lived, so without it a settings change would be ignored until
+  restart *and* the decrypted password would linger in the config repository.
+- **The app's first `withSchedule()`.** NativePHP already ticks `artisan schedule:run` once a
+  minute *while the window is open*, so nothing else needed wiring — but it stops when the window
+  closes, which is why `reports:send-scheduled` runs every fifteen minutes and decides for itself
+  whether a period is due rather than firing at an instant it could simply miss. The marker is
+  `weekly:2026-08-03`: it carries the period **kind** as well as the date, because a weekly
+  window's start can equal a daily one's and a date-only marker would suppress the first send
+  after daily → weekly.
+- **One report, not a backlog.** The window is always the last *complete* period relative to now,
+  so a device off for three weeks sends **one** — last week's. A marker holds a position, not a
+  queue; the missed windows are still on the device and any of them can be emailed by hand.
+- **The scheduled send omits cost unless the Owner opts in.** It is always branch-local (no actor
+  to authorize a wider scope, no screen to fall back on), and "Item Cost is Owner-only to view"
+  has no viewer it can be true of when the recipients are free-typed addresses. So it is off by
+  default and behind an Owner-only checkbox — a deliberate carve-out, made by the only person
+  entitled to make it, and the field says what it does.
+
+## Verified
+772 offline tests (48 new across `tests/Unit/Email/`, `tests/Feature/Email/`,
+`tests/Feature/Reports/ReportEmailTest.php` and `ScheduledReportEmailTest.php`), plus the two sync
+guards amended so the device-local guarantee is **asserted** rather than reasoned about:
+`PullTest::test_settings_are_restricted_to_the_business_keys_and_leave_the_device_local_ones_alone`
+and `HydrationTest::test_the_device_local_settings_survive_the_settings_copy`. `SmtpTransportConfig`
+is unit-tested on its own because `Mail::fake()` bypasses the transport entirely, so nothing else
+in the suite would ever notice the mapping being wrong.
+
+---
+
 ## Deferred (post-M12, tracked in `MULTIBRANCH-BRAINSTORM.md` §19)
 - Multiple tills per branch (shared-stock coordination).
 - Supabase Realtime channel (instant reconnect + live console↔branch monitor/command).

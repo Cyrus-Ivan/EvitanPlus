@@ -1,11 +1,13 @@
 <?php
 
+use App\Console\Commands\SendScheduledSalesReport;
 use App\Exceptions\OfflineWriteException;
 use App\Http\Middleware\EnforceBootSession;
 use App\Http\Middleware\EnsureUserHasRole;
 use App\Http\Middleware\HandleInertiaRequests;
 use App\Http\Middleware\RequireInitialSetup;
 use App\Http\Middleware\RequirePasswordChange;
+use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -21,6 +23,27 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
     )
+    /*
+     * The app's only scheduled work. NativePHP's runtime already ticks
+     * `artisan schedule:run` once a minute while the window is open, so this
+     * needs no other wiring — but it stops when the window closes, which is why
+     * the command decides for itself whether a period is due rather than being
+     * fired at an instant it could simply miss. See SendScheduledSalesReport.
+     *
+     * Every fifteen minutes, not daily: the command is idempotent and its
+     * nothing-to-do path is two indexed reads, and a fixed instant is exactly
+     * the thing a device-bound scheduler gets wrong. withoutOverlapping because
+     * a send blocks for up to the SMTP timeout while the next minute fires.
+     *
+     * Keep this closure free of database reads — it is evaluated on EVERY
+     * artisan invocation, including `migrate` on a device whose tables do not
+     * exist yet.
+     */
+    ->withSchedule(function (Schedule $schedule): void {
+        $schedule->command(SendScheduledSalesReport::class)
+            ->everyFifteenMinutes()
+            ->withoutOverlapping();
+    })
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->web(append: [
             // First: a device that has not been hydrated into a branch is routed

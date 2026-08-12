@@ -2,9 +2,12 @@
 
 namespace Tests\Feature\Reports;
 
+use App\Mail\SalesReportMail;
 use App\Models\Instance;
 use App\Models\User;
+use App\Support\Email\ReportEmailSettings;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Mail;
 use Tests\TestCase;
 
 /**
@@ -55,7 +58,9 @@ class ConsolidatedReportScopeTest extends TestCase
         $this->actingAs($admin)
             ->get(route('reports', ['scope' => '00000000-0000-0000-0000-00000000e15e']))
             ->assertForbidden();
-        $this->actingAs($admin)->get(route('reports.export', ['scope' => 'all']))->assertForbidden();
+        $this->actingAs($admin)
+            ->post(route('reports.email'), ['recipients' => ['owner@shop.test'], 'scope' => 'all'])
+            ->assertForbidden();
 
         // Including this branch's own id. It resolves to `local`, which the
         // Admin is entitled to — but only AFTER the permission check, so naming
@@ -120,17 +125,33 @@ class ConsolidatedReportScopeTest extends TestCase
             ->assertInertia(fn ($page) => $page->where('auth.permissions.view-consolidated-reports', false));
     }
 
-    public function test_an_offline_consolidated_export_still_streams_this_branch_s_pdf(): void
+    public function test_an_offline_consolidated_report_still_emails_this_branch_s_pdf(): void
     {
-        // The fallback has to reach the PDF too: an export that 500s because the
-        // connection dropped is worse than one that prints the branch it could
-        // actually read, so long as the document says which branch that is.
-        $response = $this->actingAs(User::factory()->owner()->create())
-            ->get(route('reports.export', ['period' => 'daily', 'scope' => 'all']));
+        // The fallback has to reach the emailed document too: a send that 500s
+        // because the connection dropped is worse than one that reports the
+        // branch it could actually read, so long as the document says which
+        // branch that is.
+        Mail::fake();
+        app(ReportEmailSettings::class)->update([
+            'report_email_smtp_host' => 'smtp.shop.test',
+            'report_email_from_address' => 'reports@shop.test',
+        ]);
 
-        $response->assertOk();
-        $this->assertStringContainsString('application/pdf', (string) $response->headers->get('content-type'));
-        // Not the consolidated filename — the figures are not consolidated.
-        $this->assertStringNotContainsString('all-branches', (string) $response->headers->get('content-disposition'));
+        $this->actingAs(User::factory()->owner()->create())
+            ->post(route('reports.email'), [
+                'recipients' => ['owner@shop.test'],
+                'period' => 'daily',
+                'scope' => 'all',
+            ])
+            ->assertRedirect()
+            ->assertSessionHas('toast.type', 'success');
+
+        Mail::assertSent(SalesReportMail::class, function (SalesReportMail $mail): bool {
+            // Neither the filename nor the subject may claim to cover branches
+            // these figures do not.
+            return ! str_contains($mail->attachments()[0]->as, 'all-branches')
+                && ! str_contains($mail->envelope()->subject, 'All branches')
+                && str_contains($mail->envelope()->subject, 'Test Branch');
+        });
     }
 }

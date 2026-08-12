@@ -115,8 +115,11 @@ indistinguishable from a "lose whatever I did offline" button to the person pres
 supported rebuild is to **delete the local SQLite database and relaunch**:
 `LaunchProvisioner` runs the migrations, finds no `instance` row, and the wizard runs as it
 does on a fresh install. That path needs the branch's credentials JSON again, and it does
-not restore two things: the **printer configuration** (device-local by design — it has no
-upstream row at all, and wizard step 2 re-collects it) and any **unpushed outbox backlog**.
+not restore three things: the **printer configuration** (device-local by design — it has no
+upstream row at all, and wizard step 2 re-collects it), the **report-email configuration**
+(device-local for the same reason plus one more, since its SMTP password is sealed under the
+per-install `APP_KEY`; the wizard does not collect it, so it is re-entered in Business
+Settings) and any **unpushed outbox backlog**.
 
 **What is still not recoverable.** Work a device did offline and never pushed dies with the
 hardware: nothing else has a copy, and after M11.6 nothing in the product claims otherwise.
@@ -272,6 +275,15 @@ entry, not just a snapshot**, or the recompute sums only what is there, goes neg
 `Puller` reads deltas of the catalog, users, settings and this branch's `stock_adjustment`
 ledger rows. **A pull is not a hydrate**: the hydrate runs once and copies everything, this
 runs every few minutes for the life of the install.
+
+`settings` is the one table where the local mirror is deliberately **wider by row** than the
+Postgres one: it also holds this device's printer configuration and, since M14, its
+report-email configuration, neither of which has an upstream row. Both halves of the
+carve-out matter — `Puller::scope()` narrows the *read* to `BusinessSettings::KEYS` and
+`applySettings()` upserts by `key` rather than `id` — and `Hydrator::copySettings()` does
+the same again. That membership is the whole definition of a **device-local setting**
+(`docs/glossary.md` §10); adding a key to `KEYS` is what would retune every branch's printer,
+and every branch's mail account, from whichever one saved last.
 
 `sync_cursor` holds one watermark **per table** — per table, so a failure on `variants`
 cannot discard the progress just made on `users`, and each table's rows and its cursor move

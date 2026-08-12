@@ -191,17 +191,27 @@ class PullTest extends TestCase
         $this->assertNull(User::query()->find($id));
     }
 
-    public function test_settings_are_restricted_to_the_business_keys_and_leave_the_printer_alone(): void
+    public function test_settings_are_restricted_to_the_business_keys_and_leave_the_device_local_ones_alone(): void
     {
-        DB::table('settings')->insert([
-            'id' => (string) Str::uuid(),
-            'key' => 'printer_name',
-            'value' => 'EPSON-TM-T20',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        $local = ['printer_name' => 'EPSON-TM-T20', 'report_email_smtp_host' => 'smtp.manila.test'];
 
-        foreach ([['business_name', 'Evitan Manila'], ['printer_name', 'SOMEONE-ELSES-PRINTER']] as [$key, $value]) {
+        foreach ($local as $key => $value) {
+            DB::table('settings')->insert([
+                'id' => (string) Str::uuid(),
+                'key' => $key,
+                'value' => $value,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $upstream = [
+            ['business_name', 'Evitan Manila'],
+            ['printer_name', 'SOMEONE-ELSES-PRINTER'],
+            ['report_email_smtp_host', 'smtp.someone-else.test'],
+        ];
+
+        foreach ($upstream as [$key, $value]) {
             $this->remote->table('settings')->insert([
                 'id' => (string) Str::uuid(),
                 'key' => $key,
@@ -214,11 +224,16 @@ class PullTest extends TestCase
         $this->pull();
 
         // The local settings table is deliberately WIDER than Postgres: it also
-        // holds this device's printer, which is hardware. A pull that carried
-        // every key would retune the receipt printer of every branch in the
-        // business to whatever one of them last saved.
+        // holds this device's printer, which is hardware, and its report-email
+        // configuration, whose SMTP password is sealed under a per-install
+        // APP_KEY that does not travel. A pull that carried every key would
+        // retune the receipt printer — and the mail account — of every branch in
+        // the business to whatever one of them last saved.
         $this->assertSame('Evitan Manila', DB::table('settings')->where('key', 'business_name')->value('value'));
-        $this->assertSame('EPSON-TM-T20', DB::table('settings')->where('key', 'printer_name')->value('value'));
+
+        foreach ($local as $key => $value) {
+            $this->assertSame($value, DB::table('settings')->where('key', $key)->value('value'));
+        }
     }
 
     public function test_settings_are_matched_on_key_not_id(): void

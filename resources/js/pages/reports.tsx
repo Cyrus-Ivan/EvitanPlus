@@ -1,5 +1,6 @@
 import { BranchScopeSelect } from '@/components/branch-scope-select';
 import EmptyState from '@/components/empty-state';
+import EmailReportDialog, { type ReportEmailProp } from '@/components/reports/email-report-dialog';
 import SalesBarChart from '@/components/reports/sales-bar-chart';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -23,7 +24,8 @@ import type {
     SharedData,
 } from '@/types';
 import { Head, router, usePage } from '@inertiajs/react';
-import { ChartColumn, ChevronLeft, ChevronRight, FileDown, WifiOff } from 'lucide-react';
+import { ChartColumn, ChevronLeft, ChevronRight, Mail, WifiOff } from 'lucide-react';
+import { useState } from 'react';
 
 const breadcrumbs: BreadcrumbItem[] = [{ title: 'Reports', href: '/reports' }];
 
@@ -123,6 +125,7 @@ export default function Reports({
     branches,
     branchRows,
     consolidatedOnline,
+    email,
 }: {
     period: ReportPeriod;
     rows: ReportRow[];
@@ -140,13 +143,27 @@ export default function Reports({
     // Null when nothing consolidated was asked for; false when it was and the
     // business database could not be reached.
     consolidatedOnline: boolean | null;
+    email: ReportEmailProp;
 }) {
+    const [emailOpen, setEmailOpen] = useState(false);
     const { format: money } = useCurrency();
     const { can } = usePermissions();
     const { sync } = usePage<SharedData>().props;
 
     const canConsolidate = can('view-consolidated-reports');
     const consolidated = scope !== 'local';
+    // What the email dialog names as the coverage of what it is about to send.
+    // The server computes its own for the document itself — this one only has
+    // to agree with the picker the user is looking at.
+    const scopeLabel =
+        scope === 'local'
+            ? 'This branch'
+            : scope === 'all'
+              ? 'All branches'
+              : (() => {
+                    const branch = branches.find((b) => b.id === scope);
+                    return branch ? `${branch.code} — ${branch.name}` : 'One branch';
+                })();
     // Sales rung up here that have not reached the business database yet, so are
     // not in figures that came FROM it. Only worth saying when consolidated.
     const unsynced = consolidated ? (sync?.unsynced_count ?? 0) : 0;
@@ -231,13 +248,26 @@ export default function Reports({
                         server refuses anything but 'local' for anyone else. */}
                     {canConsolidate && <BranchScopeSelect scope={scope} branches={branches} onChange={switchScope} label="Branches reported on" />}
 
-                    <Button variant="outline" asChild className="ml-auto">
-                        <a href={route('reports.export', { period, date: filters.date, ...(consolidated ? { scope, by: chartBy } : {}) })}>
-                            <FileDown className="size-4" />
-                            Export PDF
-                        </a>
+                    {/* Enabled even when email is not set up yet: a disabled
+                        button with no explanation is the worse failure, and the
+                        dialog is where the explanation lives. */}
+                    <Button variant="outline" className="ml-auto" onClick={() => setEmailOpen(true)}>
+                        <Mail className="size-4" />
+                        Email report
                     </Button>
                 </div>
+
+                <EmailReportDialog
+                    open={emailOpen}
+                    onOpenChange={setEmailOpen}
+                    email={email}
+                    period={period}
+                    date={filters.date}
+                    scope={scope}
+                    chartBy={chartBy}
+                    periodLabel={filters.label}
+                    scopeLabel={scopeLabel}
+                />
 
                 {/* The consolidated scope was asked for and could not be served,
                     so these are this branch's figures. Say so before the numbers. */}

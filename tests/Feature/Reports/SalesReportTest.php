@@ -2,14 +2,17 @@
 
 namespace Tests\Feature\Reports;
 
+use App\Mail\SalesReportMail;
 use App\Models\Item;
 use App\Models\Transaction;
 use App\Models\User;
 use App\Models\Variant;
+use App\Support\Email\ReportEmailSettings;
 use App\Support\Inventory\StockLedger;
 use App\Support\Sales\ProcessSaleReturn;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Mail;
 use Tests\TestCase;
 
 /**
@@ -465,8 +468,11 @@ class SalesReportTest extends TestCase
                 ->where('rows.0.profit', '50.00'));
     }
 
-    public function test_export_streams_a_pdf_for_admin_and_owner()
+    public function test_emailing_the_report_attaches_a_pdf_for_admin_and_owner()
     {
+        Mail::fake();
+        $this->configureReportEmail();
+
         // Two named items so the top-items grouping (and its refund join) actually
         // exercises more than one group end-to-end.
         $apple = $this->sellableNamed('Apple', price: 100, cost: 40, stock: 50);
@@ -478,13 +484,25 @@ class SalesReportTest extends TestCase
         $this->sell($cashier, $banana, 1);
 
         foreach ([User::factory()->admin()->create(), User::factory()->owner()->create()] as $user) {
-            $response = $this->actingAs($user)
-                ->get(route('reports.export', ['period' => 'daily', 'date' => '2026-03-10']));
-
-            $response->assertOk();
-            $this->assertStringContainsString('application/pdf', (string) $response->headers->get('content-type'));
-            $this->assertStringStartsWith('%PDF', $response->getContent());
+            $this->actingAs($user)
+                ->post(route('reports.email'), [
+                    'recipients' => ['owner@shop.test'],
+                    'period' => 'daily',
+                    'date' => '2026-03-10',
+                ])
+                ->assertRedirect()
+                ->assertSessionHasNoErrors()
+                ->assertSessionHas('toast.type', 'success');
         }
+
+        Mail::assertSentCount(2);
+        Mail::assertSent(SalesReportMail::class, function (SalesReportMail $mail): bool {
+            $attachment = $mail->attachments()[0];
+
+            return $mail->hasTo('owner@shop.test')
+                && $attachment->as === 'sales-report-daily-2026-03-10-20260310-120000.pdf'
+                && $attachment->mime === 'application/pdf';
+        });
     }
 
     public function test_pdf_view_renders_the_net_sales_chart_and_top_items_table()
@@ -530,10 +548,33 @@ class SalesReportTest extends TestCase
         $this->assertStringNotContainsString('Uncosted', $html);
     }
 
-    public function test_export_is_blocked_for_cashiers()
+    public function test_emailing_the_report_is_blocked_for_cashiers()
     {
+        Mail::fake();
+        $this->configureReportEmail();
+
         $this->actingAs(User::factory()->cashier()->create())
-            ->get(route('reports.export', ['period' => 'daily', 'date' => '2026-03-10']))
+            ->post(route('reports.email'), [
+                'recipients' => ['owner@shop.test'],
+                'period' => 'daily',
+                'date' => '2026-03-10',
+            ])
             ->assertForbidden();
+
+        // The 403 is the route group's; asserting nothing left the building is
+        // what would catch the route being moved out of it.
+        Mail::assertNothingSent();
+    }
+
+    /**
+     * A sender good enough for ReportMailer to attempt a send. Mail::fake()
+     * never reaches a transport, so nothing here has to be real.
+     */
+    private function configureReportEmail(): void
+    {
+        app(ReportEmailSettings::class)->update([
+            'report_email_smtp_host' => 'smtp.shop.test',
+            'report_email_from_address' => 'reports@shop.test',
+        ]);
     }
 }

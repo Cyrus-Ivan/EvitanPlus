@@ -6,6 +6,7 @@ use App\Http\Requests\BusinessSettingsUpdateRequest;
 use App\Models\Setting;
 use App\Support\Audit\AuditRecorder;
 use App\Support\Audit\SettingsDiff;
+use App\Support\Email\ReportEmailSettings;
 use App\Support\Printing\PrinterSettings;
 use App\Support\Settings\BusinessSettings;
 use App\Support\Sync\OnlineWrite;
@@ -22,26 +23,33 @@ use Inertia\Response;
  * print on every receipt at every branch, so changing one is an ONLINE WRITE.
  * The printer keys live in the same local table and are device hardware: they
  * have no upstream row, they are never mirrored, and `PrinterSettingsController`
- * is deliberately untouched by M6.5.
+ * is deliberately untouched by M6.5. The report-email keys are device-local for
+ * the same reason and one more — the sender's password is sealed under the
+ * per-install APP_KEY, which does not travel between installs.
  */
 class BusinessSettingsController extends Controller
 {
     public function __construct(
         private readonly BusinessSettings $settings,
         private readonly PrinterSettings $printerSettings,
+        private readonly ReportEmailSettings $reportEmailSettings,
         private readonly OnlineWrite $online,
     ) {}
 
     /**
-     * Show the business settings page (business identity + receipt printer).
+     * Show the business settings page (business identity + receipt printer +
+     * report email).
      */
     public function edit(): Response
     {
         return Inertia::render('business-settings', [
             'settings' => $this->settings->all(),
             'printerSettings' => $this->printerSettings->all(),
-            // The printer half of this screen keeps working offline; only the
-            // business half is gated.
+            // forDisplay(), never all(): the SMTP password ciphertext must not
+            // cross to the frontend, only whether one is stored.
+            'reportEmailSettings' => $this->reportEmailSettings->forDisplay(),
+            // The printer and report-email halves of this screen keep working
+            // offline; only the business half is gated.
             'online' => $this->online->possible(),
         ]);
     }

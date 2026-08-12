@@ -14,6 +14,7 @@ use App\Http\Controllers\Inventory\StockHistoryController;
 use App\Http\Controllers\LoginHistoryController;
 use App\Http\Controllers\PosController;
 use App\Http\Controllers\PrinterSettingsController;
+use App\Http\Controllers\ReportEmailSettingsController;
 use App\Http\Controllers\ReportsController;
 use App\Http\Controllers\SaleReturnController;
 use App\Http\Controllers\SalesController;
@@ -116,7 +117,13 @@ Route::middleware(['auth'])->group(function () {
     // Admin-level: Admins and the Owner.
     Route::middleware('role:admin')->group(function () {
         Route::get('reports', [ReportsController::class, 'index'])->name('reports');     // Phase 12
-        Route::get('reports/export', [ReportsController::class, 'export'])->name('reports.export');
+        // The PDF download is gone (there is no `reports.export`): a report is
+        // emailed to a list of recipients or it does not leave the device.
+        // Admin+ like the screen itself, NOT Owner-only:
+        // the consolidated scope is refused inside the controller by
+        // normalizeScope(), so the same route can serve the branch-local report
+        // an Admin is entitled to.
+        Route::post('reports/email', [ReportsController::class, 'email'])->name('reports.email');
         Route::get('audit-logs', [AuditLogController::class, 'index'])->name('audit-logs'); // Phase 15
 
         // User management (Phase 13). Which roles an actor may create/assign and
@@ -217,6 +224,10 @@ Route::middleware(['auth'])->group(function () {
         Route::patch('printer-settings', [PrinterSettingsController::class, 'update'])->name('printer-settings.update');
         Route::post('printer-settings/test', [PrinterSettingsController::class, 'test'])->name('printer-settings.test');
         Route::get('printer-settings/printers', [PrinterSettingsController::class, 'printers'])->name('printer-settings.printers');
+        // Report email: recipients, schedule, sender credentials. Device-local
+        // like the printer, and on the same page for the same reason.
+        Route::patch('report-email-settings', [ReportEmailSettingsController::class, 'update'])->name('report-email-settings.update');
+        Route::post('report-email-settings/test', [ReportEmailSettingsController::class, 'test'])->name('report-email-settings.test');
     });
 });
 

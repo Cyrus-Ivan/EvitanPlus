@@ -2,20 +2,28 @@
 
 namespace App\Http\Controllers;
 
+use App\Console\Commands\SendScheduledSalesReport;
 use App\Http\Controllers\Concerns\NormalizesDateFilter;
 use App\Http\Controllers\Concerns\OffersBranchScope;
+use App\Http\Requests\Reports\EmailReportRequest;
+use App\Mail\SalesReportMail;
 use App\Models\Instance;
+use App\Support\Audit\AuditRecorder;
+use App\Support\Email\ReportEmailException;
+use App\Support\Email\ReportEmailSettings;
+use App\Support\Email\ReportMailer;
+use App\Support\Reports\ReportPeriods;
 use App\Support\Reports\SalesFigures;
+use App\Support\Reports\SalesReportBuilder;
+use App\Support\Reports\SalesReportPdf;
 use App\Support\Settings\BusinessSettings;
 use App\Support\Sync\BranchCycle;
 use App\Support\Sync\BranchRoster;
 use App\Support\Sync\OnlineRead;
-use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
 use Illuminate\Database\Connection;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Http\Response as HttpResponse;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Str;
 use Inertia\Inertia;
@@ -71,36 +79,27 @@ class ReportsController extends Controller
     use NormalizesDateFilter, OffersBranchScope;
 
     /** The branch-local report: SQLite, this branch, works offline. */
-    private const SCOPE_LOCAL = 'local';
+    private const SCOPE_LOCAL = SalesReportBuilder::SCOPE_LOCAL;
 
     /** The consolidated report: Postgres, every branch. */
-    private const SCOPE_ALL = 'all';
+    private const SCOPE_ALL = SalesReportBuilder::SCOPE_ALL;
 
-    /**
-     * The set of valid period keys, and the sub-bucket's granularity noun used
-     * as the breakdown table's first column header. The bucket FORMATS live in
-     * {@see SalesFigures}, which is the only thing that has to know how a given
-     * database spells a date.
-     */
-    private const SUB_NOUNS = [
-        'daily' => 'Hour',
-        'weekly' => 'Day',
-        'monthly' => 'Day',
-        'yearly' => 'Month',
-    ];
-
-    public function __construct(private readonly OnlineRead $read) {}
+    public function __construct(
+        private readonly OnlineRead $read,
+        private readonly SalesReportBuilder $builder,
+        private readonly ReportEmailSettings $emailSettings,
+    ) {}
 
     public function index(Request $request): Response
     {
-        $period = $this->normalizePeriod($request->query('period'));
-        [$from, $to] = $this->resolveWindow($period, $this->normalizeDate($request->query('date')));
+        $period = ReportPeriods::normalize($request->query('period'));
+        [$from, $to] = ReportPeriods::resolveWindow($period, $this->normalizeDate($request->query('date')));
         $canViewCost = Gate::allows('view-item-cost');
         $scope = $this->normalizeScope($request->query('scope'));
         $chartBy = $this->normalizeChartBy($request->query('by'));
 
         $report = $scope === self::SCOPE_LOCAL
-            ? $this->branchLocal($period, $from, $to, $canViewCost)
+            ? $this->builder->local($period, $from, $to, $canViewCost)
             : $this->consolidated($scope, $chartBy, $period, $from, $to, $canViewCost);
 
         // Null means the local path ran and no roster came back with it, so the
@@ -131,90 +130,104 @@ class ReportsController extends Controller
             ),
             'branchRows' => $report['branchRows'],
             'consolidatedOnline' => $report['consolidatedOnline'],
+            // Two local reads, no network. Deliberately NOT in the frontend's
+            // reload-props list: stepping the date must not re-read it, for the
+            // same reason `branches` is not in it either.
+            'email' => [
+                'configured' => $this->emailSettings->isConfigured(),
+                'recipients' => $this->emailSettings->recipients(),
+                'canConfigure' => Gate::allows('access-settings'),
+            ],
         ]);
     }
 
     /**
-     * Render the selected period's report as a downloadable PDF (dompdf, pure
-     * PHP — no browser binary, safe for the offline NativePHP build). Reuses the
-     * exact same recompute path as {@see self::index}, scope and all, so the PDF
-     * matches the on-screen totals. Cost / COGS / profit stay Owner-only: the
-     * flag is passed to the view, which omits those columns entirely for
-     * non-Owners.
+     * Email the selected period's report as a PDF attachment.
      *
-     * The PDF carries a net-sales bar chart (one diverging bar per sub-bucket,
-     * built from HTML divs — dompdf's inline-SVG support is unreliable), the
-     * summary totals, the breakdown table, a per-branch table when the report is
-     * consolidated, and a "Top selling items" table for the whole selected range
-     * (cost-free, so safe for all Admin+ viewers).
+     * This replaced the PDF DOWNLOAD outright — there is no fallback. A report
+     * that lands in the Downloads folder of a shop counter has not left the
+     * building, which was the only thing anybody wanted from it.
+     *
+     * The PDF is the same document the download produced: a net-sales bar
+     * chart, the summary totals, the breakdown table, a per-branch table when
+     * the report is consolidated, and a "Top selling items" table for the whole
+     * selected range. See {@see SalesReportPdf}.
+     *
+     * The recipients come from the REQUEST, not the stored defaults: the dialog
+     * pre-fills itself with the defaults and lets the sender tick, untick and
+     * add for this send only, and nothing here writes back to the settings.
+     *
+     * Everything before the send is {@see self::index}'s recompute path, so an
+     * emailed report matches the on-screen totals exactly, scope and all —
+     * including {@see self::normalizeScope}, which runs FIRST so an Admin
+     * asking for `all` is refused before a PDF is built rather than after.
+     *
+     * Cost / COGS / profit follow the SENDER's own gate here, exactly as the
+     * download did. The scheduled send has no sender and answers that question
+     * differently — see {@see SendScheduledSalesReport}.
+     *
+     * A failed send is a toast, never a 500 and never a lost page. The
+     * underlying exception is already in the log by then.
      */
-    public function export(Request $request, BusinessSettings $settings): HttpResponse
-    {
-        $period = $this->normalizePeriod($request->query('period'));
-        [$from, $to] = $this->resolveWindow($period, $this->normalizeDate($request->query('date')));
+    public function email(
+        EmailReportRequest $request,
+        SalesReportPdf $pdf,
+        ReportMailer $mailer,
+        BusinessSettings $business,
+        AuditRecorder $audit,
+    ): RedirectResponse {
+        $period = ReportPeriods::normalize($request->input('period'));
+        [$from, $to] = ReportPeriods::resolveWindow($period, $this->normalizeDate($request->input('date')));
         $canViewCost = Gate::allows('view-item-cost');
-        $scope = $this->normalizeScope($request->query('scope'));
-        $chartBy = $this->normalizeChartBy($request->query('by'));
+        $scope = $this->normalizeScope($request->input('scope'));
+        $chartBy = $this->normalizeChartBy($request->input('by'));
 
         $report = $scope === self::SCOPE_LOCAL
-            ? $this->branchLocal($period, $from, $to, $canViewCost, topItems: true)
+            ? $this->builder->local($period, $from, $to, $canViewCost, topItems: true)
             : $this->consolidated($scope, $chartBy, $period, $from, $to, $canViewCost, topItems: true);
 
-        $rows = array_map(function (array $row) use ($period): array {
-            $row['label'] = $this->formatBucketLabel($period, $row['bucket']);
+        $recipients = $request->recipients();
+        $scopeLabel = $pdf->scopeLabel($report['scope'], $report['branches']);
 
-            return $row;
-        }, $report['rows']);
+        try {
+            $mailer->send($recipients, new SalesReportMail(
+                settings: $this->emailSettings,
+                business: $business,
+                scopeLabel: $scopeLabel,
+                periodLabel: ReportPeriods::label($period, $from),
+                periodNoun: ReportPeriods::SUB_NOUNS[$period],
+                totals: $report['totals'],
+                canViewCost: $canViewCost,
+                pdf: $pdf->render($report, $period, $from, $canViewCost),
+                filename: $pdf->filename($report, $period, $from),
+                sentBy: $request->user()?->name ?: $request->user()?->username,
+            ));
+        } catch (ReportEmailException $e) {
+            $audit->record(
+                action: 'report.email_failed',
+                description: 'Could not email the '.$period.' sales report for '.ReportPeriods::label($period, $from).'.',
+                new: ['recipients' => count($recipients), 'reason' => $e->getMessage()],
+            );
 
-        $pdf = Pdf::loadView('reports.pdf', [
-            'business' => $settings->all(),
-            'period' => $period,
-            'periodNoun' => self::SUB_NOUNS[$period],
-            'label' => $this->periodLabel($period, $from),
-            'generatedAt' => Carbon::now(),
-            'rows' => $rows,
-            'totals' => $report['totals'],
-            'topItems' => $report['topItems'],
-            'canViewCost' => $canViewCost,
-            // M11: which branches these figures cover, named in the header, and
-            // broken out in their own table when there is more than one.
-            'scopeLabel' => $this->scopeLabel($report['scope'], $report['branches']),
-            'branchRows' => $report['branchRows'],
+            return back()->with('toast', ['type' => 'error', 'message' => $e->getMessage()]);
+        }
+
+        $audit->record(
+            action: 'report.emailed',
+            description: 'Emailed the '.$period.' sales report for '.ReportPeriods::label($period, $from)
+                .' ('.$scopeLabel.') to '.count($recipients).' recipient(s).',
+            new: [
+                'recipients' => $recipients,
+                'period' => $period,
+                'date' => $from->toDateString(),
+                'scope' => $report['scope'],
+            ],
+        );
+
+        return back()->with('toast', [
+            'type' => 'success',
+            'message' => 'Report sent to '.count($recipients).' recipient(s).',
         ]);
-
-        $filename = 'sales-report-'.$this->scopeSlug($report['scope'], $report['branches'])
-            .$period.'-'.$from->toDateString().'-'.Carbon::now()->format('Ymd-His').'.pdf';
-
-        return $pdf->download($filename);
-    }
-
-    /**
-     * The branch-local report, recomputed from this device's SQLite mirror.
-     * Unchanged since Phase 12 and deliberately so — it is what the till falls
-     * back to, and what every non-Owner sees.
-     *
-     * @return array<string, mixed>
-     */
-    private function branchLocal(string $period, Carbon $from, Carbon $to, bool $canViewCost, bool $topItems = false): array
-    {
-        $figures = new SalesFigures(DB::connection());
-        $rows = $figures->rows('bucket', $period, $from, $to, $canViewCost);
-        $chart = $figures->chart('item', $period, $from, $to);
-
-        return [
-            'scope' => self::SCOPE_LOCAL,
-            'chartBy' => 'item',
-            'rows' => $rows,
-            'totals' => $figures->totals($rows, $canViewCost),
-            'chartItems' => $chart['items'],
-            'chart' => $chart['buckets'],
-            'branches' => [],
-            'branchRows' => null,
-            // Null, not false: nothing consolidated was asked for, so there is
-            // nothing to report as unavailable.
-            'consolidatedOnline' => null,
-            'topItems' => $topItems ? $figures->topItems($from, $to) : [],
-        ];
     }
 
     /**
@@ -283,7 +296,7 @@ class ReportsController extends Controller
         // branch-local report and mark it, so the screen never presents one
         // branch's figures as the business's.
         if ($data === null) {
-            return ['consolidatedOnline' => false] + $this->branchLocal($period, $from, $to, $canViewCost, $topItems);
+            return ['consolidatedOnline' => false] + $this->builder->local($period, $from, $to, $canViewCost, $topItems);
         }
 
         return $data;
@@ -327,60 +340,6 @@ class ReportsController extends Controller
         return $described;
     }
 
-    /** A human name for the reported scope, for the PDF header. */
-    private function scopeLabel(string $scope, array $branches): string
-    {
-        if ($scope === self::SCOPE_LOCAL) {
-            // A device that never hydrated has no branch name to print, and a
-            // single-install Evitan POS report never had one either.
-            $instance = Instance::current();
-
-            return $instance === null ? 'This branch' : (string) $instance->branch_name;
-        }
-
-        if ($scope === self::SCOPE_ALL) {
-            return 'All branches';
-        }
-
-        $branch = collect($branches)->firstWhere('id', $scope);
-
-        return $branch === null ? 'One branch' : $branch['code'].' — '.$branch['name'];
-    }
-
-    /** The scope's slug for the export filename, empty for the branch-local report. */
-    private function scopeSlug(string $scope, array $branches): string
-    {
-        if ($scope === self::SCOPE_LOCAL) {
-            return '';
-        }
-
-        if ($scope === self::SCOPE_ALL) {
-            return 'all-branches-';
-        }
-
-        $branch = collect($branches)->firstWhere('id', $scope);
-
-        return $branch === null ? '' : Str::lower($branch['code']).'-';
-    }
-
-    /**
-     * Snap an anchor date to the [start, end] bounds of the single selected
-     * period. The anchor defaults to "now" when no (parseable) date is given.
-     *
-     * @return array{0: Carbon, 1: Carbon}
-     */
-    private function resolveWindow(string $period, ?Carbon $anchor): array
-    {
-        $a = ($anchor ?? Carbon::now())->copy();
-
-        return match ($period) {
-            'weekly' => [$a->copy()->startOfWeek(), $a->copy()->endOfWeek()],
-            'monthly' => [$a->copy()->startOfMonth(), $a->copy()->endOfMonth()],
-            'yearly' => [$a->copy()->startOfYear(), $a->copy()->endOfYear()],
-            default => [$a->copy()->startOfDay(), $a->copy()->endOfDay()],
-        };
-    }
-
     /**
      * The `filters` payload the frontend needs to render its selector: the
      * active period, the window-start anchor (what the date picker shows), the
@@ -402,43 +361,8 @@ class ReportsController extends Controller
             'date' => $from->toDateString(),
             'prev' => $step($from, -1)->toDateString(),
             'next' => $step($from, 1)->toDateString(),
-            'label' => $this->periodLabel($period, $from),
+            'label' => ReportPeriods::label($period, $from),
         ];
-    }
-
-    /** A human-readable label for the selected period, e.g. "July 2026". */
-    private function periodLabel(string $period, Carbon $from): string
-    {
-        return match ($period) {
-            'weekly' => $from->format('M j').' – '.$from->copy()->endOfWeek()->format('M j, Y'),
-            'monthly' => $from->format('F Y'),
-            'yearly' => $from->format('Y'),
-            default => $from->format('l, M j, Y'),
-        };
-    }
-
-    /**
-     * Human label for one sub-bucket key (the breakdown table's first column in
-     * the PDF), mirroring the frontend's formatBucket. Daily buckets are
-     * 'Y-m-d H' (hour), weekly/monthly 'Y-m-d' (day), yearly 'Y-m' (month).
-     */
-    private function formatBucketLabel(string $period, string $bucket): string
-    {
-        return match ($period) {
-            'daily' => Carbon::createFromFormat('Y-m-d H', $bucket)->format('g:00 A'),
-            'yearly' => Carbon::createFromFormat('Y-m', $bucket)->format('F Y'),
-            default => Carbon::createFromFormat('Y-m-d', $bucket)->format('D, M j'),
-        };
-    }
-
-    /**
-     * Constrain the granularity to a known period, defaulting to daily.
-     */
-    private function normalizePeriod(mixed $value): string
-    {
-        $value = (string) $value;
-
-        return array_key_exists($value, self::SUB_NOUNS) ? $value : 'daily';
     }
 
     /**

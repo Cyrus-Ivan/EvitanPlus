@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Models\Variant;
 use App\Support\Inventory\AdjustmentResolver;
 use App\Support\Inventory\MovementKind;
+use App\Support\Search\LikeQuery;
 use App\Support\Sync\BranchRoster;
 use App\Support\Sync\OnlineRead;
 use Illuminate\Database\Connection;
@@ -85,6 +86,14 @@ class StockHistoryController extends Controller
             // puts a recount, a CSV import and both legs of a transfer under one
             // word, and since schema 21 that is every non-sale row there is.
             'movement' => MovementKind::parse($request->query('movement')),
+            // A stock batch by NAME (`MNL-B-000001`), which is the value stored on
+            // the row — matched as a SUBSTRING, so the serial fragment somebody
+            // reads off a delivery note finds the batch without the prefix.
+            // Trimmed to null so emptying the box clears the filter rather than
+            // searching for "". Unvalidated on purpose: the term is escaped by
+            // {@see LikeQuery} and bound either way, and a reference nobody
+            // issued matches nothing.
+            'batch' => trim((string) $request->query('batch', '')) ?: null,
             'from' => $this->normalizeDate($request->query('date_from')),
             'to' => $this->normalizeDate($request->query('date_to')),
         ];
@@ -122,6 +131,7 @@ class StockHistoryController extends Controller
             'filters' => [
                 'variant' => $filters['variant'],
                 'movement' => $filters['movement'],
+                'batch' => $filters['batch'],
                 'date_from' => $filters['from']?->toDateString(),
                 'date_to' => $filters['to']?->toDateString(),
             ],
@@ -193,7 +203,7 @@ class StockHistoryController extends Controller
      * Unchanged since Phase 6 apart from the branch column, and deliberately so —
      * it is what every Cashier sees and what the screen falls back to.
      *
-     * @param  array{variant: ?string, movement: ?string, from: ?Carbon, to: ?Carbon}  $filters
+     * @param  array{variant: ?string, movement: ?string, batch: ?string, from: ?Carbon, to: ?Carbon}  $filters
      * @return array<string, mixed>
      */
     private function branchLocal(array $filters): array
@@ -207,6 +217,15 @@ class StockHistoryController extends Controller
             ->with(['variant:id,item_id,name', 'variant.item:id,name', 'performedBy:id,name,username'])
             ->when($filters['variant'], fn ($query) => $query->where('variant_id', $filters['variant']))
             ->when($filters['movement'], fn ($query) => MovementKind::apply($query, $filters['movement']))
+            // Written out rather than through the `whereLikeAny` macro, which is
+            // one column's worth of the same thing but returns an untyped
+            // builder — and this chain's `through()` below needs the model type
+            // to survive it. Side by side with the `ilike` in remotePage(), the
+            // single word between the two paths is the whole dialect difference.
+            ->when($filters['batch'], fn ($query) => $query->whereRaw(
+                "batch_reference like ? escape '\\'",
+                ['%'.LikeQuery::escape((string) $filters['batch']).'%'],
+            ))
             ->when($filters['from'], fn ($query) => $query->where('created_at', '>=', $filters['from']->startOfDay()))
             ->when($filters['to'], fn ($query) => $query->where('created_at', '<=', $filters['to']->endOfDay()))
             ->orderByDesc('created_at')
@@ -225,6 +244,11 @@ class StockHistoryController extends Controller
                 // working offline: `branches` is Postgres-only and never pulled,
                 // so an id could not be turned into a name here.
                 'counterparty_branch_code' => $entry->counterparty_branch_code,
+                // The batch this movement was one line of, by NAME. On the row
+                // for the same reason as the code above it: the dialog names the
+                // batch and the filter finds its siblings, and both have to work
+                // with no connection.
+                'batch_reference' => $entry->batch_reference,
                 'notes' => $entry->notes,
                 'created_at' => $entry->created_at,
                 'variant' => $entry->variant ? [
@@ -253,7 +277,7 @@ class StockHistoryController extends Controller
      * hold two Supavisor client slots for one screen.
      *
      * @param  string  $scope  'all', or a branch id.
-     * @param  array{variant: ?string, movement: ?string, from: ?Carbon, to: ?Carbon}  $filters
+     * @param  array{variant: ?string, movement: ?string, batch: ?string, from: ?Carbon, to: ?Carbon}  $filters
      * @return array<string, mixed>
      */
     private function consolidated(string $scope, array $filters): array
@@ -309,7 +333,7 @@ class StockHistoryController extends Controller
      *    across a database boundary that does not exist. Archived variants and
      *    archived users both still resolve, which is why neither lookup filters.
      *
-     * @param  array{variant: ?string, movement: ?string, from: ?Carbon, to: ?Carbon}  $filters
+     * @param  array{variant: ?string, movement: ?string, batch: ?string, from: ?Carbon, to: ?Carbon}  $filters
      * @param  array<string, array{id: string, code: string, name: string}>  $branches
      */
     private function remotePage(Connection $remote, ?string $branchId, array $filters, array $branches): LengthAwarePaginator
@@ -323,6 +347,19 @@ class StockHistoryController extends Controller
                     $query->where($column, $value);
                 }
             })
+            // `ilike`, not `like`: the local path above matches case-insensitively
+            // because SQLite's LIKE does for ASCII, and Postgres's does not — so
+            // the same typed fragment would narrow the list here and return
+            // nothing at all upstream. {@see LikeQuery} spells the trap out; the
+            // macros are Eloquent-only, which is why this is inlined.
+            //
+            // A leading wildcard cannot use the `batch_reference` index. Accepted:
+            // it is one filter among five on a twenty-row page, and matching only
+            // a prefix would refuse the serial fragment that is the common case.
+            ->when($filters['batch'], fn ($query) => $query->whereRaw(
+                "batch_reference ilike ? escape '\\'",
+                ['%'.LikeQuery::escape((string) $filters['batch']).'%'],
+            ))
             ->when($filters['from'], fn ($query) => $query->where('created_at', '>=', $this->bound($filters['from']->startOfDay())))
             ->when($filters['to'], fn ($query) => $query->where('created_at', '<=', $this->bound($filters['to']->endOfDay())))
             ->orderByDesc('created_at')
@@ -363,6 +400,7 @@ class StockHistoryController extends Controller
                 'counterparty_branch_code' => $row->counterparty_branch_code === null
                     ? null
                     : (string) $row->counterparty_branch_code,
+                'batch_reference' => $row->batch_reference === null ? null : (string) $row->batch_reference,
                 'notes' => $row->notes === null ? null : (string) $row->notes,
                 'created_at' => $this->localise($row->created_at),
                 'variant' => $variant === null ? null : [

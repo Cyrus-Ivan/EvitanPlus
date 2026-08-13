@@ -544,6 +544,19 @@ class InventoryQueueTest extends TestCase
         $this->assertSame($sending[0]['batch_id'], $sending[1]['batch_id']);
         $this->assertSame([-5, -3], array_map(fn (array $row): int => (int) $row['quantity'], $sending));
 
+        // The readable name, minted against Postgres under an advisory lock
+        // (schema 24) — the whole of which is out of a stand-in's reach:
+        // `pg_advisory_xact_lock` does not exist there, and neither does the
+        // question of whether the branch role may execute it inside the cycle's
+        // own transaction under the pooler.
+        $reference = $sending[0]['batch_reference'];
+
+        $this->assertMatchesRegularExpression(
+            '/^'.preg_quote(self::$documentA['branch']['code'], '/').'-B-\d{6}$/',
+            (string) $reference,
+        );
+        $this->assertSame($reference, $sending[1]['batch_reference']);
+
         // Somebody at A confirms both, in one submission, as the card's
         // "Approve all" sends them.
         $this->actingAs($this->owner())
@@ -557,12 +570,13 @@ class InventoryQueueTest extends TestCase
         // reach, because `inventory_ledger` is mirrored and this is the column
         // travelling up through RowMapper.
         $ledger = $this->remote(
-            'select quantity, batch_id from inventory_ledger where batch_id = ? order by quantity',
+            'select quantity, batch_id, batch_reference from inventory_ledger where batch_id = ? order by quantity',
             [$sending[0]['batch_id']],
         );
 
         $this->assertCount(2, $ledger);
         $this->assertSame([-5, -3], array_map(fn (array $row): int => (int) $row['quantity'], $ledger));
+        $this->assertSame([$reference, $reference], array_column($ledger, 'batch_reference'));
 
         // And the receiving legs inherit it, so B sees one delivery rather than
         // two unrelated arrivals.
@@ -574,6 +588,27 @@ class InventoryQueueTest extends TestCase
         $this->assertCount(2, $incoming);
         $this->assertSame([3, 5], array_map(fn (array $row): int => (int) $row['quantity'], $incoming));
         $this->assertSame(['pending', 'pending'], array_column($incoming, 'status'));
+        // Named for the branch that ASKED, at the branch that must answer.
+        $this->assertSame([$reference, $reference], array_column($incoming, 'batch_reference'));
+
+        // And Stock History's batch box finds them across branches. Lowercase and
+        // partial on purpose — that is the assertion, not the row count: the
+        // local path matches this because SQLite's LIKE ignores ASCII case, and
+        // Postgres's does not, so a consolidated read on `like` would return an
+        // empty table here rather than an error. Only real Postgres can say.
+        $props = $this->actingAs($this->owner())
+            ->get(route('stock-history.index', [
+                'scope' => 'all',
+                'batch' => strtolower(substr((string) $reference, -4)),
+            ]))
+            ->assertOk()
+            ->viewData('page')['props'];
+
+        $this->assertTrue($props['consolidatedOnline']);
+        $this->assertSame(
+            [$reference, $reference],
+            array_column($props['entries']['data'], 'batch_reference'),
+        );
     }
 
     // ---------------------------------------------------------------- helpers

@@ -595,6 +595,10 @@ class InventoryQueueController extends Controller
             // it is showing twelve sending legs or twenty-four of both kinds.
             'batch' => $first->batch_id === null ? null : [
                 'id' => (string) $first->batch_id,
+                // What the card PRINTS — `MNL-B-000001`, the name whoever issued
+                // this batch was told when they issued it. Null on a batch
+                // written before schema 24, which the card falls back from.
+                'reference' => $first->batch_reference === null ? null : (string) $first->batch_reference,
                 'size' => $lines,
             ],
             // One note for the whole card. Every row of a batch carries the same

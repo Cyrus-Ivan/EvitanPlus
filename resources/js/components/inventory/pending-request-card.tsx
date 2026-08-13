@@ -246,9 +246,17 @@ export function PendingRequestCard({ request }: { request: PendingRequest }) {
                     <div className="min-w-0 flex-1 space-y-4">
                         <div className="flex flex-wrap items-center gap-2">
                             <Badge variant={transfer ? 'default' : 'secondary'}>{transfer ? 'Transfer' : 'Adjustment'}</Badge>
+                            {/* The batch's own name, so the person answering this
+                                card and the person who issued it are talking
+                                about the same delivery. Null on a batch issued
+                                before schema 24, which reads as it always did. */}
                             {request.batch && (
                                 <Badge variant="outline" className="font-normal">
-                                    Batch · {request.batch.size} {request.batch.size === 1 ? 'product' : 'products'}
+                                    {request.batch.reference ? <span className="font-medium tabular-nums">{request.batch.reference}</span> : 'Batch'}
+                                    <span className="text-muted-foreground">
+                                        {' · '}
+                                        {request.batch.size} {request.batch.size === 1 ? 'product' : 'products'}
+                                    </span>
                                 </Badge>
                             )}
                             <span className="text-muted-foreground text-xs">{SOURCE[request.source] ?? request.source}</span>

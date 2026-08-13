@@ -8,6 +8,7 @@ use App\Models\Instance;
 use App\Models\Variant;
 use App\Support\Audit\AuditRecorder;
 use App\Support\Inventory\AdjustmentQueue;
+use App\Support\Inventory\StockBatch;
 use App\Support\Inventory\StockLedger;
 use App\Support\Sync\OnlineRead;
 use App\Support\Sync\OnlineWrite;
@@ -16,7 +17,6 @@ use Illuminate\Database\Connection;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -29,6 +29,10 @@ use Illuminate\Validation\ValidationException;
  * that one act: every row this controller writes carries it, Pending Stocks
  * groups a card by it, and the ledger keeps it so Stock History can still say
  * "these came off the shelf together" on a till with no connection.
+ *
+ * Since schema 24 the act has a second name beside the uuid — a batch reference
+ * like `MNL-B-000001` ({@see StockBatch}), which is the half a person can read
+ * off a card, write on a delivery note and filter Stock History by.
  *
  * ## It asks; it never moves stock
  *
@@ -68,13 +72,17 @@ class StockBatchController extends Controller
     {
         $data = $request->validated();
 
-        $batchId = (string) Str::uuid();
+        // The uuid is known now; the readable name is minted inside the write,
+        // where the business database is open. Both are read back off the object
+        // once the write has committed.
+        $batch = new StockBatch;
+
         $rows = $data['kind'] === 'transfer'
-            ? $this->transferRows($data, $batchId)
-            : $this->adjustmentRows($data, $batchId);
+            ? $this->transferRows($data)
+            : $this->adjustmentRows($data);
 
         $this->online->run(
-            fn () => $this->queue->enqueue($rows, $request->user()),
+            fn () => $this->queue->enqueue($rows, $request->user(), $batch),
             'A stock batch',
         );
 
@@ -89,7 +97,8 @@ class StockBatchController extends Controller
                 count($rows),
             ),
             new: [
-                'batch_id' => $batchId,
+                'batch_id' => $batch->id,
+                'batch_reference' => $batch->reference,
                 'kind' => $data['kind'],
                 'mode' => $data['mode'] ?? null,
                 'branch_id' => $data['branch_id'] ?? null,
@@ -100,11 +109,16 @@ class StockBatchController extends Controller
             ],
         );
 
+        // The batch is named here and nowhere else in the flow: this is the
+        // moment somebody would write it on a delivery note, and the card that
+        // carries it afterwards is at the OTHER branch.
+        $named = $batch->reference === null ? '' : ' ('.$batch->reference.')';
+
         return back()->with('toast', [
             'type' => 'success',
             'message' => $data['kind'] === 'transfer'
-                ? 'Transfer requested for '.count($rows).' product(s). The sending branch confirms it first, then the receiving branch.'
-                : 'Adjustment requested for '.count($rows).' product(s). Somebody at that branch confirms it before stock moves.',
+                ? 'Transfer'.$named.' requested for '.count($rows).' product(s). The sending branch confirms it first, then the receiving branch.'
+                : 'Adjustment'.$named.' requested for '.count($rows).' product(s). Somebody at that branch confirms it before stock moves.',
         ]);
     }
 
@@ -208,7 +222,7 @@ class StockBatchController extends Controller
      * @param  array<string, mixed>  $data
      * @return list<array<string, mixed>>
      */
-    private function adjustmentRows(array $data, string $batchId): array
+    private function adjustmentRows(array $data): array
     {
         $variants = Variant::query()
             ->with('item')
@@ -252,7 +266,6 @@ class StockBatchController extends Controller
                 'quantity' => $delta,
                 'reference_type' => 'manual_adjustment',
                 'notes' => $data['notes'] ?? null,
-                'batch_id' => $batchId,
             ];
         }
 
@@ -265,7 +278,7 @@ class StockBatchController extends Controller
      * @param  array<string, mixed>  $data
      * @return list<array<string, mixed>>
      */
-    private function transferRows(array $data, string $batchId): array
+    private function transferRows(array $data): array
     {
         return array_map(fn (array $line): array => [
             'branch_id' => (string) $data['from_branch_id'],
@@ -276,7 +289,6 @@ class StockBatchController extends Controller
             'quantity' => -(int) $line['quantity'],
             'reference_type' => 'transfer',
             'notes' => $data['notes'] ?? null,
-            'batch_id' => $batchId,
         ], $data['lines']);
     }
 

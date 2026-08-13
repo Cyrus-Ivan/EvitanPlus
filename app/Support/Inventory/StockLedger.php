@@ -45,6 +45,11 @@ class StockLedger
      *                                each other, so Stock History can say they came
      *                                off the shelf together on a till with no
      *                                connection. Null for anything issued singly.
+     * @param  string|null  $batchReference  The readable name of that same batch —
+     *                                       `MNL-B-000001` ({@see StockBatch}). Carried for the
+     *                                       same reason and stored beside the uuid, because the
+     *                                       dialog that names a batch and the filter that finds
+     *                                       its siblings both have to work with no connection.
      *
      * @throws NegativeInventoryException when the movement would drive stock below zero.
      */
@@ -60,10 +65,11 @@ class StockLedger
         ?string $id = null,
         ?string $counterpartyBranchCode = null,
         ?string $batchId = null,
+        ?string $batchReference = null,
     ): InventoryLedger {
         return DB::transaction(function () use (
             $variant, $quantity, $type, $saleType, $referenceType, $referenceId, $performedBy, $notes,
-            $id, $counterpartyBranchCode, $batchId,
+            $id, $counterpartyBranchCode, $batchId, $batchReference,
         ) {
             // Lock (or create) the snapshot row so concurrent writes serialize.
             $snapshot = StockSnapshot::query()
@@ -84,6 +90,7 @@ class StockLedger
                 'sale_type' => $saleType,
                 'reference_id' => $referenceId,
                 'batch_id' => $batchId,
+                'batch_reference' => $batchReference,
                 'reference_type' => $referenceType,
                 'notes' => $notes,
                 'counterparty_branch_code' => $counterpartyBranchCode,

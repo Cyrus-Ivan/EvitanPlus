@@ -179,6 +179,138 @@ class StockBatchTest extends TestCase
     }
 
     /**
+     * The batch's other name: the one a person reads (schema 24).
+     *
+     * `TST` is this device's branch code, and the prefix names the branch that
+     * ASKED — every row of the batch carries the same reference, and the serial
+     * counts up from the ones already in the queue.
+     */
+    public function test_a_batch_is_named_for_the_branch_that_asked_for_it(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $this->seedRoster($remote);
+        $admin = User::factory()->admin()->create();
+        $first = Variant::factory()->create();
+        $second = Variant::factory()->create();
+
+        $submit = fn (Variant $variant, int $quantity) => $this->actingAs($admin)
+            ->post(route('stock-batches.store'), [
+                'kind' => 'adjustment',
+                'branch_id' => self::HERE,
+                'mode' => 'add',
+                'lines' => [['variant_id' => $variant->id, 'quantity' => $quantity]],
+            ])
+            ->assertSessionHasNoErrors();
+
+        $submit($first, 4);
+        $submit($second, 7);
+
+        $references = $remote->table('inventory_update_queue')->orderBy('quantity')->pluck('batch_reference');
+
+        $this->assertSame(['TST-B-000001', 'TST-B-000002'], $references->all());
+    }
+
+    public function test_every_line_of_one_batch_carries_the_same_name(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $this->seedRoster($remote);
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->post(route('stock-batches.store'), [
+                'kind' => 'adjustment',
+                'branch_id' => self::HERE,
+                'mode' => 'add',
+                'lines' => [
+                    ['variant_id' => Variant::factory()->create()->id, 'quantity' => 4],
+                    ['variant_id' => Variant::factory()->create()->id, 'quantity' => 7],
+                ],
+            ])
+            ->assertSessionHasNoErrors();
+
+        $rows = $remote->table('inventory_update_queue')->get();
+
+        $this->assertSame(['TST-B-000001', 'TST-B-000001'], $rows->pluck('batch_reference')->all());
+    }
+
+    /**
+     * A movement asked for on its own is not a batch and has no name — the same
+     * rule `batch_id` has followed since schema 23.
+     */
+    public function test_a_single_adjustment_is_not_named(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $this->seedRoster($remote);
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->post(route('stock-updates.store'), [
+                'branch_id' => self::HERE,
+                'variant_id' => Variant::factory()->create()->id,
+                'mode' => 'add',
+                'quantity' => 4,
+            ])
+            ->assertSessionHasNoErrors();
+
+        $row = $remote->table('inventory_update_queue')->first();
+
+        $this->assertNull($row->batch_id);
+        $this->assertNull($row->batch_reference);
+    }
+
+    /**
+     * Both names travel to the receiving branch, so the two ends of a transfer
+     * say the same word about the same delivery.
+     */
+    public function test_the_receiving_legs_inherit_the_name_too(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $this->seedRoster($remote);
+        $admin = User::factory()->admin()->create();
+        $variant = Variant::factory()->create();
+
+        app(StockLedger::class)->record($variant, 10, 'stock_adjustment', null, 'manual_adjustment', null, $admin);
+
+        $this->actingAs($admin)->post(route('stock-batches.store'), [
+            'kind' => 'transfer',
+            'from_branch_id' => self::HERE,
+            'to_branch_id' => self::THERE,
+            'lines' => [['variant_id' => $variant->id, 'quantity' => 3]],
+        ])->assertSessionHasNoErrors();
+
+        $this->approveEverythingPending($admin);
+
+        $this->assertSame(
+            'TST-B-000001',
+            $remote->table('inventory_update_queue')->where('branch_id', self::THERE)->value('batch_reference'),
+        );
+    }
+
+    /**
+     * The name has to reach the ledger, because that is the only copy a till
+     * with no connection can read.
+     */
+    public function test_approving_a_batch_carries_its_name_onto_the_ledger(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $this->seedRoster($remote);
+        $admin = User::factory()->admin()->create();
+        $variant = Variant::factory()->create();
+
+        $this->actingAs($admin)->post(route('stock-batches.store'), [
+            'kind' => 'adjustment',
+            'branch_id' => self::HERE,
+            'mode' => 'add',
+            'lines' => [['variant_id' => $variant->id, 'quantity' => 4]],
+        ])->assertSessionHasNoErrors();
+
+        $this->approveEverythingPending($admin);
+
+        $this->assertDatabaseHas('inventory_ledger', [
+            'variant_id' => $variant->id,
+            'batch_reference' => 'TST-B-000001',
+        ]);
+    }
+
+    /**
      * "Set to count" needs an on-hand figure this device can stand behind, and
      * the only one it has is its own.
      */

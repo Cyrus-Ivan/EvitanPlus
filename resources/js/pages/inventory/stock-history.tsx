@@ -11,7 +11,7 @@ import { MOVEMENT_LABEL, movementLabel, movementVariant } from '@/lib/stock-move
 import type { BranchScope, BreadcrumbItem, Paginated, RosterBranch, StockLedgerEntry } from '@/types';
 import { Head, router } from '@inertiajs/react';
 import { ScrollText, TriangleAlert } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 const breadcrumbs: BreadcrumbItem[] = [
     { title: 'Inventory', href: '/inventory' },
@@ -43,6 +43,11 @@ function variantLabel(variant: { name: string | null; item: string | null }): st
 interface Filters {
     variant: string | null;
     movement: string | null;
+    // A stock batch by name (`MNL-B-000001`), or any part of one — the search box
+    // matches it as a substring, so the serial off a delivery note is enough. Two
+    // ways in: typed, or filled in by following the batch link in the entry
+    // dialog.
+    batch: string | null;
     date_from: string | null;
     date_to: string | null;
 }
@@ -84,6 +89,8 @@ export default function StockHistory({
 }) {
     const [detail, setDetail] = useState<StockLedgerEntry | null>(null);
     const [variantSearch, setVariantSearch] = useState('');
+    const [batchSearch, setBatchSearch] = useState(filters.batch ?? '');
+    const applied = useRef(filters.batch);
 
     // The whole catalogue is already in the browser, so the search is a filter
     // over it. The selected variant stays mounted whatever the search says: Radix
@@ -104,6 +111,7 @@ export default function StockHistory({
             {
                 variant: merged.variant && merged.variant !== ALL ? merged.variant : undefined,
                 movement: merged.movement && merged.movement !== ALL ? merged.movement : undefined,
+                batch: merged.batch || undefined,
                 date_from: merged.date_from || undefined,
                 date_to: merged.date_to || undefined,
                 scope: (next.scope ?? scope) === 'local' ? undefined : (next.scope ?? scope),
@@ -118,6 +126,27 @@ export default function StockHistory({
             },
         );
     };
+
+    // Debounce the batch box so we don't fire a request per keystroke. What the
+    // effect compares against is the term the LIST was last asked for, held in a
+    // ref rather than read off `filters.batch`, because the prop only catches up
+    // when the response lands: the entry dialog's link sets the box and filters
+    // in one go, and a guard waiting on the prop would fire a second, identical
+    // request 300ms later whenever that read took longer than the debounce —
+    // which is exactly when it is a cross-branch one. `|| null` on both sides so
+    // an emptied box differs from a live batch, which '' vs '' would not.
+    useEffect(() => {
+        const term = batchSearch.trim() || null;
+        if (term === applied.current) {
+            return;
+        }
+        const timeout = setTimeout(() => {
+            applied.current = term;
+            applyFilters({ batch: term });
+        }, 300);
+        return () => clearTimeout(timeout);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [batchSearch]);
 
     // A wider scope names the branch on every row; in the local scope every row
     // is this device's by construction and the column would say one thing.
@@ -203,6 +232,20 @@ export default function StockHistory({
                             className="w-40"
                         />
                     </div>
+                    {/* Matched as a substring, so the serial alone is enough — a
+                        delivery note in somebody's hand says `MNL-B-000012` and
+                        the last six digits of it are the part they can read. Also
+                        where the entry dialog's batch link lands, which is why it
+                        is a box that holds the name rather than a chip that
+                        clears one. */}
+                    <Input
+                        type="search"
+                        value={batchSearch}
+                        onChange={(e) => setBatchSearch(e.target.value)}
+                        placeholder="Search batch"
+                        aria-label="Search batch"
+                        className="w-48"
+                    />
                     {canViewAll && (
                         <BranchScopeSelect
                             scope={scope}
@@ -287,7 +330,24 @@ export default function StockHistory({
                 <Pagination links={entries.links} />
             </div>
 
-            <StockEntryDialog entry={detail} open={detail !== null} onOpenChange={(open) => !open && setDetail(null)} />
+            <StockEntryDialog
+                entry={detail}
+                open={detail !== null}
+                onOpenChange={(open) => !open && setDetail(null)}
+                onFilterBatch={(reference) => {
+                    // Close first: the list underneath is about to become a
+                    // different list, and the row this dialog describes may not
+                    // be in it.
+                    setDetail(null);
+                    // Filter now rather than 300ms from now — this was a click on
+                    // a name, not a keystroke. The box is set to match, and the
+                    // ref says so, which is what stops the debounce asking for
+                    // the same list again.
+                    applied.current = reference;
+                    setBatchSearch(reference);
+                    applyFilters({ batch: reference });
+                }}
+            />
         </AppLayout>
     );
 }

@@ -59,7 +59,7 @@ final class SchemaVersion
      * Asserted against {@see migrationCount()}, so this is not a number you
      * choose — it is one you keep in step, and the test says so when you don't.
      */
-    public const SCHEMA_VERSION = 23;
+    public const SCHEMA_VERSION = 24;
 
     /**
      * Raise ONLY for a breaking change. See the class docblock.
@@ -87,6 +87,12 @@ final class SchemaVersion
      * does not carry the batch onto the receiving legs. Degraded, not wrong —
      * the arithmetic, the grants and the answering all behave exactly as they
      * did, which is the line between a raise and a column somebody may ignore.
+     *
+     * Schema 24 left it here for the same reason, one step weaker still.
+     * `batch_reference` is the readable name of a batch and is read by nothing
+     * that decides anything: an older build writes none, so its cards and its
+     * ledger rows print exactly what they printed before it existed, and the new
+     * Stock History filter finds nothing rather than the wrong thing.
      */
     public const MIN_APP_VERSION = '1.1.0';
 

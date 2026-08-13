@@ -6,6 +6,7 @@ use App\Models\Instance;
 use App\Models\User;
 use App\Models\Variant;
 use App\Support\Inventory\StockLedger;
+use App\Support\Search\LikeQuery;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -85,6 +86,124 @@ class StockHistoryTest extends TestCase
                     ->where('entries.data.0.reference_type', $movement)
                 );
         }
+    }
+
+    /**
+     * "What else moved with this?" — the question the batch's name exists to
+     * answer, asked by following the link in the entry dialog.
+     *
+     * The reference is read off the ROW, so this and the dialog that offers it
+     * both work with no connection.
+     *
+     * A WHOLE reference still returns one batch and nothing else, which is what
+     * makes the substring match below safe: the serial is padded to a fixed six
+     * digits, so no reference is a prefix of another.
+     */
+    public function test_history_can_be_filtered_to_one_batch()
+    {
+        $admin = User::factory()->admin()->create();
+        $this->seedBatches($admin);
+
+        $this->actingAs($admin)
+            ->get(route('stock-history.index', ['batch' => 'TST-B-000001']))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->has('entries.data', 2)
+                ->where('entries.data.0.batch_reference', 'TST-B-000001')
+                ->where('entries.data.1.batch_reference', 'TST-B-000001')
+                // Echoed back, because the search box is controlled from it.
+                ->where('filters.batch', 'TST-B-000001')
+            );
+    }
+
+    /**
+     * The reason the filter has a box of its own: somebody holding a delivery
+     * note types the part of the name they can read, which is the serial. A
+     * prefix-only or equality match would refuse exactly that.
+     */
+    public function test_a_batch_is_found_by_part_of_its_name()
+    {
+        $admin = User::factory()->admin()->create();
+        $this->seedBatches($admin);
+
+        $this->actingAs($admin)
+            ->get(route('stock-history.index', ['batch' => '000001']))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->has('entries.data', 2)
+                ->where('entries.data.0.batch_reference', 'TST-B-000001')
+                ->where('entries.data.1.batch_reference', 'TST-B-000001')
+            );
+    }
+
+    /**
+     * Typed, so it arrives in whatever case somebody's keyboard was in. SQLite's
+     * LIKE is case-insensitive for ASCII and Postgres's is not, which is why the
+     * consolidated path inlines `ilike` — see the integration suite, which is the
+     * only place that half can be proved.
+     */
+    public function test_a_batch_search_ignores_case()
+    {
+        $admin = User::factory()->admin()->create();
+        $this->seedBatches($admin);
+
+        $this->actingAs($admin)
+            ->get(route('stock-history.index', ['batch' => 'tst-b-000001']))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->has('entries.data', 2));
+    }
+
+    /**
+     * The {@see LikeQuery::escape()} guarantee, asserted because the failure is
+     * silent: without it a typed "%" is a wildcard, and a search for one batch
+     * answers "every movement ever" — on both paths, since both spell the LIKE
+     * out by hand.
+     */
+    public function test_a_wildcard_typed_into_the_batch_box_is_a_literal()
+    {
+        $admin = User::factory()->admin()->create();
+        $this->seedBatches($admin);
+
+        $this->actingAs($admin)
+            ->get(route('stock-history.index', ['batch' => '%']))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->has('entries.data', 0));
+    }
+
+    /**
+     * An emptied box must clear the filter rather than search for "" — and a box
+     * holding only spaces is an emptied box.
+     */
+    public function test_a_blank_batch_search_is_no_filter_at_all()
+    {
+        $admin = User::factory()->admin()->create();
+        $this->seedBatches($admin);
+
+        foreach (['', '   '] as $blank) {
+            $this->actingAs($admin)
+                ->get(route('stock-history.index', ['batch' => $blank]))
+                ->assertOk()
+                ->assertInertia(fn ($page) => $page
+                    ->has('entries.data', 4)
+                    ->where('filters.batch', null)
+                );
+        }
+    }
+
+    /**
+     * A movement made on its own belongs to no batch, so the dialog has nothing
+     * to offer and prints no batch field.
+     */
+    public function test_a_movement_outside_a_batch_carries_no_batch_name()
+    {
+        $admin = User::factory()->admin()->create();
+        app(StockLedger::class)->record(Variant::factory()->create(), 5, 'stock_adjustment', null,
+            'manual_adjustment', null, $admin);
+
+        $this->actingAs($admin)
+            ->get(route('stock-history.index'))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page->where('entries.data.0.batch_reference', null));
     }
 
     /**
@@ -221,5 +340,24 @@ class StockHistoryTest extends TestCase
             ->getJson(route('stock-history.request', 'not-a-uuid'))
             ->assertOk()
             ->assertExactJson(['request' => null]);
+    }
+
+    // ---------------------------------------------------------------- helpers
+
+    /**
+     * Four movements: two in one batch, one in another, one in none.
+     */
+    private function seedBatches(User $admin): void
+    {
+        $ledger = app(StockLedger::class);
+
+        $ledger->record(Variant::factory()->create(), 4, 'stock_adjustment', null,
+            'manual_adjustment', null, $admin, batchReference: 'TST-B-000001');
+        $ledger->record(Variant::factory()->create(), 7, 'stock_adjustment', null,
+            'manual_adjustment', null, $admin, batchReference: 'TST-B-000001');
+        $ledger->record(Variant::factory()->create(), 2, 'stock_adjustment', null,
+            'manual_adjustment', null, $admin, batchReference: 'TST-B-000002');
+        $ledger->record(Variant::factory()->create(), 9, 'stock_adjustment', null,
+            'manual_adjustment', null, $admin);
     }
 }

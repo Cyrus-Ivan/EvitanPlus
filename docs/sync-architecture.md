@@ -397,6 +397,21 @@ batch it approves does not carry the batch onto the receiving legs. Degraded, no
 change either — INSERT and SELECT on both tables are table-level, and nothing ever UPDATEs
 `batch_id`, so `UPDATE_COLUMNS` stays at six.
 
+**The batch has a second name (schema 24).** `batch_id` groups a card, but a uuid is not something
+anybody reads off a screen or repeats down a phone, and until schema 24 nothing anywhere printed
+the batch at all. `batch_reference` — `MNL-B-000001`, the issuing branch's code and a running
+serial — is the half a person uses; see §"Batch reference" in `docs/glossary.md`, which is
+normative. `App\Support\Inventory\StockBatch` holds both names and mints the reference **inside the
+online write's own transaction**, because the serial is read from `inventory_update_queue` — which
+is Postgres-only, and a batch can only be issued online anyway. A `pg_advisory_xact_lock` on the
+prefix serializes minting per branch, so two tills at one branch cannot be handed one name; it is
+skipped on anything but Postgres, which means the SQLite stand-in the offline suite runs against.
+From there it travels exactly as `batch_id` does — onto the receiving legs, onto the ledger — and
+it is on the ledger for the same reason: the Pending Stocks card, the Stock History entry dialog
+and that page's `?batch=` filter all print or read it, and the last two must work with no
+connection. Additive on the same terms as above; `MIN_APP_VERSION` stayed at 1.1.0 and
+`UPDATE_COLUMNS` stayed at six.
+
 **Answering a batch needs no new path.** "Approve all" posts the card's ids to the same
 `stock-updates.resolve` route one Approve uses, and the resolver re-reads each of them filtered to
 this branch — which is the only thing stopping one branch writing another's stock, and not

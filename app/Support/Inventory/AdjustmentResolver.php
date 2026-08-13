@@ -277,6 +277,9 @@ class AdjustmentResolver
             // products and the receiver sees twelve, which is the same delivery
             // described two different ways.
             'batch_id' => $row->batch_id,
+            // Both names travel together, so the two branches say the same word
+            // about the same delivery. Null on rows written before schema 24.
+            'batch_reference' => $row->batch_reference ?? null,
             'branch_id' => (string) $row->counterparty_branch_id,
             // Pointing back the way it came, so the receiving branch's ledger row
             // can say which shop the stock arrived from.
@@ -369,6 +372,9 @@ class AdjustmentResolver
                 // one at a time must not break the set apart. Null on anything
                 // issued singly, and on every row written before schema 23.
                 batchId: $row->batch_id,
+                // The readable half of the same fact, carried for the same
+                // reason and so the dialog can name the batch offline.
+                batchReference: $row->batch_reference ?? null,
             );
         } catch (NegativeInventoryException) {
             // Named, because the operator's next move is to partially approve

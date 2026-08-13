@@ -464,10 +464,12 @@ class AdjustmentResolutionTest extends TestCase
         // Distinct timestamps, because the queue is worked oldest-first and two
         // rows in the same second would leave the leg order to the uuids.
         $this->pending($remote, $first, 4, [
-            'batch_id' => $batchId, 'notes' => 'Weekly delivery',
+            'batch_id' => $batchId, 'batch_reference' => 'TST-B-000007', 'notes' => 'Weekly delivery',
             'created_at' => now()->subMinute()->toDateTimeString(),
         ]);
-        $this->pending($remote, $second, 7, ['batch_id' => $batchId, 'notes' => 'Weekly delivery']);
+        $this->pending($remote, $second, 7, [
+            'batch_id' => $batchId, 'batch_reference' => 'TST-B-000007', 'notes' => 'Weekly delivery',
+        ]);
 
         $this->actingAs($admin)
             ->get(route('stock-updates.index'))
@@ -476,6 +478,9 @@ class AdjustmentResolutionTest extends TestCase
                 ->has('requests', 1)
                 ->where('requests.0.kind', 'adjustment')
                 ->where('requests.0.batch.size', 2)
+                // The name the card prints (schema 24), so the person answering
+                // and the person who asked are talking about the same delivery.
+                ->where('requests.0.batch.reference', 'TST-B-000007')
                 // Said once, on the card, rather than twice.
                 ->where('requests.0.notes', 'Weekly delivery')
                 ->has('requests.0.legs', 2)
@@ -504,6 +509,28 @@ class AdjustmentResolutionTest extends TestCase
                 ->has('requests', 1)
                 ->where('requests.0.batch', null)
                 ->has('requests.0.legs', 1)
+            );
+    }
+
+    /**
+     * A batch issued before schema 24 has a uuid and no name. It still groups —
+     * the identity is what does that — and the card simply has nothing to print.
+     */
+    public function test_a_batch_from_before_the_names_still_groups(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $batchId = (string) Str::uuid();
+
+        $this->pending($remote, $this->stocked(), 4, ['batch_id' => $batchId]);
+        $this->pending($remote, $this->stocked(), 7, ['batch_id' => $batchId]);
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->get(route('stock-updates.index'))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->has('requests', 1)
+                ->where('requests.0.batch.size', 2)
+                ->where('requests.0.batch.reference', null)
             );
     }
 

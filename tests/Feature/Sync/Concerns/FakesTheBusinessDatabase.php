@@ -75,7 +75,7 @@ trait FakesTheBusinessDatabase
                             "connection_state" varchar, "last_error" text,
                             "created_at" datetime, "updated_at" datetime',
         'inventory_update_queue' => '"id" varchar, "parent_id" varchar, "batch_id" varchar,
-                                     "branch_id" varchar,
+                                     "batch_reference" varchar, "branch_id" varchar,
                                      "counterparty_branch_id" varchar, "variant_id" varchar,
                                      "quantity" integer, "approved_quantity" integer,
                                      "reference_type" varchar, "reference_id" varchar,

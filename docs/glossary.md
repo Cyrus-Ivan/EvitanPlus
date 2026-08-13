@@ -501,6 +501,36 @@ nullable, no foreign key); `App\Http\Controllers\Inventory\StockBatchController`
 nothing about it is bulk-editing anything.
 ✗ **Not** a fourth `reference_type`. A batch's rows are `manual_adjustment` or `transfer` like any
 others; `batch_id` is orthogonal to what kind of movement each row is.
+
+### Batch reference
+**The name of a stock batch that a person can say out loud** — `MNL-B-000001`: the code of the
+branch that *asked*, then a zero-padded running serial. It is the second name of the same act, and
+the two are not interchangeable: `batch_id` is the **identity** everything groups and joins by, and
+the reference is what a card prints, somebody writes on a delivery note, and the Stock History
+`?batch=` filter takes. That filter has a **search box** on the screen and matches a **substring**
+of the reference, case-insensitively: the part of the name a person reads back off a delivery note
+is the serial, and a whole reference still resolves to one batch because the serial is padded to a
+fixed width, so no reference is a prefix of another. Minted once, when the batch is issued, and
+**stored** on every queue row and every ledger row it produces, so it reads the same on both and
+renders with no connection.
+
+The shape is the receipt number's for the receipt number's reason: branches mint independently, so
+the branch prefix is the only thing keeping two branches' serials apart. `-B-` is what stops it
+being read as a receipt number, since both appear in this app to the same people. The prefix names
+the branch that **issued** the batch, which for a transfer arranged from head office is neither end
+of it.
+
+Null on anything issued singly and on every row written before schema 24; every surface that prints
+it falls back to what it printed before.
+*Anchor:* `App\Support\Inventory\StockBatch` (the object holding both names, and the mint);
+`inventory_update_queue.batch_reference` and `inventory_ledger.batch_reference` (schema 24, both
+nullable, neither unique — every row of one batch carries the same value, and what keeps it unique
+per batch is the advisory lock in `StockBatch::mint()`).
+✗ **Not** a batch *number* in the receipt's sense. A receipt serial is gapless because a tax
+authority requires it; a rolled-back batch simply never claims its name, and nothing audits the
+series.
+✗ **Not** derived from `batch_id`. It is not a shortened uuid — it is minted from the queue's own
+max, and reading one off the other is impossible in either direction.
 ✗ **Not** the outbox, and not a *request* either — a request is one card, and a batch is what makes
 a card span many products. Reserve "batch" for the issued set. A set of *answers* submitted
 together (what `resolve` takes) is not one.

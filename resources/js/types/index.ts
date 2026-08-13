@@ -290,7 +290,10 @@ export interface PendingRequest {
     // Non-null when these rows were asked for as ONE act (M13). `size` counts
     // LINES, not legs: a transfer of twelve products is twelve, whether the card
     // is showing twelve sending legs or twenty-four of both kinds.
-    batch: { id: string; size: number } | null;
+    //
+    // `id` is the identity and `reference` is the name people say — `MNL-B-000001`,
+    // null on a batch issued before schema 24.
+    batch: { id: string; reference: string | null; size: number } | null;
     // One note for the whole card. Every row of a batch carries the same string.
     notes: string | null;
     issued_by: RequestActor & { branch: BranchRef | null; at: string };
@@ -424,6 +427,11 @@ export interface StockLedgerEntry {
     // than joined, because Stock History has to render with no connection and
     // `branches` is never pulled to a device.
     counterparty_branch_code: string | null;
+    // The stock batch this movement was one line of, by NAME — `MNL-B-000001`.
+    // Stored on the row for the same reason as the code above it: the entry dialog
+    // names the batch and links to the rest of it with no connection. Null on
+    // anything issued singly, and on every row written before schema 24.
+    batch_reference: string | null;
     notes: string | null;
     created_at: string;
     variant: { id: string; name: string | null; item: string | null } | null;

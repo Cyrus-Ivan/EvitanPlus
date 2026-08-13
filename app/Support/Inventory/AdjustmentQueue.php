@@ -54,12 +54,14 @@ class AdjustmentQueue
      *     notes?: string|null,
      *     counterparty_branch_id?: string|null,
      *     parent_id?: string|null,
-     *     batch_id?: string|null,
      * }>  $rows
+     * @param  StockBatch|null  $batch  The one act these rows were issued as, if they were
+     *                                  issued as one. A property of the CALL and not of a
+     *                                  row: every row of a batch carries the same two values.
      *
      * @throws \RuntimeException when called outside an OnlineWrite::run().
      */
-    public function enqueue(array $rows, User $issuedBy): void
+    public function enqueue(array $rows, User $issuedBy, ?StockBatch $batch = null): void
     {
         if ($rows === []) {
             return;
@@ -67,19 +69,24 @@ class AdjustmentQueue
 
         $issuerBranch = $this->thisBranch();
 
-        $this->online->afterMirroring(function (Connection $remote) use ($rows, $issuedBy, $issuerBranch): void {
+        $this->online->afterMirroring(function (Connection $remote) use ($rows, $issuedBy, $issuerBranch, $batch): void {
+            // Here rather than in the caller, because this is the first moment a
+            // connection to the business database exists and the serial is read
+            // from the queue. It runs once for the whole enqueue — the mapping
+            // below is what runs per row — so a batch gets one name, not one per
+            // line, and the caller can read it back off the object afterwards.
+            $batch?->mint($remote);
+
             $remote->table('inventory_update_queue')->insert(array_map(
                 fn (array $row): array => [
                     'id' => (string) Str::uuid(),
                     'branch_id' => $row['branch_id'],
                     'counterparty_branch_id' => $row['counterparty_branch_id'] ?? null,
                     'parent_id' => $row['parent_id'] ?? null,
-                    // The one act these rows were issued as, when they were
-                    // issued as one. Minted by the caller rather than here: a
-                    // batch spans the whole enqueue and this closure runs per
-                    // row, so generating it here would give every line a batch
-                    // of one. Null for anything asked for on its own.
-                    'batch_id' => $row['batch_id'] ?? null,
+                    // Null on anything asked for on its own, which is most of
+                    // what comes through here.
+                    'batch_id' => $batch?->id,
+                    'batch_reference' => $batch?->reference,
                     'variant_id' => $row['variant_id'],
                     'quantity' => $row['quantity'],
                     'reference_type' => $row['reference_type'],

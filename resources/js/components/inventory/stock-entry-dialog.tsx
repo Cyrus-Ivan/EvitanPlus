@@ -71,14 +71,33 @@ export function StockEntryDialog({
     entry,
     open,
     onOpenChange,
+    onFilterBatch,
 }: {
     entry: StockLedgerEntry | null;
     open: boolean;
     onOpenChange: (open: boolean) => void;
+    // Show the rest of the batch this movement was one line of. The page owns
+    // it, because filtering the history is the page's job and this dialog knows
+    // nothing about the other filters already set.
+    onFilterBatch: (reference: string) => void;
 }) {
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent>{entry && <EntryBody entry={entry} />}</DialogContent>
+            {/* Focus the panel rather than what is inside it. This dialog is a
+                read-only record with exactly one control — the batch link — and
+                Radix would hand it the opening focus, drawing a ring around a
+                data value nobody asked to interact with. Focus stays inside the
+                dialog, so the trap, Escape and tabbing are unaffected; the panel
+                itself draws no outline, being a container with no affordance. */}
+            <DialogContent
+                className="focus:outline-hidden"
+                onOpenAutoFocus={(event) => {
+                    event.preventDefault();
+                    (event.currentTarget as HTMLElement | null)?.focus();
+                }}
+            >
+                {entry && <EntryBody entry={entry} onFilterBatch={onFilterBatch} />}
+            </DialogContent>
         </Dialog>
     );
 }
@@ -89,8 +108,10 @@ export function StockEntryDialog({
  * The hook cannot live in {@see StockEntryDialog}, which renders with `entry`
  * null between openings.
  */
-function EntryBody({ entry }: { entry: StockLedgerEntry }) {
+function EntryBody({ entry, onFilterBatch }: { entry: StockLedgerEntry; onFilterBatch: (reference: string) => void }) {
     const request = useMovementRequest(entry);
+    // Bound once so the click handler below keeps the narrowing.
+    const batch = entry.batch_reference;
 
     return (
         <>
@@ -125,6 +146,21 @@ function EntryBody({ entry }: { entry: StockLedgerEntry }) {
                     the row itself, so it renders offline. */}
                 {entry.counterparty_branch_code && (
                     <Field label={entry.quantity < 0 ? 'Sent to' : 'Came from'}>{entry.counterparty_branch_code}</Field>
+                )}
+                {/* The one act this movement was a line of, by name. Read off the
+                    ROW rather than the request below, so it survives with no
+                    connection — and clickable, because a batch name is only worth
+                    printing if it can answer "what else moved with this?". */}
+                {batch && (
+                    <Field label="Batch">
+                        <button
+                            type="button"
+                            onClick={() => onFilterBatch(batch)}
+                            className="text-primary ring-offset-background focus-visible:ring-ring rounded-sm tabular-nums underline decoration-dotted underline-offset-4 hover:decoration-solid focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-hidden"
+                        >
+                            {batch}
+                        </button>
+                    </Field>
                 )}
             </dl>
 

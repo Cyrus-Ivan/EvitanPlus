@@ -152,18 +152,6 @@ export default function Reports({
 
     const canConsolidate = can('view-consolidated-reports');
     const consolidated = scope !== 'local';
-    // What the email dialog names as the coverage of what it is about to send.
-    // The server computes its own for the document itself — this one only has
-    // to agree with the picker the user is looking at.
-    const scopeLabel =
-        scope === 'local'
-            ? 'This branch'
-            : scope === 'all'
-              ? 'All branches'
-              : (() => {
-                    const branch = branches.find((b) => b.id === scope);
-                    return branch ? `${branch.code} — ${branch.name}` : 'One branch';
-                })();
     // Sales rung up here that have not reached the business database yet, so are
     // not in figures that came FROM it. Only worth saying when consolidated.
     const unsynced = consolidated ? (sync?.unsynced_count ?? 0) : 0;
@@ -263,9 +251,10 @@ export default function Reports({
                     email={email}
                     defaultPeriod={period}
                     defaultDate={filters.date}
-                    scope={scope}
+                    defaultScope={scope}
                     chartBy={chartBy}
-                    scopeLabel={scopeLabel}
+                    branches={branches}
+                    canConsolidate={canConsolidate}
                 />
 
                 {/* The consolidated scope was asked for and could not be served,

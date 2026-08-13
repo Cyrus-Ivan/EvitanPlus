@@ -29,8 +29,13 @@ class SalesReportPdf
     /**
      * @param  array<string, mixed>  $report  A report array as returned by
      *                                        {@see SalesReportBuilder::local()} or the controller's consolidated read.
+     * @param  bool  $automated  Whether the scheduled send produced this, rather
+     *                           than somebody pressing a button. Named in the
+     *                           document's generation details, because a report
+     *                           that arrived by itself and one a person asked for
+     *                           are read differently.
      */
-    public function render(array $report, string $period, Carbon $from, bool $canViewCost): string
+    public function render(array $report, string $period, Carbon $from, bool $canViewCost, bool $automated = false): string
     {
         $rows = array_map(function (array $row) use ($period): array {
             $row['label'] = ReportPeriods::bucketLabel($period, $row['bucket']);
@@ -52,6 +57,9 @@ class SalesReportPdf
             // broken out in their own table when there is more than one.
             'scopeLabel' => $this->scopeLabel($report['scope'], $report['branches']),
             'branchRows' => $report['branchRows'],
+            // The generation details at the foot of the document.
+            'generatedFrom' => $this->generatedFrom(),
+            'automated' => $automated,
         ])->output();
     }
 
@@ -87,6 +95,24 @@ class SalesReportPdf
         $branch = collect($branches)->firstWhere('id', $scope);
 
         return $branch === null ? 'One branch' : $branch['code'].' — '.$branch['name'];
+    }
+
+    /**
+     * The branch this document was PRODUCED at, which is not the same question
+     * as which branches it reports on: an Owner at head office can email the
+     * consolidated figures, or one other branch's, from this device.
+     *
+     * Named as `CODE — Name` rather than by {@see self::scopeLabel}'s rules,
+     * since there is no `all` case to spell here — a device is always exactly
+     * one branch, or none at all before the wizard has hydrated it.
+     */
+    private function generatedFrom(): string
+    {
+        $instance = Instance::current();
+
+        return $instance === null
+            ? 'This device'
+            : $instance->branch_code.' — '.$instance->branch_name;
     }
 
     /**

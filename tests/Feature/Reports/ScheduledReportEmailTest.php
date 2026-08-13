@@ -26,9 +26,18 @@ class ScheduledReportEmailTest extends TestCase
 {
     use RefreshDatabase;
 
+    /**
+     * What the stub below was told about the last document it rendered: null
+     * when nothing has been rendered at all. Static because the stub is an
+     * anonymous class with nowhere else to put it.
+     */
+    public static ?bool $renderedAutomated = null;
+
     protected function setUp(): void
     {
         parent::setUp();
+
+        self::$renderedAutomated = null;
 
         // Rendering a real document per send is dompdf's memory paid for
         // something this class never looks at — and enough sends in one class
@@ -36,8 +45,10 @@ class ScheduledReportEmailTest extends TestCase
         // because the attachment name IS what most of these tests assert on.
         $this->app->bind(SalesReportPdf::class, fn (): SalesReportPdf => new class(app(BusinessSettings::class)) extends SalesReportPdf
         {
-            public function render(array $report, string $period, Carbon $from, bool $canViewCost): string
+            public function render(array $report, string $period, Carbon $from, bool $canViewCost, bool $automated = false): string
             {
+                ScheduledReportEmailTest::$renderedAutomated = $automated;
+
                 return '%PDF-1.4 stub';
             }
         });
@@ -162,6 +173,9 @@ class ScheduledReportEmailTest extends TestCase
         $this->assertNotNull($entry);
         $this->assertNull($entry->user_id);
         $this->assertTrue($entry->new_values['scheduled']);
+
+        // Nobody pressed a button, and the document's generation details say so.
+        $this->assertTrue(self::$renderedAutomated);
     }
 
     public function test_a_device_closed_over_the_chosen_time_sends_late_rather_than_skipping(): void

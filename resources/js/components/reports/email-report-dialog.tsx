@@ -1,3 +1,4 @@
+import { BranchScopeSelect } from '@/components/branch-scope-select';
 import InputError from '@/components/input-error';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -6,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { periodWindowLabel } from '@/lib/report-period';
-import { ReportPeriod } from '@/types';
+import { BranchScope, ReportPeriod, RosterBranch } from '@/types';
 import { Link, useForm } from '@inertiajs/react';
 import { LoaderCircle, Plus, X } from 'lucide-react';
 import { FormEventHandler, useEffect, useState } from 'react';
@@ -43,11 +44,16 @@ const PERIOD_LABELS: [ReportPeriod, string][] = [
  * address can be added — all for THIS send only. Nothing here writes back to the
  * configured list, which is the Owner's to manage in Business Settings.
  *
- * The period and the date are the page's when the dialog opens and are then this
- * dialog's own: emailing last week must not mean navigating the page to last
- * week first. The scope is NOT overridable here — normalizeScope() on the server
- * is the sole authority on which branches a viewer may read, and a second way to
- * choose one is how that boundary drifts.
+ * The period, the date and the branch scope are the page's when the dialog opens
+ * and are then this dialog's own: emailing last week, or another branch, must not
+ * mean navigating the page there first.
+ *
+ * The picker being here does NOT make it a second authority on which branches a
+ * viewer may read — normalizeScope() on the server still constrains and
+ * authorizes every scope, and answers anyone it refuses with a 403. That is a
+ * hard abort on this POST rather than a toast, which is why the control is hidden
+ * from anyone that would happen to: `canConsolidate` is the same gate the page
+ * uses to decide whether to offer its own.
  *
  * Everything is re-derived server-side anyway (and the scope re-authorized), so
  * nothing sent from here is trusted.
@@ -58,31 +64,34 @@ export default function EmailReportDialog({
     email,
     defaultPeriod,
     defaultDate,
-    scope,
+    defaultScope,
     chartBy,
-    scopeLabel,
+    branches,
+    canConsolidate,
 }: {
     open: boolean;
     onOpenChange: (open: boolean) => void;
     email: ReportEmailProp;
     defaultPeriod: ReportPeriod;
     defaultDate: string;
-    scope: string;
+    defaultScope: BranchScope;
     chartBy: string;
-    scopeLabel: string;
+    branches: RosterBranch[];
+    canConsolidate: boolean;
 }) {
     const [rows, setRows] = useState<Row[]>([]);
     const [draft, setDraft] = useState('');
     const [draftError, setDraftError] = useState<string | null>(null);
     const [period, setPeriod] = useState<ReportPeriod>(defaultPeriod);
     const [date, setDate] = useState(defaultDate);
+    const [scope, setScope] = useState<BranchScope>(defaultScope);
 
     const form = useForm<{ recipients: string[] }>({ recipients: [] });
     const { errors, processing, clearErrors } = form;
 
     // Reset on open, so a previous send's edits and errors never leak into the
-    // next one — the overridden period and date included. This page sets no
-    // persistent layout, but the dialog itself stays mounted between opens.
+    // next one — the overridden period, date and scope included. This page sets
+    // no persistent layout, but the dialog itself stays mounted between opens.
     useEffect(() => {
         if (!open) return;
         setRows(email.recipients.map((address) => ({ address, checked: true })));
@@ -90,10 +99,24 @@ export default function EmailReportDialog({
         setDraftError(null);
         setPeriod(defaultPeriod);
         setDate(defaultDate);
+        setScope(defaultScope);
         clearErrors();
-    }, [open, email.recipients, defaultPeriod, defaultDate, clearErrors]);
+    }, [open, email.recipients, defaultPeriod, defaultDate, defaultScope, clearErrors]);
 
     const checked = rows.filter((row) => row.checked).map((row) => row.address);
+
+    // What this send covers, named the way the page names it. The server
+    // computes its own for the document and the subject line; this one only has
+    // to agree with the picker above it.
+    const scopeLabel =
+        scope === 'local'
+            ? 'This branch'
+            : scope === 'all'
+              ? 'All branches'
+              : (() => {
+                    const branch = branches.find((b) => b.id === scope);
+                    return branch ? `${branch.code} — ${branch.name}` : 'One branch';
+                })();
 
     const addDraft = () => {
         const address = draft.trim();
@@ -183,6 +206,20 @@ export default function EmailReportDialog({
                             Any date inside the period you want; it snaps to the whole day, week, month or year. The page behind this dialog does not
                             move.
                         </p>
+
+                        {/* Which branches this send covers. Owner-only, and
+                            online-only — the server refuses anything but
+                            'local' for anyone else, and falls back to this
+                            branch's figures if it cannot reach the business
+                            database. */}
+                        {canConsolidate && (
+                            <div className="grid gap-1.5">
+                                {/* No htmlFor: the control labels its own
+                                    trigger with the same words. */}
+                                <Label>Branches</Label>
+                                <BranchScopeSelect scope={scope} branches={branches} onChange={setScope} label="Branches reported on" />
+                            </div>
+                        )}
 
                         <div className="space-y-2">
                             {rows.length === 0 && (

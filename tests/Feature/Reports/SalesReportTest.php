@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Models\Variant;
 use App\Support\Email\ReportEmailSettings;
 use App\Support\Inventory\StockLedger;
+use App\Support\Reports\SalesReportPdf;
 use App\Support\Sales\ProcessSaleReturn;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -505,12 +506,17 @@ class SalesReportTest extends TestCase
         });
     }
 
-    public function test_pdf_view_renders_the_net_sales_chart_and_top_items_table()
+    /**
+     * The view data {@see SalesReportPdf::render()} builds, hand-assembled so a
+     * case can be asserted on without dompdf's memory. Two buckets — one
+     * positive, one negative net — plus two ranked top items.
+     *
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    private function pdfViewData(array $overrides = []): array
     {
-        // The dompdf output stream is compressed, so assert against the Blade view's
-        // rendered HTML directly. Two buckets — one positive, one negative net — plus
-        // two ranked top items, mirroring what ReportsController::export passes.
-        $data = [
+        return $overrides + [
             'business' => ['business_name' => 'Acme Store', 'business_address' => '', 'tin' => '', 'receipt_footer' => ''],
             'period' => 'daily',
             'periodNoun' => 'Hour',
@@ -528,9 +534,16 @@ class SalesReportTest extends TestCase
             'canViewCost' => false,
             'scopeLabel' => 'This branch',
             'branchRows' => null,
+            'generatedFrom' => 'MNL — Manila',
+            'automated' => false,
         ];
+    }
 
-        $html = view('reports.pdf', $data)->render();
+    public function test_pdf_view_renders_the_net_sales_chart_and_top_items_table()
+    {
+        // The dompdf output stream is compressed, so assert against the Blade
+        // view's rendered HTML directly.
+        $html = view('reports.pdf', $this->pdfViewData())->render();
 
         // Chart: a positive (blue, up) and a negative (red, down) bar are emitted.
         $this->assertStringContainsString('class="bar"', $html);
@@ -546,6 +559,58 @@ class SalesReportTest extends TestCase
         // No cost/profit leaks for a non-Owner viewer, anywhere in the document.
         $this->assertStringNotContainsString('Profit', $html);
         $this->assertStringNotContainsString('Uncosted', $html);
+    }
+
+    public function test_pdf_header_names_the_business_and_the_branches_it_covers()
+    {
+        // The business name carries the coverage in parentheses, so a document
+        // that has left the screen still says which branches it is about.
+        $html = view('reports.pdf', $this->pdfViewData(['scopeLabel' => 'All branches']))->render();
+
+        $this->assertStringContainsString('Acme Store (All branches)', $html);
+        $this->assertStringContainsString('Sales Report — Tuesday, Mar 10, 2026', $html);
+        $this->assertStringContainsString('Net sales recomputed as gross − returns − defects.', $html);
+
+        // The address and TIN line was dropped from the report; those still
+        // print on receipts, and BusinessSettings::all() still carries them.
+        $data = $this->pdfViewData([
+            'business' => ['business_name' => 'Acme Store', 'business_address' => '123 Rizal St', 'tin' => '123-456-789', 'receipt_footer' => ''],
+        ]);
+
+        $html = view('reports.pdf', $data)->render();
+
+        $this->assertStringNotContainsString('123 Rizal St', $html);
+        $this->assertStringNotContainsString('123-456-789', $html);
+    }
+
+    public function test_pdf_foot_reports_how_the_document_was_generated()
+    {
+        $html = view('reports.pdf', $this->pdfViewData())->render();
+
+        $this->assertStringContainsString('Report generation details', $html);
+        $this->assertStringContainsString('Generated Mar 10, 2026 4:00 PM', $html);
+        // The DEVICE's branch, which is not the same question as the scope: this
+        // case reports on 'This branch' from MNL, and a consolidated one would
+        // still have been produced there.
+        $this->assertStringContainsString('Generated at MNL — Manila', $html);
+        $this->assertStringContainsString('Generated on request.', $html);
+        $this->assertStringNotContainsString('Sent automatically', $html);
+
+        $automated = view('reports.pdf', $this->pdfViewData(['automated' => true]))->render();
+
+        $this->assertStringContainsString('Sent automatically on a schedule.', $automated);
+        $this->assertStringNotContainsString('Generated on request.', $automated);
+    }
+
+    public function test_pdf_never_prints_the_receipt_footer()
+    {
+        // It was borrowed as the only free-text business setting and says
+        // nothing about a sales report. The setting itself is unchanged.
+        $data = $this->pdfViewData([
+            'business' => ['business_name' => 'Acme Store', 'business_address' => '', 'tin' => '', 'receipt_footer' => 'Salamat po!'],
+        ]);
+
+        $this->assertStringNotContainsString('Salamat po!', view('reports.pdf', $data)->render());
     }
 
     public function test_emailing_the_report_is_blocked_for_cashiers()

@@ -1,6 +1,7 @@
 {{--
-    Sales report PDF (dompdf). Rendered by ReportsController::export from the same
-    recomputed rows/totals as the on-screen report, so figures match exactly.
+    Sales report PDF (dompdf). Rendered by App\Support\Reports\SalesReportPdf from
+    the same recomputed rows/totals as the on-screen report, so figures match
+    exactly.
 
     Cost / Uncosted / Profit are Owner-only: every cost-bearing column is guarded
     by $canViewCost, mirroring the controller and the React page. Never emit a
@@ -45,11 +46,10 @@
         @page { margin: 28px 32px; }
         * { font-family: DejaVu Sans, sans-serif; }
         body { color: #1a1a1a; font-size: 11px; }
-        .header { border-bottom: 2px solid #1a1a1a; padding-bottom: 8px; margin-bottom: 14px; }
+        .header { border-bottom: 2px solid #1a1a1a; padding-bottom: 8px; }
         .biz-name { font-size: 18px; font-weight: bold; }
-        .biz-meta { color: #555; font-size: 10px; margin-top: 2px; }
         .report-title { font-size: 13px; font-weight: bold; margin-top: 10px; }
-        .report-sub { color: #555; font-size: 10px; margin-top: 2px; }
+        .report-note { color: #555; font-size: 10px; margin: 6px 0 14px; }
 
         .cards { width: 100%; margin: 14px 0; border-collapse: collapse; }
         .cards td { border: 1px solid #ddd; padding: 8px 10px; width: 25%; vertical-align: top; }
@@ -75,28 +75,20 @@
         .xaxis { position: relative; margin-left: 48px; height: 12px; margin-top: 3px; }
         .xaxis .xlabel { position: absolute; text-align: center; font-size: 8px; color: #777; }
 
-        .footer { margin-top: 18px; color: #888; font-size: 9px; text-align: center; }
+        .footer { margin-top: 18px; padding-top: 6px; border-top: 1px solid #ddd; color: #777; font-size: 9px; }
+        .footer-title { font-weight: bold; margin-bottom: 2px; }
     </style>
 </head>
 <body>
+    {{-- Which branches these figures cover (M11) is part of the first line, not
+         a note under it: a consolidated total and a single branch's total are the
+         same shape of number, and a document that has left the screen has nothing
+         else to say which one it is. --}}
     <div class="header">
-        <div class="biz-name">{{ $businessName }}</div>
-        @if ($business['business_address'] !== '' || $business['tin'] !== '')
-            <div class="biz-meta">
-                {{ $business['business_address'] }}@if ($business['business_address'] !== '' && $business['tin'] !== '') · @endif
-                @if ($business['tin'] !== '') TIN: {{ $business['tin'] }} @endif
-            </div>
-        @endif
+        <div class="biz-name">{{ $businessName }} ({{ $scopeLabel }})</div>
         <div class="report-title">Sales Report — {{ $label }}</div>
-        {{-- Which branches these figures cover (M11). Always printed: a
-             consolidated total and a single branch's total are the same shape of
-             number, and a printout that has left the screen has nothing else to
-             say which one it is. --}}
-        <div class="report-sub">{{ $scopeLabel }}</div>
-        <div class="report-sub">
-            Net sales recomputed as gross − returns − defects. Generated {{ $generatedAt->format('M j, Y g:i A') }}.
-        </div>
     </div>
+    <p class="report-note">Net sales recomputed as gross − returns − defects.</p>
 
     <table class="cards">
         <tr>
@@ -291,8 +283,14 @@
         </table>
     @endif
 
-    @if (($business['receipt_footer'] ?? '') !== '')
-        <div class="footer">{{ $business['receipt_footer'] }}</div>
-    @endif
+    {{-- How this document came to exist. The branch named here is the DEVICE's,
+         not the report's: an Owner standing at one branch can email another
+         branch's figures, and the two facts are different ones. --}}
+    <div class="footer">
+        <div class="footer-title">Report generation details</div>
+        <div>Generated {{ $generatedAt->format('M j, Y g:i A') }}</div>
+        <div>Generated at {{ $generatedFrom }}</div>
+        <div>{{ $automated ? 'Sent automatically on a schedule.' : 'Generated on request.' }}</div>
+    </div>
 </body>
 </html>

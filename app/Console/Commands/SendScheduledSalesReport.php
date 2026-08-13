@@ -144,7 +144,9 @@ class SendScheduledSalesReport extends Command
                     periodNoun: ReportPeriods::SUB_NOUNS[$period],
                     totals: $report['totals'],
                     canViewCost: $canViewCost,
-                    pdf: $pdf->render($report, $period, $from, $canViewCost),
+                    // Automated: nobody pressed a button, and the document says
+                    // so in its generation details.
+                    pdf: $pdf->render($report, $period, $from, $canViewCost, automated: true),
                     filename: $pdf->filename($report, $period, $from),
                     // No actor: this is the device sending on a schedule, and
                     // the email body says so rather than naming somebody who

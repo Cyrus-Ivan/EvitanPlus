@@ -333,6 +333,7 @@ php "$ROOT/console/artisan" business:provision \
     --branch-address="1 Rig Street, $NAME_A" \
     --out="$JSON_A" \
     --actor=manual-rig \
+    --disposable \
     --force --no-interaction
 
 # The schema was recorded before the call; this proves the two agree. If the
@@ -341,8 +342,20 @@ php "$ROOT/console/artisan" business:provision \
 # and reporting success. Cheap to check, and it is the whole safety of deriving
 # the name in two languages.
 ACTUAL_SCHEMA="$(jread "$JSON_A" business schema)"
-[[ "$ACTUAL_SCHEMA" == "$SCHEMA" ]] || fail \
-    "provisioning used schema [$ACTUAL_SCHEMA], not the recorded [$SCHEMA] — teardown would leak it"
+RECORDED="$SCHEMA"
+
+if [[ "$ACTUAL_SCHEMA" != "$RECORDED" ]]; then
+    # Teardown drops what SCHEMA names, and `drop schema if exists` on a name
+    # that never existed is a silent success — so failing here without this
+    # exited reporting "nothing left in Postgres" over a live schema, and
+    # deleted the credentials JSON that was the only other record of its name.
+    # That is the exact leak the up-front derivation exists to prevent, and it
+    # is what happened when this call was missing --disposable. Adopt the name
+    # that really exists, then fail.
+    SCHEMA="$ACTUAL_SCHEMA"
+    remember SCHEMA "$SCHEMA"
+    fail "provisioning used schema [$ACTUAL_SCHEMA], not the recorded [$RECORDED] — dropping the one that exists"
+fi
 
 # The moment the JSON is readable the role exists and must be recoverable. Kept
 # even though pg.php's drop now finds it in the schema's own branches rows:

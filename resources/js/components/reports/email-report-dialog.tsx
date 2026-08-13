@@ -122,7 +122,7 @@ export default function EmailReportDialog({
                         <p>Report email is not set up yet, so there is nowhere to send this.</p>
                         {email.canConfigure ? (
                             <p>
-                                <Link href="/business-settings#report-email" className="font-medium underline underline-offset-4">
+                                <Link href="/business-settings/report-email" className="font-medium underline underline-offset-4">
                                     Set up report email
                                 </Link>{' '}
                                 — you will need the sending account's server address and password.

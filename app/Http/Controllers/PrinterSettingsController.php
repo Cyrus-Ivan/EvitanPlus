@@ -10,16 +10,32 @@ use App\Support\Printing\PrinterSettings;
 use App\Support\Printing\ReceiptPrinter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
+use Inertia\Inertia;
+use Inertia\Response;
 use Native\Laravel\Facades\System;
 
 /**
  * Receipt-printer configuration (Phase 11). Owner-only via the route's
- * role:owner middleware; the settings are surfaced on the business-settings
- * page alongside the business identity.
+ * role:owner middleware; its own section of the business-settings area, at
+ * `/business-settings/printing`.
  */
 class PrinterSettingsController extends Controller
 {
     public function __construct(private readonly PrinterSettings $settings) {}
+
+    /**
+     * Show the receipt-printer section.
+     *
+     * No `online` prop, unlike {@see BusinessSettingsController::edit()}: the
+     * printer is device hardware, has no upstream row, and is configurable with
+     * no connection at all — so this section must not pay for a probe.
+     */
+    public function edit(): Response
+    {
+        return Inertia::render('business-settings/printing', [
+            'printerSettings' => $this->settings->all(),
+        ]);
+    }
 
     /**
      * Persist the receipt-printer settings.

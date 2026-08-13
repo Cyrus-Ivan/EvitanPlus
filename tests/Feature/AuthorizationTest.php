@@ -52,7 +52,11 @@ class AuthorizationTest extends TestCase
     public static function ownerRoutes(): array
     {
         return [
+            // Three sections, three URLs — the whole area is owner-only, so a
+            // section that forgot its middleware is a hole in the same wall.
             'business-settings' => ['business-settings'],
+            'printer-settings' => ['printer-settings'],
+            'report-email-settings' => ['report-email-settings'],
         ];
     }
 

@@ -52,9 +52,10 @@ class ReportEmailSettingsTest extends TestCase
         $this->settings()->setRecipients(['owner@shop.test', 'admin@shop.test']);
 
         $this->actingAs(User::factory()->owner()->create())
-            ->get(route('business-settings'))
+            ->get(route('report-email-settings'))
             ->assertOk()
             ->assertInertia(fn ($page) => $page
+                ->component('business-settings/report-email', false)
                 ->where('reportEmailSettings.report_email_smtp_host', 'smtp.shop.test')
                 ->where('reportEmailSettings.recipients', ['owner@shop.test', 'admin@shop.test'])
                 ->where('reportEmailSettings.password_set', '1')

@@ -6,8 +6,6 @@ use App\Http\Requests\BusinessSettingsUpdateRequest;
 use App\Models\Setting;
 use App\Support\Audit\AuditRecorder;
 use App\Support\Audit\SettingsDiff;
-use App\Support\Email\ReportEmailSettings;
-use App\Support\Printing\PrinterSettings;
 use App\Support\Settings\BusinessSettings;
 use App\Support\Sync\OnlineWrite;
 use Illuminate\Http\RedirectResponse;
@@ -16,8 +14,8 @@ use Inertia\Response;
 
 /**
  * Business identity is SHARED (§5.1) and the receipt printer is not — the same
- * split `Hydrator` already makes, and the reason this controller cannot simply
- * treat its whole table one way.
+ * split `Hydrator` already makes, and the reason the three sections of the
+ * business-settings area are three controllers rather than one.
  *
  * The six business keys (`BusinessSettings::KEYS`) name the business itself and
  * print on every receipt at every branch, so changing one is an ONLINE WRITE.
@@ -31,25 +29,20 @@ class BusinessSettingsController extends Controller
 {
     public function __construct(
         private readonly BusinessSettings $settings,
-        private readonly PrinterSettings $printerSettings,
-        private readonly ReportEmailSettings $reportEmailSettings,
         private readonly OnlineWrite $online,
     ) {}
 
     /**
-     * Show the business settings page (business identity + receipt printer +
-     * report email).
+     * Show the business identity section — the first of the three, and the one
+     * this area's own URL lands on.
+     *
+     * The only section that pays for the connection probe: it is the only one
+     * whose write is an online write, and the notice it feeds says so.
      */
     public function edit(): Response
     {
-        return Inertia::render('business-settings', [
+        return Inertia::render('business-settings/business', [
             'settings' => $this->settings->all(),
-            'printerSettings' => $this->printerSettings->all(),
-            // forDisplay(), never all(): the SMTP password ciphertext must not
-            // cross to the frontend, only whether one is stored.
-            'reportEmailSettings' => $this->reportEmailSettings->forDisplay(),
-            // The printer and report-email halves of this screen keep working
-            // offline; only the business half is gated.
             'online' => $this->online->possible(),
         ]);
     }

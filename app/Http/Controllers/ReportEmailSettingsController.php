@@ -11,12 +11,14 @@ use App\Support\Email\ReportEmailSettings;
 use App\Support\Email\ReportMailer;
 use App\Support\Settings\BusinessSettings;
 use Illuminate\Http\RedirectResponse;
+use Inertia\Inertia;
+use Inertia\Response;
 
 /**
  * Report-email configuration: the default recipients, how often the report goes
  * out on its own, and the SMTP account it is sent from. Owner-only via the
- * route's role:owner middleware; surfaced on the business-settings page
- * alongside the business identity and the receipt printer.
+ * route's role:owner middleware; its own section of the business-settings area,
+ * at `/business-settings/report-email`.
  *
  * Separate from {@see BusinessSettingsController} for exactly the reason
  * {@see PrinterSettingsController} is separate: business identity is SHARED and
@@ -31,6 +33,21 @@ class ReportEmailSettingsController extends Controller
         private readonly ReportEmailSettings $settings,
         private readonly BusinessSettings $business,
     ) {}
+
+    /**
+     * Show the report-email section.
+     *
+     * forDisplay(), never all(): the sealed SMTP password must not cross to the
+     * frontend, only whether one is stored. No `online` prop for the reason
+     * given on {@see PrinterSettingsController::edit()} — these keys are
+     * device-local too.
+     */
+    public function edit(): Response
+    {
+        return Inertia::render('business-settings/report-email', [
+            'reportEmailSettings' => $this->settings->forDisplay(),
+        ]);
+    }
 
     public function update(ReportEmailSettingsUpdateRequest $request, AuditRecorder $audit): RedirectResponse
     {

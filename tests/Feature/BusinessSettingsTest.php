@@ -21,8 +21,32 @@ class BusinessSettingsTest extends TestCase
 
         $response->assertOk()->assertInertia(
             fn ($page) => $page
+                ->component('business-settings/business', false)
                 ->where('settings.business_name', 'Acme Retail')
                 ->where('settings.tin', '')
+                // The other two sections are their own URLs and carry their own
+                // props; this one must not drag a probe's worth of them along.
+                ->missing('printerSettings')
+                ->missing('reportEmailSettings')
+        );
+    }
+
+    public function test_owner_sees_the_printer_section_with_current_values()
+    {
+        // Not the default (58mm), or a page ignoring the stored row would pass.
+        Setting::create(['key' => 'receipt_paper_size', 'value' => '80mm']);
+
+        $response = $this
+            ->actingAs(User::factory()->owner()->create())
+            ->get(route('printer-settings'));
+
+        $response->assertOk()->assertInertia(
+            fn ($page) => $page
+                ->component('business-settings/printing', false)
+                ->where('printerSettings.receipt_paper_size', '80mm')
+                // Device hardware: nothing here is gated on a connection, so
+                // this section must not pay for the probe.
+                ->missing('online')
         );
     }
 

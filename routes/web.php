@@ -218,14 +218,24 @@ Route::middleware(['auth'])->group(function () {
 
     // Owner-only.
     Route::middleware('role:owner')->group(function () {
+        // Three unrelated concerns that happen to be the owner's to configure,
+        // one URL each — the shape `/settings/*` has. They were one page with a
+        // client-side section nav for a moment, which is a URL the browser does
+        // not know about: the section had to be kept somewhere, the somewhere
+        // was the history entry, and writing it wiped the state Inertia keeps
+        // there. A route is the only place a section can live that nothing else
+        // owns. The write endpoints are unchanged and stay on the controller
+        // that owns each section.
         Route::get('business-settings', [BusinessSettingsController::class, 'edit'])->name('business-settings');      // Phase 4
         Route::patch('business-settings', [BusinessSettingsController::class, 'update'])->name('business-settings.update');
-        // Receipt-printer configuration (Phase 11). Surfaced on the same page.
+        // Receipt-printer configuration (Phase 11).
+        Route::get('business-settings/printing', [PrinterSettingsController::class, 'edit'])->name('printer-settings');
         Route::patch('printer-settings', [PrinterSettingsController::class, 'update'])->name('printer-settings.update');
         Route::post('printer-settings/test', [PrinterSettingsController::class, 'test'])->name('printer-settings.test');
         Route::get('printer-settings/printers', [PrinterSettingsController::class, 'printers'])->name('printer-settings.printers');
         // Report email: recipients, schedule, sender credentials. Device-local
-        // like the printer, and on the same page for the same reason.
+        // like the printer, and for the same reason.
+        Route::get('business-settings/report-email', [ReportEmailSettingsController::class, 'edit'])->name('report-email-settings');
         Route::patch('report-email-settings', [ReportEmailSettingsController::class, 'update'])->name('report-email-settings.update');
         Route::post('report-email-settings/test', [ReportEmailSettingsController::class, 'test'])->name('report-email-settings.test');
     });

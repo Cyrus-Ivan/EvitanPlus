@@ -30,7 +30,12 @@ const DESTINATIONS: Array<[path: string, title: RegExp]> = [
     ['/login-history', /^Login History -/],
     ['/users', /^User Management -/],
     ['/audit-logs', /^Audit Logs -/],
+    // Three URLs, one per section. They were one page with a client-side
+    // section nav for a moment; a section that lives in the URL is a section
+    // nothing has to write to `history` to remember.
     ['/business-settings', /^Business Settings -/],
+    ['/business-settings/printing', /^Receipt Printing -/],
+    ['/business-settings/report-email', /^Report Email -/],
     ['/settings/profile', /^Profile settings -/],
     ['/settings/password', /^Profile settings -/],
     ['/settings/appearance', /^Appearance settings -/],

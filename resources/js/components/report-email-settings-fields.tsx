@@ -1,5 +1,6 @@
 import InputError from '@/components/input-error';
 import ReportEmailGuide from '@/components/report-email-guide';
+import ReportScheduleFields from '@/components/report-schedule-fields';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -14,7 +15,15 @@ import { HelpCircle, Plus, X } from 'lucide-react';
 // server — the newline encoding it is stored in is the server's business.
 export interface ReportEmailSettingsData {
     recipients: string[];
-    report_email_period: string;
+    report_email_daily_enabled: string;
+    report_email_daily_days: string[];
+    report_email_daily_time: string;
+    report_email_weekly_enabled: string;
+    report_email_weekly_time: string;
+    report_email_monthly_enabled: string;
+    report_email_monthly_time: string;
+    report_email_yearly_enabled: string;
+    report_email_yearly_time: string;
     report_email_include_cost: string;
     report_email_smtp_host: string;
     report_email_smtp_port: string;
@@ -26,14 +35,6 @@ export interface ReportEmailSettingsData {
     report_email_from_name: string;
     [key: string]: string | string[];
 }
-
-const PERIOD_LABELS: Record<string, string> = {
-    off: 'Off — only when someone sends it',
-    daily: 'Every day',
-    weekly: 'Every week',
-    monthly: 'Every month',
-    yearly: 'Every year',
-};
 
 /**
  * Two groups, not one run of fields. Who the report goes to and how often is a
@@ -113,26 +114,13 @@ export default function ReportEmailSettingsFields({
                         <InputError message={errors.recipients} />
                     </div>
 
-                    <div className="grid gap-2">
-                        <Label htmlFor="report_email_period">Send automatically</Label>
-                        <Select value={data.report_email_period} onValueChange={(value) => setData('report_email_period', value)}>
-                            <SelectTrigger id="report_email_period" className="w-72">
-                                <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {Object.entries(PERIOD_LABELS).map(([value, label]) => (
-                                    <SelectItem key={value} value={value}>
-                                        {label}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                        <p className="text-muted-foreground text-xs">
-                            Sent from this device, for this branch only, covering the last complete period. It goes out while the app is open — if the
-                            device was closed, the most recent complete period is sent the next time you open it.
-                        </p>
-                        <InputError message={errors.report_email_period} />
-                    </div>
+                    <ReportScheduleFields
+                        values={data}
+                        days={data.report_email_daily_days}
+                        setValue={setData}
+                        setDays={(days) => setData('report_email_daily_days', days)}
+                        errors={errors}
+                    />
 
                     <label className="flex items-start gap-3">
                         <Checkbox

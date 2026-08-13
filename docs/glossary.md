@@ -1326,36 +1326,54 @@ and never writes back; the list is the Owner's to manage in Business Settings.
 are a 500 on the settings page or a silent degrade to "no recipients" that stops the scheduled
 send forever. `explode()` is total, and `email:rfc` forbids a newline inside an address.
 
-### Sending period
-How often the report goes out **on its own**: `off | daily | weekly | monthly | yearly`.
-*Anchor:* key `report_email_period`; `App\Console\Commands\SendScheduledSalesReport`;
-`bootstrap/app.php`'s `withSchedule()`, the app's first.
-✗ **Not** the report's `period`. That one is *what window* a report covers; this one is *how
-often* one is sent. They share a vocabulary and are different settings — a monthly schedule sends
-a monthly report, but only because the command uses one value for both.
+### Schedule
+One automatic send: a **kind** (`daily | weekly | monthly | yearly`), whether it is switched on, a
+**send time**, and — for daily only — the weekdays it fires on. Four of them, independent.
+*Anchor:* `App\Support\Email\ReportSchedule`, built by `ReportEmailSettings::schedules()` from the
+keys `report_email_<kind>_enabled`, `report_email_<kind>_time` and `report_email_daily_days`;
+walked by `App\Console\Commands\SendScheduledSalesReport`.
+✗ **Not** a "sending period" — the single `off | daily | weekly | monthly | yearly` value M14
+shipped, which made the four mutually exclusive. Removed; a migration carries an installed
+device's old value onto the matching toggle.
+✗ **Not** the report's `period`, though a schedule's kind is spelled the same and resolves to it
+(`ReportSchedule::period()`). One is *how often a send happens*, the other is *what window a
+document covers*.
 ✗ **Not** a background service. NativePHP ticks `artisan schedule:run` once a minute **while the
 app window is open** and not otherwise, which is why the command is marker-driven rather than
 fired at an instant it could simply miss.
-✗ **Not** cost-free by default. The scheduled report omits cost, COGS and profit unless the Owner
-has ticked `report_email_include_cost`: Item Cost is Owner-only to *view*, and an emailed report
-has no viewer whose role that could be true of. A report sent by hand follows the sender's own
-gate, exactly as the download did.
+✗ **Not** cost-free by default. A scheduled report omits cost, COGS and profit unless the Owner
+has ticked `report_email_include_cost` — one decision covering all four: Item Cost is Owner-only
+to *view*, and an emailed report has no viewer whose role that could be true of. A report sent by
+hand follows the sender's own gate, exactly as the download did.
 
-### Last sent period marker
-The record of which period has already gone out, as `"<period>:<window start Y-m-d>"` — e.g.
-`weekly:2026-08-03`.
-*Anchor:* `ReportEmailSettings::lastPeriod()`, key `report_email_last_period`, deliberately
-outside `DEFAULTS` so no form can write it and no settings diff can mention it.
+### Send time
+The time of day a schedule fires, on the quarter-hour: `00:00` … `23:45`.
+*Anchor:* `ReportSchedule::times()` (the closed list), `ReportSchedule::lastDueAt()` (the
+comparison), and the same list as a `Rule::in` in `ReportEmailSettingsRules`.
+✗ **Not** any minute. The command ticks every fifteen minutes, so a time it cannot land on would
+be a picker that lies. The grid is the tick's, not a display convention.
+✗ **Not** a deadline. A device shut at the chosen time sends **late**, on the next launch —
+`lastDueAt()` looks backward to the most recent firing instant that is not in the future, never
+forward to the next one.
+✗ **Not** readable by `bootstrap/app.php`. That closure runs on every artisan invocation,
+including `migrate` on a device whose settings table does not exist yet, so `->dailyAt()` is not
+available and every time-of-day decision lives inside the command.
+
+### Last sent marker
+The record of which window has already gone out for one kind: a bare `Y-m-d` window start, under a
+key that names the kind — `report_email_last_weekly`.
+*Anchor:* `ReportEmailSettings::lastSent()` / `markSent()`, keys `report_email_last_<kind>`,
+deliberately outside `DEFAULTS` so no form can write one and no settings diff can mention one.
 ✗ **Not** a timestamp of the send. It names the *window*, which is what makes the question
 answerable at any moment rather than only at one.
-✗ **Not** a date alone. It carries the period **kind** too, because a weekly window's start can
-equal a daily window's start, and a date-only marker would suppress the first send after the
-Owner switched daily → weekly.
-✗ **Not** a backlog. The window is always the last *complete* period relative to now, so a device
-that was off for three weeks sends **one** report — last week's — not three. A marker holds a
-position, not a queue; the missed windows are still on the device and any of them can be emailed
-by hand.
-> **Known consequence.** Every device with a period set sends its own branch-local report. One
+✗ **Not** one shared row. M14 had a single `report_email_last_period` holding `"<kind>:<date>"`,
+because a weekly window's start can equal a daily window's start. One key per kind makes that
+collision unrepresentable rather than merely handled.
+✗ **Not** a backlog. Each kind's window is the period that finished before its most recent firing
+instant, so a device that was off for three weeks sends **one** weekly report — last week's — not
+three. A marker holds a position, not a queue; the missed windows are still on the device and any
+of them can be emailed by hand.
+> **Known consequence.** Every device with a schedule on sends its own branch-local report. One
 > device per branch (§2 "Till") makes that one email per branch; the day that constraint ends it
 > becomes N duplicates, and this is the entry to come back to.
 

@@ -3,6 +3,10 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { periodWindowLabel } from '@/lib/report-period';
+import { ReportPeriod } from '@/types';
 import { Link, useForm } from '@inertiajs/react';
 import { LoaderCircle, Plus, X } from 'lucide-react';
 import { FormEventHandler, useEffect, useState } from 'react';
@@ -24,6 +28,14 @@ interface Row {
 
 const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/** The same four the page's toggle group offers, spelled for a narrow select. */
+const PERIOD_LABELS: [ReportPeriod, string][] = [
+    ['daily', 'Day'],
+    ['weekly', 'Week'],
+    ['monthly', 'Month'],
+    ['yearly', 'Year'],
+];
+
 /**
  * Email the report on screen, as a PDF attachment.
  *
@@ -31,48 +43,55 @@ const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * address can be added — all for THIS send only. Nothing here writes back to the
  * configured list, which is the Owner's to manage in Business Settings.
  *
- * The filters are passed through verbatim so the emailed document is the one on
- * screen, scope and all. The server re-derives them anyway (and re-authorizes
- * the scope), so nothing here is trusted.
+ * The period and the date are the page's when the dialog opens and are then this
+ * dialog's own: emailing last week must not mean navigating the page to last
+ * week first. The scope is NOT overridable here — normalizeScope() on the server
+ * is the sole authority on which branches a viewer may read, and a second way to
+ * choose one is how that boundary drifts.
+ *
+ * Everything is re-derived server-side anyway (and the scope re-authorized), so
+ * nothing sent from here is trusted.
  */
 export default function EmailReportDialog({
     open,
     onOpenChange,
     email,
-    period,
-    date,
+    defaultPeriod,
+    defaultDate,
     scope,
     chartBy,
-    periodLabel,
     scopeLabel,
 }: {
     open: boolean;
     onOpenChange: (open: boolean) => void;
     email: ReportEmailProp;
-    period: string;
-    date: string;
+    defaultPeriod: ReportPeriod;
+    defaultDate: string;
     scope: string;
     chartBy: string;
-    periodLabel: string;
     scopeLabel: string;
 }) {
     const [rows, setRows] = useState<Row[]>([]);
     const [draft, setDraft] = useState('');
     const [draftError, setDraftError] = useState<string | null>(null);
+    const [period, setPeriod] = useState<ReportPeriod>(defaultPeriod);
+    const [date, setDate] = useState(defaultDate);
 
     const form = useForm<{ recipients: string[] }>({ recipients: [] });
     const { errors, processing, clearErrors } = form;
 
     // Reset on open, so a previous send's edits and errors never leak into the
-    // next one. This page sets no persistent layout, but the dialog itself
-    // stays mounted between opens.
+    // next one — the overridden period and date included. This page sets no
+    // persistent layout, but the dialog itself stays mounted between opens.
     useEffect(() => {
         if (!open) return;
         setRows(email.recipients.map((address) => ({ address, checked: true })));
         setDraft('');
         setDraftError(null);
+        setPeriod(defaultPeriod);
+        setDate(defaultDate);
         clearErrors();
-    }, [open, email.recipients, clearErrors]);
+    }, [open, email.recipients, defaultPeriod, defaultDate, clearErrors]);
 
     const checked = rows.filter((row) => row.checked).map((row) => row.address);
 
@@ -111,9 +130,9 @@ export default function EmailReportDialog({
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent>
                 <DialogHeader>
-                    <DialogTitle>Email this report</DialogTitle>
+                    <DialogTitle>Email a report</DialogTitle>
                     <DialogDescription>
-                        {scopeLabel} · {periodLabel}. The full report goes out as a PDF attachment.
+                        {scopeLabel} · {periodWindowLabel(period, date)}. The full report goes out as a PDF attachment.
                     </DialogDescription>
                 </DialogHeader>
 
@@ -133,6 +152,38 @@ export default function EmailReportDialog({
                     </div>
                 ) : (
                     <form onSubmit={submit} className="space-y-4">
+                        <div className="grid gap-3 sm:grid-cols-[9rem_1fr]">
+                            <div className="grid gap-1.5">
+                                <Label htmlFor="email-report-period">Period</Label>
+                                <Select value={period} onValueChange={(value) => setPeriod(value as ReportPeriod)}>
+                                    <SelectTrigger id="email-report-period">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {PERIOD_LABELS.map(([value, label]) => (
+                                            <SelectItem key={value} value={value}>
+                                                {label}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <div className="grid gap-1.5">
+                                <Label htmlFor="email-report-date">Date in that period</Label>
+                                <Input
+                                    id="email-report-date"
+                                    type="date"
+                                    value={date}
+                                    onChange={(e) => setDate(e.target.value)}
+                                    max={new Date().toLocaleDateString('en-CA')}
+                                />
+                            </div>
+                        </div>
+                        <p className="text-muted-foreground -mt-2 text-xs">
+                            Any date inside the period you want; it snaps to the whole day, week, month or year. The page behind this dialog does not
+                            move.
+                        </p>
+
                         <div className="space-y-2">
                             {rows.length === 0 && (
                                 <p className="text-muted-foreground text-sm">

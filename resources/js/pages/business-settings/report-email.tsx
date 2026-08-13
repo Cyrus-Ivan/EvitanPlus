@@ -20,7 +20,15 @@ const breadcrumbs: BreadcrumbItem[] = [
 // widen every field to `string | string[]`.
 interface ReportEmailSettingsProp {
     recipients: string[];
-    report_email_period: string;
+    report_email_daily_enabled: string;
+    report_email_daily_days: string[];
+    report_email_daily_time: string;
+    report_email_weekly_enabled: string;
+    report_email_weekly_time: string;
+    report_email_monthly_enabled: string;
+    report_email_monthly_time: string;
+    report_email_yearly_enabled: string;
+    report_email_yearly_time: string;
     report_email_include_cost: string;
     report_email_smtp_host: string;
     report_email_smtp_port: string;
@@ -34,7 +42,15 @@ interface ReportEmailSettingsProp {
 export default function ReportEmail({ reportEmailSettings }: { reportEmailSettings: ReportEmailSettingsProp }) {
     const email = useForm<ReportEmailSettingsData>({
         recipients: reportEmailSettings.recipients,
-        report_email_period: reportEmailSettings.report_email_period,
+        report_email_daily_enabled: reportEmailSettings.report_email_daily_enabled,
+        report_email_daily_days: reportEmailSettings.report_email_daily_days,
+        report_email_daily_time: reportEmailSettings.report_email_daily_time,
+        report_email_weekly_enabled: reportEmailSettings.report_email_weekly_enabled,
+        report_email_weekly_time: reportEmailSettings.report_email_weekly_time,
+        report_email_monthly_enabled: reportEmailSettings.report_email_monthly_enabled,
+        report_email_monthly_time: reportEmailSettings.report_email_monthly_time,
+        report_email_yearly_enabled: reportEmailSettings.report_email_yearly_enabled,
+        report_email_yearly_time: reportEmailSettings.report_email_yearly_time,
         report_email_include_cost: reportEmailSettings.report_email_include_cost,
         report_email_smtp_host: reportEmailSettings.report_email_smtp_host,
         report_email_smtp_port: reportEmailSettings.report_email_smtp_port,

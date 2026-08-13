@@ -24,7 +24,15 @@ class ReportEmailSettingsTest extends TestCase
     {
         return array_merge([
             'recipients' => ['owner@shop.test'],
-            'report_email_period' => 'off',
+            'report_email_daily_enabled' => false,
+            'report_email_daily_days' => ['1', '2', '3', '4', '5', '6', '7'],
+            'report_email_daily_time' => '08:00',
+            'report_email_weekly_enabled' => false,
+            'report_email_weekly_time' => '08:00',
+            'report_email_monthly_enabled' => false,
+            'report_email_monthly_time' => '08:00',
+            'report_email_yearly_enabled' => false,
+            'report_email_yearly_time' => '08:00',
             'report_email_include_cost' => false,
             'report_email_smtp_host' => 'smtp.shop.test',
             'report_email_smtp_port' => 587,
@@ -72,7 +80,10 @@ class ReportEmailSettingsTest extends TestCase
         $this->actingAs(User::factory()->owner()->create())
             ->patch(route('report-email-settings.update'), $this->payload([
                 'recipients' => ['owner@shop.test', ' admin@shop.test '],
-                'report_email_period' => 'weekly',
+                'report_email_weekly_enabled' => true,
+                'report_email_weekly_time' => '06:30',
+                'report_email_daily_enabled' => true,
+                'report_email_daily_days' => ['4', '1', '1'],
                 'report_email_include_cost' => true,
             ]))
             ->assertRedirect()
@@ -80,7 +91,15 @@ class ReportEmailSettingsTest extends TestCase
 
         $settings = $this->settings();
         $this->assertSame(['owner@shop.test', 'admin@shop.test'], $settings->recipients());
-        $this->assertSame('weekly', $settings->period());
+
+        $schedules = $settings->schedules();
+        $this->assertTrue($schedules['weekly']->enabled);
+        $this->assertSame('06:30', $schedules['weekly']->time);
+        // Sorted and deduped on the way in.
+        $this->assertSame([1, 4], $schedules['daily']->days);
+        $this->assertFalse($schedules['monthly']->enabled);
+        $this->assertFalse($schedules['yearly']->enabled);
+
         $this->assertTrue($settings->includeCost());
         $this->assertSame('smtp.shop.test', $settings->host());
         $this->assertSame(587, $settings->port());
@@ -182,7 +201,9 @@ class ReportEmailSettingsTest extends TestCase
         $cases = [
             'report_email_smtp_port' => ['report_email_smtp_port' => 70000],
             'report_email_smtp_encryption' => ['report_email_smtp_encryption' => 'starttls'],
-            'report_email_period' => ['report_email_period' => 'fortnightly'],
+            // Off the quarter-hour grid the sending tick can actually land on.
+            'report_email_daily_time' => ['report_email_daily_time' => '08:07'],
+            'report_email_daily_days.0' => ['report_email_daily_days' => ['8']],
             'recipients.0' => ['recipients' => ['not-an-address']],
             'report_email_from_address' => ['report_email_from_address' => 'not-an-address'],
         ];
@@ -208,29 +229,51 @@ class ReportEmailSettingsTest extends TestCase
         $owner = User::factory()->owner()->create();
 
         // A schedule that can never fire is a field error at save time, not a
-        // nightly log line nobody reads.
-        $this->actingAs($owner)
-            ->patch(route('report-email-settings.update'), $this->payload([
-                'report_email_period' => 'daily',
-                'report_email_smtp_host' => '',
-                'report_email_from_address' => '',
-            ]))
-            ->assertSessionHasErrors(['report_email_smtp_host', 'report_email_from_address']);
+        // nightly log line nobody reads. Any one of the four counts.
+        foreach (['daily', 'weekly', 'monthly', 'yearly'] as $kind) {
+            $this->actingAs($owner)
+                ->patch(route('report-email-settings.update'), $this->payload([
+                    'report_email_'.$kind.'_enabled' => true,
+                    'report_email_smtp_host' => '',
+                    'report_email_from_address' => '',
+                ]))
+                ->assertSessionHasErrors(['report_email_smtp_host', 'report_email_from_address']);
 
-        $this->actingAs($owner)
-            ->patch(route('report-email-settings.update'), $this->payload([
-                'report_email_period' => 'daily',
-                'recipients' => [],
-            ]))
-            ->assertSessionHasErrors('recipients');
+            $this->actingAs($owner)
+                ->patch(route('report-email-settings.update'), $this->payload([
+                    'report_email_'.$kind.'_enabled' => true,
+                    'recipients' => [],
+                ]))
+                ->assertSessionHasErrors('recipients');
+        }
     }
 
-    public function test_switching_the_schedule_off_lets_a_blank_form_be_saved(): void
+    public function test_a_daily_report_with_no_day_ticked_is_refused(): void
+    {
+        $owner = User::factory()->owner()->create();
+
+        $this->actingAs($owner)
+            ->patch(route('report-email-settings.update'), $this->payload([
+                'report_email_daily_enabled' => true,
+                'report_email_daily_days' => [],
+            ]))
+            ->assertSessionHasErrors('report_email_daily_days');
+
+        // …but an empty list is fine while the daily report is off, so the
+        // field cannot trap somebody who has switched it away.
+        $this->actingAs($owner)
+            ->patch(route('report-email-settings.update'), $this->payload([
+                'report_email_daily_enabled' => false,
+                'report_email_daily_days' => [],
+            ]))
+            ->assertSessionHasNoErrors();
+    }
+
+    public function test_switching_every_schedule_off_lets_a_blank_form_be_saved(): void
     {
         $this->actingAs(User::factory()->owner()->create())
             ->patch(route('report-email-settings.update'), $this->payload([
                 'recipients' => [],
-                'report_email_period' => 'off',
                 'report_email_smtp_host' => '',
                 'report_email_smtp_username' => '',
                 'report_email_smtp_password' => '',

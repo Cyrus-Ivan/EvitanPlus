@@ -86,6 +86,30 @@ class ReportEmailTest extends TestCase
         $this->assertSame('local', $entry->new_values['scope']);
     }
 
+    public function test_the_posted_window_is_what_is_sent_not_the_page_the_dialog_opened_on(): void
+    {
+        Mail::fake();
+        $this->configure();
+
+        // The dialog picks its own period and date, so emailing last week does
+        // not mean navigating the page to last week first. 2026-03-11 is a
+        // Wednesday; a weekly window snaps to the Monday.
+        $this->actingAs(User::factory()->owner()->create())
+            ->post(route('reports.email'), [
+                'recipients' => ['owner@shop.test'],
+                'period' => 'weekly',
+                'date' => '2026-03-11',
+            ])
+            ->assertSessionHasNoErrors();
+
+        Mail::assertSent(SalesReportMail::class, fn (SalesReportMail $mail): bool => str_contains($mail->attachments()[0]->as, 'sales-report-weekly-2026-03-09-'));
+
+        $entry = AuditLog::where('action', 'report.emailed')->latest('created_at')->first();
+        $this->assertNotNull($entry);
+        $this->assertSame('weekly', $entry->new_values['period']);
+        $this->assertSame('2026-03-09', $entry->new_values['date']);
+    }
+
     public function test_at_least_one_recipient_is_required(): void
     {
         Mail::fake();

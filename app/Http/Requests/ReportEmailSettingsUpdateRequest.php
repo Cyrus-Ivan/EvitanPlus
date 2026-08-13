@@ -4,6 +4,7 @@ namespace App\Http\Requests;
 
 use App\Support\Email\ReportEmailSettings;
 use App\Support\Email\ReportEmailSettingsRules;
+use App\Support\Email\ReportSchedule;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
 
@@ -58,6 +59,16 @@ class ReportEmailSettingsUpdateRequest extends FormRequest
 
         $data['report_email_include_cost'] = $this->boolean('report_email_include_cost') ? '1' : '0';
         $data['report_email_smtp_port'] = (string) $this->validated('report_email_smtp_port');
+
+        // Every boolean needs its own coercion: a validated `boolean` rule
+        // yields a PHP bool, and update() casts with (string), which turns
+        // false into '' rather than '0'.
+        foreach (ReportSchedule::KINDS as $kind) {
+            $data['report_email_'.$kind.'_enabled'] = $this->boolean('report_email_'.$kind.'_enabled') ? '1' : '0';
+        }
+
+        // The one array-valued setting; update() would choke on it as-is.
+        $data['report_email_daily_days'] = ReportSchedule::encodeDays((array) ($data['report_email_daily_days'] ?? []));
 
         foreach (['report_email_smtp_host', 'report_email_smtp_username', 'report_email_from_address', 'report_email_from_name'] as $key) {
             $data[$key] = (string) ($data[$key] ?? '');

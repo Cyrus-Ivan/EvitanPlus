@@ -261,11 +261,10 @@ export default function Reports({
                     open={emailOpen}
                     onOpenChange={setEmailOpen}
                     email={email}
-                    period={period}
-                    date={filters.date}
+                    defaultPeriod={period}
+                    defaultDate={filters.date}
                     scope={scope}
                     chartBy={chartBy}
-                    periodLabel={filters.label}
                     scopeLabel={scopeLabel}
                 />
 

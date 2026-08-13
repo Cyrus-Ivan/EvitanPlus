@@ -1839,10 +1839,13 @@ the third and last of them.
   whether a period is due rather than firing at an instant it could simply miss. The marker is
   `weekly:2026-08-03`: it carries the period **kind** as well as the date, because a weekly
   window's start can equal a daily one's and a date-only marker would suppress the first send
-  after daily → weekly.
+  after daily → weekly. *The marker shape is superseded by M14.5, below, which gave each kind its
+  own key; the argument for deciding rather than firing survives it intact.*
 - **One report, not a backlog.** The window is always the last *complete* period relative to now,
   so a device off for three weeks sends **one** — last week's. A marker holds a position, not a
   queue; the missed windows are still on the device and any of them can be emailed by hand.
+- **One schedule at a time**, chosen from a single `off | daily | weekly | monthly | yearly`
+  select, firing whenever the tick happened to notice. *Superseded by M14.5, below.*
 - **The scheduled send omits cost unless the Owner opts in.** It is always branch-local (no actor
   to authorize a wider scope, no screen to fall back on), and "Item Cost is Owner-only to view"
   has no viewer it can be true of when the recipients are free-typed addresses. So it is off by
@@ -1857,6 +1860,63 @@ guards amended so the device-local guarantee is **asserted** rather than reasone
 and `HydrationTest::test_the_device_local_settings_survive_the_settings_copy`. `SmtpTransportConfig`
 is unit-tested on its own because `Mail::fake()` bypasses the transport entirely, so nothing else
 in the suite would ever notice the mapping being wrong.
+
+---
+
+# Phase M14.5 — Four schedules, and a window the dialog picks ✅
+
+M14 shipped one schedule and no say in when it landed. A shop wants the previous day's figures at
+opening time, last week's on a Monday morning and last month's early in the new month — three
+separate wants that a single `off | daily | weekly | monthly | yearly` select made mutually
+exclusive. And the email dialog could only send the window the page was already showing, so
+emailing last week meant navigating there first.
+
+- **Four independent toggles, each with a send time.** **Daily** carries a Mon–Sun picker (all
+  seven *is* "every day", which is why it is one block and not two — an "every day" schedule
+  alongside a "selected days" one would collide on the days they share and need a rule for which
+  wins). **Weekly** fires on a Monday for the previous week, **monthly** on the first Monday for
+  the previous month, **yearly** on the first Monday for the previous year. `report_email_period`
+  is gone.
+- **The arithmetic is one class with two methods.** `App\Support\Email\ReportSchedule::lastDueAt()`
+  answers "when should this most recently have fired?" and `windowFor()` answers "what does a
+  firing then cover?" — the second delegating to `ReportPeriods::resolveWindow()`, so there is
+  still exactly one copy of what a week is. `ReportPeriods::lastCompleteAnchor()` was the old
+  answer to both at once and is deleted.
+- **`lastDueAt()` looks backward, never forward**, which is what preserves M14's two properties
+  unchanged: a device shut at 08:00 sends **late** on the next launch rather than skipping, and a
+  device off for three weeks still sends **one** weekly report. Adding a time of day is exactly the
+  kind of change that quietly turns a marker back into a deadline, and it did not.
+- **Send times are a closed quarter-hour list.** The tick stayed at fifteen minutes, so `08:07`
+  would fire at `08:15` with nothing on screen to say so; the picker offers `00:00`…`23:45` and
+  `Rule::in(ReportSchedule::times())` is the same list on the server. The tick could not be made
+  finer *and* read the chosen times, because `bootstrap/app.php`'s closure runs on every artisan
+  invocation — `migrate` on a bare device included — and so may not touch the database.
+- **One marker key per kind** (`report_email_last_daily`, …), each a bare `Y-m-d`. M14 needed the
+  `daily:` prefix inside one shared value because a weekly window's start can equal a daily one's;
+  a key that names the kind makes the collision unrepresentable instead. The backoff clock stays
+  **shared** — the transport is shared, so a walk that fails once stops, and every kind after it
+  keeps its unwritten marker for the retry.
+- **A data migration carries an installed device forward.** `report_email_period` becomes the
+  matching toggle and `report_email_last_period` seeds the matching per-kind marker, so an owner on
+  "every week" keeps getting a weekly report and does not get last week's twice.
+- **The dialog picks its own period and date.** No backend change was needed: `EmailReportRequest`
+  has validated `period` and `date` since M14 and `ReportsController::email()` has always derived
+  its window from them — the dialog simply passed the page's. It now seeds from the page and is
+  its own thing thereafter, resetting on every open. **Scope is deliberately not overridable
+  there**: `normalizeScope()` is the sole authority on which branches a viewer may read, and a
+  second way to choose one is how that boundary drifts.
+- **Still device-local, still nothing upstream.** The nine new keys are outside
+  `BusinessSettings::KEYS` like the rest of the report-email block, so — as at M14 — **no
+  `SCHEMA_VERSION` bump, no `BranchGrants` change, no console parity edit, nothing mirrored**. The
+  one migration is local and is data, not schema.
+
+## Verified
+778 offline tests (`ReportScheduleTest` is the new unit class and carries the calendar edge cases —
+a month beginning on a Monday, one whose first Monday is the 7th, and both boundary crossings), 20
+e2e specs, pint and phpstan clean. `ScheduledReportEmailTest` binds a stub `SalesReportPdf`: the
+class asserts on attachment *names*, and rendering a real document per send is dompdf memory paid
+for something it never looks at — enough of it, at this test count, to exhaust the suite's limit.
+`composer audit` fails on pre-existing `league/commonmark` advisories unrelated to this work.
 
 ---
 

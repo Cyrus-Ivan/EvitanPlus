@@ -7,6 +7,7 @@ use App\Support\Audit\AuditRecorder;
 use App\Support\Email\ReportEmailException;
 use App\Support\Email\ReportEmailSettings;
 use App\Support\Email\ReportMailer;
+use App\Support\Email\ReportSchedule;
 use App\Support\Reports\ReportPeriods;
 use App\Support\Reports\SalesReportBuilder;
 use App\Support\Reports\SalesReportPdf;
@@ -15,29 +16,41 @@ use Carbon\Carbon;
 use Illuminate\Console\Command;
 
 /**
- * Email this branch's sales report for the last complete period, if one is due
- * and has not gone out yet.
+ * Email this branch's sales reports for every schedule whose moment has passed
+ * and whose period has not gone out yet.
  *
  * ## Why it is marker-driven rather than fired at an instant
  *
  * NativePHP runs `artisan schedule:run` once a minute — but only while the app
  * window is open (see the electron plugin's `startScheduler`). A till that is
  * shut at midnight would simply miss a `dailyAt('00:05')`, silently and
- * forever. So this command asks a question it can answer at ANY moment: "has
- * the period that is now complete already been sent?" — comparing a marker
- * holding the last sent period's kind and start date. `bootstrap/app.php` runs
- * it every fifteen minutes and the answer is almost always no-op cheap.
+ * forever. So this command asks a question it can answer at ANY moment: "is
+ * there a schedule whose most recent firing instant has passed and whose window
+ * has not been sent?" — comparing {@see ReportSchedule::lastDueAt()} against a
+ * per-kind marker. `bootstrap/app.php` runs it every fifteen minutes and the
+ * answer is almost always no-op cheap.
  *
- * The marker carries the period KIND as well as the date because a weekly
- * window's start can equal a daily window's start; a date-only marker would
- * suppress the first send after the owner switched daily → weekly.
+ * The chosen send times could not live in `bootstrap/app.php` even if we wanted
+ * them to: that closure runs on every artisan invocation, including `migrate` on
+ * a device whose settings table does not exist yet, so it may not read them. It
+ * is also why the times are a closed quarter-hour list — the tick is fifteen
+ * minutes wide.
  *
  * ## What it does NOT do: catch up on a backlog
  *
- * The window is always the last complete period relative to now, so a device
- * that was off for three weeks sends ONE report — last week's — not three. A
- * marker holds a position, not a queue. The data is all still on the device and
- * any window can be emailed by hand from /reports.
+ * Each schedule's window is the period that finished before its most recent
+ * firing instant, so a device off for three weeks sends ONE weekly report — last
+ * week's — not three. A marker holds a position, not a queue. The data is all
+ * still on the device and any window can be emailed by hand from /reports.
+ *
+ * ## Four independent schedules, one transport
+ *
+ * Daily, weekly, monthly and yearly are switched on separately and can fall due
+ * in the same run, so this walks them in order and each writes its own marker on
+ * success. The backoff clock is shared and a failure stops the walk: the
+ * transport is shared too, so if the mail server is unreachable for one it is
+ * unreachable for all, and the rest keep their unwritten markers and are picked
+ * up on the retry.
  *
  * ## Scope and cost
  *
@@ -52,7 +65,7 @@ class SendScheduledSalesReport extends Command
 {
     protected $signature = 'reports:send-scheduled';
 
-    protected $description = "Email this branch's sales report for the last complete period, if one is due";
+    protected $description = "Email this branch's sales report for any schedule that has fallen due";
 
     /**
      * How long to wait after a failed send before trying again. Without it a
@@ -71,9 +84,7 @@ class SendScheduledSalesReport extends Command
     ): int {
         // Every early return is SUCCESS: an unconfigured device must not turn
         // `schedule:run` into a job that fails once every fifteen minutes.
-        $period = $settings->period();
-
-        if ($period === ReportEmailSettings::PERIOD_OFF) {
+        if (! $settings->isScheduled()) {
             return self::SUCCESS;
         }
 
@@ -97,61 +108,83 @@ class SendScheduledSalesReport extends Command
             return self::SUCCESS;
         }
 
-        $anchor = ReportPeriods::lastCompleteAnchor($period, Carbon::now());
-        [$from, $to] = ReportPeriods::resolveWindow($period, $anchor);
-        $marker = $period.':'.$from->toDateString();
-
-        if ($settings->lastPeriod() === $marker) {
-            return self::SUCCESS;
-        }
-
+        $now = Carbon::now();
         $canViewCost = $settings->includeCost();
-        $report = $builder->local($period, $from, $to, $canViewCost, topItems: true);
-        $label = ReportPeriods::label($period, $from);
+        $sent = 0;
 
-        try {
-            $mailer->send($recipients, new SalesReportMail(
-                settings: $settings,
-                business: $business,
-                scopeLabel: $pdf->scopeLabel($report['scope'], $report['branches']),
-                periodLabel: $label,
-                periodNoun: ReportPeriods::SUB_NOUNS[$period],
-                totals: $report['totals'],
-                canViewCost: $canViewCost,
-                pdf: $pdf->render($report, $period, $from, $canViewCost),
-                filename: $pdf->filename($report, $period, $from),
-                // No actor: this is the device sending on a schedule, and the
-                // email body says so rather than naming somebody who was not
-                // there.
-                sentBy: null,
-            ));
-        } catch (ReportEmailException $e) {
-            // The period marker is deliberately NOT written, so the same window
-            // is retried after the backoff — or the next time the app opens.
-            $settings->markAttempt();
-            $this->error($e->getMessage());
+        foreach ($settings->schedules() as $kind => $schedule) {
+            if (! $schedule->enabled) {
+                continue;
+            }
 
-            return self::FAILURE;
+            $due = $schedule->lastDueAt($now);
+
+            // Never fired: daily with no weekday ticked. Validation forbids
+            // saving that, but a hand-edited settings row must not throw.
+            if ($due === null) {
+                continue;
+            }
+
+            [$from, $to] = $schedule->windowFor($due);
+
+            if ($settings->lastSent($kind) === $from->toDateString()) {
+                continue;
+            }
+
+            $period = $schedule->period();
+            $report = $builder->local($period, $from, $to, $canViewCost, topItems: true);
+            $label = ReportPeriods::label($period, $from);
+
+            try {
+                $mailer->send($recipients, new SalesReportMail(
+                    settings: $settings,
+                    business: $business,
+                    scopeLabel: $pdf->scopeLabel($report['scope'], $report['branches']),
+                    periodLabel: $label,
+                    periodNoun: ReportPeriods::SUB_NOUNS[$period],
+                    totals: $report['totals'],
+                    canViewCost: $canViewCost,
+                    pdf: $pdf->render($report, $period, $from, $canViewCost),
+                    filename: $pdf->filename($report, $period, $from),
+                    // No actor: this is the device sending on a schedule, and
+                    // the email body says so rather than naming somebody who
+                    // was not there.
+                    sentBy: null,
+                ));
+            } catch (ReportEmailException $e) {
+                // This kind's marker is deliberately NOT written, and neither
+                // are the markers of any schedule after it, so the same windows
+                // are retried after the backoff — or the next time the app
+                // opens.
+                $settings->markAttempt();
+                $this->error($e->getMessage());
+
+                return self::FAILURE;
+            }
+
+            $settings->markSent($kind, $from->toDateString());
+            $sent++;
+
+            $audit->record(
+                action: 'report.emailed',
+                description: 'Scheduled '.$period.' sales report for '.$label.' emailed to '.count($recipients).' recipient(s).',
+                new: [
+                    'recipients' => $recipients,
+                    'period' => $period,
+                    'date' => $from->toDateString(),
+                    'scope' => $report['scope'],
+                    'scheduled' => true,
+                ],
+                // A system event: AuditRecorder writes a null user_id.
+                actor: null,
+            );
+
+            $this->info('Sent the '.$period.' sales report for '.$label.' to '.count($recipients).' recipient(s).');
         }
 
-        $settings->markPeriodSent($marker);
-        $settings->clearAttempt();
-
-        $audit->record(
-            action: 'report.emailed',
-            description: 'Scheduled '.$period.' sales report for '.$label.' emailed to '.count($recipients).' recipient(s).',
-            new: [
-                'recipients' => $recipients,
-                'period' => $period,
-                'date' => $from->toDateString(),
-                'scope' => $report['scope'],
-                'scheduled' => true,
-            ],
-            // A system event: AuditRecorder writes a null user_id.
-            actor: null,
-        );
-
-        $this->info('Sent the '.$period.' sales report for '.$label.' to '.count($recipients).' recipient(s).');
+        if ($sent > 0) {
+            $settings->clearAttempt();
+        }
 
         return self::SUCCESS;
     }

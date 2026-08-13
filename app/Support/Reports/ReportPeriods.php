@@ -2,7 +2,6 @@
 
 namespace App\Support\Reports;
 
-use App\Console\Commands\SendScheduledSalesReport;
 use App\Http\Controllers\ReportsController;
 use Carbon\Carbon;
 
@@ -54,25 +53,6 @@ class ReportPeriods
             'monthly' => [$a->copy()->startOfMonth(), $a->copy()->endOfMonth()],
             'yearly' => [$a->copy()->startOfYear(), $a->copy()->endOfYear()],
             default => [$a->copy()->startOfDay(), $a->copy()->endOfDay()],
-        };
-    }
-
-    /**
-     * An anchor inside the most recent period that has FINISHED — yesterday for
-     * daily, last week for weekly, and so on.
-     *
-     * The scheduled send's whole notion of "what is due" (see
-     * {@see SendScheduledSalesReport}). A report on a
-     * period still in progress would be a partial figure presented as a final
-     * one, and would differ every time it was sent.
-     */
-    public static function lastCompleteAnchor(string $period, Carbon $now): Carbon
-    {
-        return match ($period) {
-            'weekly' => $now->copy()->subWeek()->startOfWeek(),
-            'monthly' => $now->copy()->subMonth()->startOfMonth(),
-            'yearly' => $now->copy()->subYear()->startOfYear(),
-            default => $now->copy()->subDay()->startOfDay(),
         };
     }
 

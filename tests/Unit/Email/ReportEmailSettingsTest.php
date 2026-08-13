@@ -22,13 +22,38 @@ class ReportEmailSettingsTest extends TestCase
     {
         $settings = $this->settings();
 
-        $this->assertSame('off', $settings->period());
+        $this->assertFalse($settings->isScheduled());
         $this->assertSame([], $settings->recipients());
         $this->assertSame(587, $settings->port());
         $this->assertSame('tls', $settings->encryption());
         $this->assertNull($settings->host());
         $this->assertFalse($settings->isConfigured());
         $this->assertFalse($settings->includeCost());
+
+        // All four exist and answer, and none of them is on.
+        $this->assertSame(['daily', 'weekly', 'monthly', 'yearly'], array_keys($settings->schedules()));
+
+        foreach ($settings->schedules() as $schedule) {
+            $this->assertFalse($schedule->enabled);
+            $this->assertSame('08:00', $schedule->time);
+        }
+
+        // Every day, so a freshly ticked daily report needs no second decision.
+        $this->assertSame([1, 2, 3, 4, 5, 6, 7], $settings->schedules()['daily']->days);
+    }
+
+    public function test_any_one_schedule_makes_it_scheduled(): void
+    {
+        foreach (['daily', 'weekly', 'monthly', 'yearly'] as $kind) {
+            $settings = $this->settings();
+            $settings->update(['report_email_'.$kind.'_enabled' => '1']);
+
+            $this->assertTrue($settings->isScheduled(), $kind.' should count as scheduled');
+            $this->assertTrue($settings->schedules()[$kind]->enabled);
+
+            $settings->update(['report_email_'.$kind.'_enabled' => '0']);
+            $this->assertFalse($settings->isScheduled());
+        }
     }
 
     public function test_the_recipient_list_round_trips_through_the_newline_encoding(): void
@@ -127,6 +152,8 @@ class ReportEmailSettingsTest extends TestCase
         $this->assertSame(['owner@shop.test'], $display['recipients']);
         // The newline encoding is the server's business.
         $this->assertArrayNotHasKey('report_email_recipients', $display);
+        // As is the comma encoding — the form posts what a toggle group holds.
+        $this->assertSame(['1', '2', '3', '4', '5', '6', '7'], $display['report_email_daily_days']);
     }
 
     public function test_the_audit_shape_replaces_the_password_with_a_sentinel(): void
@@ -147,17 +174,17 @@ class ReportEmailSettingsTest extends TestCase
         $settings = $this->settings();
 
         $settings->update([
-            ReportEmailSettings::LAST_PERIOD_KEY => 'daily:2026-08-11',
+            ReportEmailSettings::lastSentKey('daily') => '2026-08-11',
             ReportEmailSettings::LAST_ATTEMPT_KEY => '2026-08-11T00:00:00+08:00',
         ]);
 
-        $this->assertSame('', $settings->lastPeriod());
+        $this->assertSame('', $settings->lastSent('daily'));
         $this->assertNull($settings->lastAttemptAt());
 
-        $settings->markPeriodSent('daily:2026-08-11');
+        $settings->markSent('daily', '2026-08-11');
         $settings->markAttempt();
 
-        $this->assertSame('daily:2026-08-11', $settings->lastPeriod());
+        $this->assertSame('2026-08-11', $settings->lastSent('daily'));
         $this->assertNotNull($settings->lastAttemptAt());
 
         $settings->clearAttempt();
@@ -165,14 +192,32 @@ class ReportEmailSettingsTest extends TestCase
         $this->assertNull($settings->lastAttemptAt());
     }
 
-    public function test_an_unrecognised_period_or_encryption_reads_as_the_default(): void
+    public function test_each_kind_keeps_its_own_marker(): void
     {
         $settings = $this->settings();
 
-        Setting::updateOrCreate(['key' => 'report_email_period'], ['value' => 'fortnightly']);
+        // The same start date under two kinds, which M14's single marker could
+        // only tell apart by carrying the kind inside the value.
+        $settings->markSent('daily', '2026-03-16');
+
+        $this->assertSame('2026-03-16', $settings->lastSent('daily'));
+        $this->assertSame('', $settings->lastSent('weekly'));
+
+        $settings->markSent('weekly', '2026-03-16');
+
+        $this->assertSame('2026-03-16', $settings->lastSent('weekly'));
+    }
+
+    public function test_an_unrecognised_time_days_or_encryption_reads_as_the_default(): void
+    {
+        $settings = $this->settings();
+
+        Setting::updateOrCreate(['key' => 'report_email_daily_time'], ['value' => '08:07']);
+        Setting::updateOrCreate(['key' => 'report_email_daily_days'], ['value' => '0,8,nonsense']);
         Setting::updateOrCreate(['key' => 'report_email_smtp_encryption'], ['value' => 'starttls']);
 
-        $this->assertSame('off', $settings->period());
+        $this->assertSame('08:00', $settings->schedules()['daily']->time);
+        $this->assertSame([], $settings->schedules()['daily']->days);
         $this->assertSame('tls', $settings->encryption());
     }
 

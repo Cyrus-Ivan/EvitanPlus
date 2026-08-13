@@ -40,14 +40,6 @@ use Illuminate\Support\Facades\DB;
  */
 class ReportEmailSettings
 {
-    public const PERIOD_OFF = 'off';
-
-    /**
-     * How often the report goes out on its own. 'off' is a first-class value
-     * rather than a null: the setting always exists and always answers.
-     */
-    public const PERIODS = ['off', 'daily', 'weekly', 'monthly', 'yearly'];
-
     public const ENCRYPTIONS = ['tls', 'ssl', 'none'];
 
     /**
@@ -68,7 +60,15 @@ class ReportEmailSettings
      */
     public const DEFAULTS = [
         'report_email_recipients' => '',
-        'report_email_period' => self::PERIOD_OFF,
+        'report_email_daily_enabled' => '0',
+        'report_email_daily_days' => '1,2,3,4,5,6,7',
+        'report_email_daily_time' => ReportSchedule::DEFAULT_TIME,
+        'report_email_weekly_enabled' => '0',
+        'report_email_weekly_time' => ReportSchedule::DEFAULT_TIME,
+        'report_email_monthly_enabled' => '0',
+        'report_email_monthly_time' => ReportSchedule::DEFAULT_TIME,
+        'report_email_yearly_enabled' => '0',
+        'report_email_yearly_time' => ReportSchedule::DEFAULT_TIME,
         'report_email_include_cost' => '0',
         'report_email_smtp_host' => '',
         'report_email_smtp_port' => '587',
@@ -80,11 +80,18 @@ class ReportEmailSettings
     ];
 
     /**
-     * The last period successfully sent, as "<period>:<window start Y-m-d>".
-     * Deliberately outside DEFAULTS so no form can write it and no settings
-     * diff can mention it — see {@see self::markPeriodSent()}.
+     * The last window successfully sent for one kind, as a bare `Y-m-d` start
+     * date, under a key that names the kind — `report_email_last_weekly`.
+     *
+     * One key per kind, not one shared key: the four schedules are independent,
+     * and a daily and a weekly window can start on the same date. (M14 solved
+     * that with a `daily:` prefix inside a single value; the per-kind key makes
+     * the collision unrepresentable instead.)
+     *
+     * Deliberately outside DEFAULTS so no form can write one and no settings
+     * diff can mention one — see {@see self::markSent()}.
      */
-    public const LAST_PERIOD_KEY = 'report_email_last_period';
+    public const LAST_SENT_KEY_PREFIX = 'report_email_last_';
 
     /**
      * When the last send FAILED, as an ISO-8601 string. The backoff clock, also
@@ -196,11 +203,40 @@ class ReportEmailSettings
         return $kept;
     }
 
-    public function period(): string
+    /**
+     * All four automatic sends, keyed by kind, whether they are switched on or
+     * not — {@see ReportSchedule::$enabled} is how a caller tells.
+     *
+     * The one accessor that reads {@see self::all()} directly rather than going
+     * through get(): every typed accessor here is its own SELECT, and four
+     * schedules over three keys apiece would be twelve of them on a tick whose
+     * whole point is to be cheap when there is nothing to do.
+     *
+     * @return array<string, ReportSchedule>
+     */
+    public function schedules(): array
     {
-        $value = $this->get('report_email_period');
+        $values = $this->all();
 
-        return in_array($value, self::PERIODS, true) ? $value : self::PERIOD_OFF;
+        return collect(ReportSchedule::KINDS)
+            ->mapWithKeys(fn (string $kind): array => [$kind => ReportSchedule::fromValues($kind, $values)])
+            ->all();
+    }
+
+    /**
+     * Whether anything goes out on its own. Replaces M14's `period !== 'off'`
+     * as the single expression of "a schedule exists", which is what makes a
+     * sender and a recipient required.
+     */
+    public function isScheduled(): bool
+    {
+        foreach ($this->schedules() as $schedule) {
+            if ($schedule->enabled) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -315,6 +351,15 @@ class ReportEmailSettings
         $values = $this->all();
         unset($values['report_email_smtp_password'], $values['report_email_recipients']);
 
+        // The weekday list crosses as an array for the same reason the address
+        // list does: the comma encoding is this class's business, and the form
+        // posts back what a multi-select control holds. Strings, because that
+        // is what a toggle group's values are.
+        $values['report_email_daily_days'] = array_map(
+            strval(...),
+            ReportSchedule::parseDays($values['report_email_daily_days']),
+        );
+
         return $values + [
             'recipients' => $this->recipients(),
             'password_set' => $this->hasPassword() ? '1' : '0',
@@ -341,18 +386,22 @@ class ReportEmailSettings
     }
 
     /**
-     * The marker for the last period successfully sent, or '' when none has
-     * been. See {@see SendScheduledSalesReport} for the
-     * shape and why it carries the period kind as well as the date.
+     * The start date of the last window sent for this kind, or '' when none has
+     * been. See {@see SendScheduledSalesReport} for how it is compared.
      */
-    public function lastPeriod(): string
+    public function lastSent(string $kind): string
     {
-        return (string) (Setting::where('key', self::LAST_PERIOD_KEY)->value('value') ?? '');
+        return (string) (Setting::where('key', self::lastSentKey($kind))->value('value') ?? '');
     }
 
-    public function markPeriodSent(string $marker): void
+    public function markSent(string $kind, string $windowStart): void
     {
-        Setting::updateOrCreate(['key' => self::LAST_PERIOD_KEY], ['value' => $marker]);
+        Setting::updateOrCreate(['key' => self::lastSentKey($kind)], ['value' => $windowStart]);
+    }
+
+    public static function lastSentKey(string $kind): string
+    {
+        return self::LAST_SENT_KEY_PREFIX.$kind;
     }
 
     public function lastAttemptAt(): ?Carbon

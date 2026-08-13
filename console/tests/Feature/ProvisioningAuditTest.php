@@ -95,7 +95,13 @@ class ProvisioningAuditTest extends TestCase
         $businessId = (string) Str::orderedUuid();
         $branchId = (string) Str::orderedUuid();
 
-        $schema = SchemaName::forBusiness($businessId);
+        // Disposable, and `disposable` repeated in the data array below because
+        // BusinessProvisioner derives the name from THAT, not from this — the
+        // two must agree or the rollback assertions read a schema nothing built.
+        // The prefix is invisible to everything under test here; what it buys is
+        // that a kill between CREATE SCHEMA and the induced failure leaves
+        // something `composer rig:clean:all` can sweep.
+        $schema = SchemaName::forBusiness($businessId, disposable: true);
         $role = RoleName::forBranch($branchId);
         $path = sys_get_temp_dir().'/evitan-rollback-'.Str::lower(Str::random(8)).'.json';
 
@@ -106,6 +112,7 @@ class ProvisioningAuditTest extends TestCase
                 [
                     'business_id' => $businessId,
                     'branch_id' => $branchId,
+                    'disposable' => true,
                     'owner_name' => 'Rollback Owner',
                     'username' => 'rollback_owner',
                     'password' => 'rollback-Passw0rd!',
@@ -183,7 +190,11 @@ class ProvisioningAuditTest extends TestCase
         $businessId = (string) Str::orderedUuid();
         $branchId = (string) Str::orderedUuid();
 
-        $schema = SchemaName::forBusiness($businessId);
+        // Disposable, and paired with the flag in the data array below for the
+        // same reason as the rollback test above: this one pre-creates the
+        // schema by hand, so the two derivations must land on the same name or
+        // the conflict this test induces never happens.
+        $schema = SchemaName::forBusiness($businessId, disposable: true);
         $path = sys_get_temp_dir().'/evitan-orphan-'.Str::lower(Str::random(8)).'.json';
 
         $admin = DB::connection('pgsql_admin');
@@ -195,6 +206,7 @@ class ProvisioningAuditTest extends TestCase
                 ->provision([
                     'business_id' => $businessId,
                     'branch_id' => $branchId,
+                    'disposable' => true,
                     'owner_name' => 'Orphan Owner',
                     'username' => 'orphan_owner',
                     'password' => 'orphan-Passw0rd!',

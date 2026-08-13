@@ -532,11 +532,20 @@ class BranchRoleGrantsTest extends TestCase
         return $variantId;
     }
 
-    /** A second, deliberately unmigrated schema — one table is enough to probe. */
+    /**
+     * A second, deliberately unmigrated schema — one table is enough to probe.
+     *
+     * Disposable, because this class dies mid-run more readily than most (every
+     * test in it is a refusal over a live branch connection) and tearDownAfter-
+     * Class is the only thing that drops this. A leaked `biz_<hex>` is
+     * indistinguishable from a customer's and nothing sweeps it; a leaked
+     * `biz_test_<hex>` is swept by `composer rig:clean:all`. The name carries no
+     * meaning here at all — what is under test is cross-schema isolation.
+     */
     private function otherBusinessSchema(): string
     {
         if (self::$otherSchema === null) {
-            $name = SchemaName::forBusiness((string) Str::uuid());
+            $name = SchemaName::forBusiness((string) Str::uuid(), disposable: true);
 
             DB::connection('pgsql_admin')->statement("create schema \"{$name}\"");
             DB::connection('pgsql_admin')->statement("create table \"{$name}\".probe (id int)");

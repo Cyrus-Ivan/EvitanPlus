@@ -174,19 +174,31 @@ if [[ "$MODE" == clean ]]; then
     # the same Supabase project is invisible to it, which is why the sweep says
     # what it is about to do rather than doing it quietly.
     #
-    # Matched on `vendor/phpunit/phpunit` rather than the bare word "phpunit",
-    # and on a rig only in its SERVING modes, so that neither this script's own
-    # command line nor its parent's can satisfy the pattern — a guard that trips
-    # on itself refuses every time and gets deleted. `|| true` because pgrep
-    # exits 1 when it matches nothing, which under `set -e` would be fatal.
+    # Matched on a phpunit under a `vendor/` path rather than the bare word
+    # "phpunit", and on a rig only in its SERVING modes, so that neither this
+    # script's own command line nor its parent's can satisfy the pattern — a
+    # guard that trips on itself refuses every time and gets deleted. `|| true`
+    # because pgrep exits 1 when it matches nothing, which under `set -e` would
+    # be fatal.
+    #
+    # BOTH path shapes, because the two suites this guard exists for do not
+    # spell it the same way. `vendor/phpunit/phpunit` is the app's, reached
+    # through `php artisan test`; the CONSOLE suite runs `console/vendor/bin/
+    # phpunit -c console/phpunit.xml`, which contains neither `phpunit/phpunit`
+    # nor anything else the old pattern matched. So `composer verify:console`
+    # — the run that holds disposable fixtures LONGEST, eleven minutes of
+    # them — was the one thing this check could not see, and a sweep during it
+    # would drop a live fixture and fail the suite somewhere unrelated. Found
+    # by running the two concurrently and watching the guard wave the sweep
+    # through.
     if [[ "$SWEEP_ALL" == 1 ]]; then
-        BUSY="$(pgrep -f 'vendor/phpunit/phpunit' || true)"
+        BUSY="$(pgrep -f 'vendor/(bin|phpunit)/phpunit' || true)"
         BUSY+=" $(pgrep -f 'rig\.sh (ready|wizard)' || true)"
 
         if [[ -n "${BUSY// /}" ]]; then
             echo "rig: a phpunit or another rig is running — it may be USING a disposable" >&2
             echo "rig: schema right now. Wait for it to finish, then re-run." >&2
-            echo "rig:   pgrep -af 'vendor/phpunit/phpunit|rig\.sh'" >&2
+            echo "rig:   pgrep -af 'vendor/(bin|phpunit)/phpunit|rig\.sh'" >&2
             exit 1
         fi
     fi

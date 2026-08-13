@@ -53,13 +53,13 @@ class BusinessProvisionValidationTest extends TestCase
     }
 
     /**
-     * @param  array<string, string>  $overrides
+     * @param  array<string, string|bool>  $overrides
      */
     #[DataProvider('invalidInput')]
     public function test_it_refuses_invalid_input_and_creates_nothing(array $overrides): void
     {
         $businessId = (string) Str::orderedUuid();
-        $schema = SchemaName::forBusiness($businessId);
+        $schema = SchemaName::forBusiness($businessId, disposable: true);
 
         $exit = Artisan::call('business:provision', [
             '--no-interaction' => true,
@@ -72,7 +72,7 @@ class BusinessProvisionValidationTest extends TestCase
         $this->assertFalse(SchemaConnection::exists($schema), 'A refused provision left a schema behind.');
     }
 
-    /** @return iterable<string, array{array<string, string>}> */
+    /** @return iterable<string, array{array<string, string|bool>}> */
     public static function invalidInput(): iterable
     {
         yield 'a password below the app minimum' => [self::input(['--owner-password' => 'short'])];
@@ -110,7 +110,10 @@ class BusinessProvisionValidationTest extends TestCase
     public function test_it_refuses_when_the_schema_already_exists(): void
     {
         $businessId = (string) Str::orderedUuid();
-        $schema = SchemaName::forBusiness($businessId);
+        // Disposable, matching the `--disposable` that self::input() carries
+        // into the call below — the collision only happens if both derivations
+        // land on the same name.
+        $schema = SchemaName::forBusiness($businessId, disposable: true);
 
         // A bare schema, deliberately unmigrated — cheap, and enough to collide.
         DB::connection('pgsql_admin')->statement("create schema \"{$schema}\"");
@@ -138,7 +141,7 @@ class BusinessProvisionValidationTest extends TestCase
     public function test_it_refuses_when_the_credentials_path_is_already_taken(): void
     {
         $businessId = (string) Str::orderedUuid();
-        $schema = SchemaName::forBusiness($businessId);
+        $schema = SchemaName::forBusiness($businessId, disposable: true);
 
         $path = sys_get_temp_dir().'/evitan-taken-'.Str::lower(Str::random(8)).'.json';
         file_put_contents($path, "existing\n");
@@ -183,12 +186,22 @@ class BusinessProvisionValidationTest extends TestCase
     /**
      * A complete, valid option set, with overrides applied.
      *
-     * @param  array<string, string>  $overrides
-     * @return array<string, string>
+     * `--disposable` is not under test and changes nothing any case here
+     * asserts — every one of them refuses before or during provisioning. It is
+     * here because it is the ONLY thing that decides the prefix, and the one
+     * case that does create DDL (a bare schema, to force the create-only
+     * refusal) must pre-create the same name the command would derive. In the
+     * disposable namespace, a run killed before tearDownAfterClass leaves
+     * something `composer rig:clean:all` sweeps; in `biz_<hex>` it leaves
+     * litter indistinguishable from a real customer's schema.
+     *
+     * @param  array<string, string|bool>  $overrides
+     * @return array<string, string|bool>
      */
     private static function input(array $overrides): array
     {
         return [
+            '--disposable' => true,
             '--owner-name' => 'Validation Owner',
             '--username' => 'validation_owner',
             '--owner-password' => 'validation-Passw0rd!',

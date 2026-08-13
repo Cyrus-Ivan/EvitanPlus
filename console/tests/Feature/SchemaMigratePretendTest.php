@@ -26,37 +26,63 @@ use Throwable;
  */
 class SchemaMigratePretendTest extends TestCase
 {
-    private static ?string $schema = null;
+    /**
+     * Every name these tests hand to `--pretend`. Nothing should ever be
+     * created under one — that is the assertion — so this list exists purely
+     * for the regression that would break it, which is also why BOTH tests
+     * record here rather than only the one that asserts non-existence.
+     *
+     * @var list<string>
+     */
+    private static array $schemas = [];
 
     public static function tearDownAfterClass(): void
     {
-        if (self::$schema !== null) {
+        foreach (self::$schemas as $schema) {
             try {
-                DB::connection('pgsql_admin')->statement('drop schema if exists "'.self::$schema.'" cascade');
+                DB::connection('pgsql_admin')->statement('drop schema if exists "'.$schema.'" cascade');
             } catch (Throwable) {
             }
-
-            self::$schema = null;
         }
+
+        self::$schemas = [];
 
         parent::tearDownAfterClass();
     }
 
+    /**
+     * A name in the disposable namespace, recorded so tearDown can drop it.
+     *
+     * Disposable even though the whole point is that nothing gets created: if
+     * the regression this class guards ever returns, a kill before tearDown
+     * leaves a `biz_<hex>` that `composer rig:clean:all` can never sweep and
+     * that is indistinguishable from a customer's. `biz_test_` costs nothing
+     * here — `schema:migrate` derives no meaning from the prefix.
+     */
+    private static function disposableName(): string
+    {
+        $schema = SchemaName::forBusiness((string) Str::orderedUuid(), disposable: true);
+
+        self::$schemas[] = $schema;
+
+        return $schema;
+    }
+
     public function test_pretending_against_a_fresh_business_creates_no_schema(): void
     {
-        self::$schema = SchemaName::forBusiness((string) Str::orderedUuid());
+        $schema = self::disposableName();
 
-        $this->assertFalse(SchemaConnection::exists(self::$schema), 'The fixture schema already existed.');
+        $this->assertFalse(SchemaConnection::exists($schema), 'The fixture schema already existed.');
 
         $exit = Artisan::call('schema:migrate', [
             '--no-interaction' => true,
-            '--schema' => self::$schema,
+            '--schema' => $schema,
             '--pretend' => true,
         ]);
 
         $this->assertSame(0, $exit, Artisan::output());
         $this->assertFalse(
-            SchemaConnection::exists(self::$schema),
+            SchemaConnection::exists($schema),
             'schema:migrate --pretend created the schema it was only asked to describe.',
         );
     }
@@ -64,7 +90,7 @@ class SchemaMigratePretendTest extends TestCase
     /** Having refused to guess, it still says what it would have done. */
     public function test_it_reports_what_would_happen_instead(): void
     {
-        $schema = SchemaName::forBusiness((string) Str::orderedUuid());
+        $schema = self::disposableName();
 
         Artisan::call('schema:migrate', [
             '--no-interaction' => true,

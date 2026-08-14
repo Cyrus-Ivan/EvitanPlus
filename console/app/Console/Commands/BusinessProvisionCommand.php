@@ -297,7 +297,24 @@ class BusinessProvisionCommand extends Command
         return [
             'owner_name' => ['required', 'string', 'max:255'],
             'username' => ['required', 'string', 'max:255'],
-            'password' => ['required', 'confirmed', Password::defaults()],
+            // Spelled out, NOT Password::defaults().
+            //
+            // This app has no service provider at all (bootstrap/providers.php is
+            // empty by design — it is CLI-only), so `defaults()` here resolves to
+            // Laravel's unconfigured `min(8)` and nothing else. The POS app sets a
+            // real policy in AppServiceProvider::configurePasswordPolicy(), and
+            // until this line was written the two silently disagreed: every
+            // cashier the app created had a stricter rule than the OWNER minted
+            // here — the one account that can never be archived, the only one that
+            // sees item cost, and the only one that can read every branch's sales
+            // at once. Backwards, and invisible.
+            //
+            // Duplicated rather than shared because §18 forbids either app
+            // referencing the other's code — the same reason
+            // CredentialVault::FINGERPRINT_DOMAIN restates BranchSecret's. Keep
+            // this in step with configurePasswordPolicy() by hand; the
+            // BusinessProvisionValidationTest cases below are what notice.
+            'password' => ['required', 'confirmed', Password::min(10)->letters()->numbers()],
 
             'business_name' => ['required', 'string', 'max:255'],
             'business_address' => ['nullable', 'string', 'max:1000'],

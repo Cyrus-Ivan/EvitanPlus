@@ -69,12 +69,21 @@ DB_A="$RT/branch-a.sqlite"; JSON_A="$RT/branch-a.json"
 DB_B="$RT/branch-b.sqlite"; JSON_B="$RT/branch-b.json"
 
 # The demo seed's dev login (DemoDataSeeder::seedUsers), so the same muscle
-# memory works whichever way the app was started. The rig's Owner comes from
-# provisioning, not from that seeder — this only matches what it types.
-# `password` is exactly the 8 characters Password::defaults() demands of
-# business:provision; anything shorter is rejected before a schema exists.
+# memory works whichever way the app was started, and what every account here
+# ends up with — pg.php's seedStaff() sets all four to it, the Owner included.
+LOGIN_PASSWORD=password
+
+# What the Owner is PROVISIONED with, which is not what you log in as.
+#
+# `business:provision` validates the Owner's password against the app's real
+# policy (10+, letters and numbers) on purpose: it mints the one account that
+# can never be archived, is the only one that sees item cost, and is the only
+# one that can read every branch's sales at once. A throwaway rig is the wrong
+# reason to weaken that, so the rig satisfies it and pg.php resets the row to
+# LOGIN_PASSWORD a few seconds later, exactly as it already does for the other
+# three accounts. Nothing ever types this value.
 OWNER_USERNAME=owner
-OWNER_PASSWORD=password
+OWNER_PASSWORD=rig-Passw0rd-throwaway
 
 # ── State, written incrementally ───────────────────────────────────────────
 # Each artifact is recorded the instant it exists, never in a batch at the end.
@@ -467,7 +476,7 @@ echo "  Branch $CODE_B ($NAME_B)     http://$HOST_B:$PORT_B"
 echo
 
 if [[ "$MODE" == ready ]]; then
-    echo "  Four accounts, all password '$OWNER_PASSWORD', either till:"
+    echo "  Four accounts, all password '$LOGIN_PASSWORD', either till:"
     echo "    $OWNER_USERNAME      Owner    admin      Admin"
     echo "    cashier1   Cashier  cashier2   Cashier"
     echo
@@ -497,7 +506,7 @@ else
     echo "  \"delete the file after import\" unticked to retry without"
     echo "  re-provisioning."
     echo
-    echo "  Accounts once hydrated, all password '$OWNER_PASSWORD':"
+    echo "  Accounts once hydrated, all password '$LOGIN_PASSWORD':"
     echo "    $OWNER_USERNAME (Owner), admin (Admin), cashier1 + cashier2 (Cashier)"
     echo
     echo "  No sales here, on purpose: a branch that has never sold anything"

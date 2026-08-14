@@ -121,7 +121,10 @@ trait ProvisionsABusiness
             'business:provision',
             '--owner-name='.$businessName.' Owner',
             '--username='.$ownerUsername,
-            '--owner-password=a-provisioned-password',
+            // Carries a digit because `business:provision` holds the Owner to
+            // the app's real password policy (10+, letters and numbers) — see
+            // BusinessProvisionCommand::rules(). Nothing signs in with this.
+            '--owner-password=a-provisioned-password1',
             '--business-name='.$businessName,
             '--business-address=1 Test Street',
             '--tin=000-000-000',

@@ -76,6 +76,14 @@ class BusinessProvisionValidationTest extends TestCase
     public static function invalidInput(): iterable
     {
         yield 'a password below the app minimum' => [self::input(['--owner-password' => 'short'])];
+        // Length alone is not the rule. The Owner is the one account that can
+        // never be archived, the only one that sees item cost, and the only one
+        // that can read every branch's sales at once — so this command holds it
+        // to the same policy AppServiceProvider::configurePasswordPolicy() holds
+        // every cashier to. The two are duplicated by hand (§18 forbids sharing
+        // code between the apps), so this case and the one above are what catch
+        // them drifting apart.
+        yield 'a long password with no digits' => [self::input(['--owner-password' => 'letters-only-password'])];
         yield 'a timezone that does not exist' => [self::input(['--timezone' => 'Mars/Olympus'])];
         yield 'a currency symbol beyond 5 characters' => [self::input(['--currency-symbol' => 'PESOS!'])];
         yield 'a branch code containing a space' => [self::input(['--branch-code' => 'MNL 1'])];

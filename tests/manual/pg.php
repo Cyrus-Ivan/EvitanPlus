@@ -396,6 +396,17 @@ function seedStaff(PDO $pdo, string $stamp): array
     );
 
     $hash = password_hash('password', PASSWORD_BCRYPT, ['cost' => 12]);
+
+    // The Owner too, so all four accounts share one password and the banner can
+    // say so in one line. It arrived from `business:provision`, which validates
+    // what it is given against the app's real password policy — deliberately, so
+    // the most privileged account in a REAL business cannot be handed over with a
+    // weak one. A rig is not a real business: it is looked at for twenty minutes
+    // and destroyed on Ctrl-C, and `password` is what the demo seeder and the e2e
+    // helper already type. Seeding around the policy here is the same thing this
+    // function already does for the three accounts below, extended by one row.
+    $pdo->prepare('update users set password = ? where id = ?')->execute([$hash, (string) $owner]);
+
     $users = [['id' => (string) $owner, 'weight' => 10]];
 
     foreach ([

@@ -102,6 +102,14 @@ return [
         'CONSOLE_*',
         'BRANCH_DB_*',
         'SUPABASE_*',
+
+        // Logging posture is a property of the RELEASE, not of the machine that
+        // built it. A dev .env carries LOG_STACK=single and LOG_LEVEL=debug,
+        // which on a till is an unrotated file that grows for years — and a full
+        // disk fails SQLite writes, so the shop stops selling. Stripping these
+        // lands the packaged app on config/logging.php's defaults (daily,
+        // warning, 14 days), whoever cut the build. See the note there.
+        'LOG_*',
     ],
 
     /**

@@ -69,6 +69,15 @@ release build.
   upgrade, `PhpBinaryTest` diffs this runtime against
   `vendor/nativephp/php-bin/php-extensions.txt` for you; a failure there means
   the runtime needs rebuilding.
+- **This runtime loads no `php.ini`, and cannot be given one.** `php_ini_loaded_file()`
+  is `(none)`, so every ini setting is the compiled default — including
+  `zend.exception_ignore_args=0`, which puts function arguments into every
+  logged stack trace. The zip cannot carry the ini file beside the binary:
+  NativePHP's unzipper writes *every* entry to the same destination filename
+  (`vendor/nativephp/electron/resources/js/php.js`), so a second file in the zip
+  clobbers the binary. The setting is therefore applied at runtime in
+  `AppServiceProvider::register()`, which is where to look — and where to add
+  any further ini hardening — rather than here.
 
 ## Rebuilding
 

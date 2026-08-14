@@ -8,6 +8,7 @@ use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class UserManagementTest extends TestCase
@@ -121,13 +122,64 @@ class UserManagementTest extends TestCase
 
         $this->actingAs($admin)
             ->patch(route('users.reset-password', $admin->id), [
-                'password' => 'brandnewpass',
-                'password_confirmation' => 'brandnewpass',
+                'password' => 'brandnewpass1',
+                'password_confirmation' => 'brandnewpass1',
             ])
             ->assertForbidden();
 
         $this->assertSame(UserRole::Admin, $admin->fresh()->role);
         $this->assertNull($admin->fresh()->deleted_at);
+    }
+
+    /**
+     * The password policy is a security control configured in one place
+     * (AppServiceProvider::configurePasswordPolicy) and consumed through
+     * `Password::defaults()` in all three password paths. Unconfigured, Laravel
+     * falls back to `min(8)` and nothing else — silently, and with every test
+     * still green. This is what notices.
+     *
+     * @return list<array{0: string}>
+     */
+    public static function weakPasswords(): array
+    {
+        return [
+            'nine characters' => ['Pass12345'],
+            'letters only' => ['passwordonly'],
+            'digits only' => ['1234567890'],
+        ];
+    }
+
+    #[DataProvider('weakPasswords')]
+    public function test_a_weak_password_is_rejected_everywhere_one_can_be_set(string $password)
+    {
+        $owner = User::factory()->owner()->create();
+        $cashier = User::factory()->cashier()->create();
+
+        // Creating a user.
+        $this->actingAs($owner)
+            ->post(route('users.store'), $this->userPayload([
+                'password' => $password,
+                'password_confirmation' => $password,
+            ]))
+            ->assertSessionHasErrors('password');
+
+        // An administrative reset.
+        $this->actingAs($owner)
+            ->patch(route('users.reset-password', $cashier->id), [
+                'password' => $password,
+                'password_confirmation' => $password,
+            ])
+            ->assertSessionHasErrors('password');
+
+        // A user changing their own.
+        $this->actingAs($cashier)
+            ->from(route('password.edit'))
+            ->put(route('password.update'), [
+                'current_password' => 'password',
+                'password' => $password,
+                'password_confirmation' => $password,
+            ])
+            ->assertSessionHasErrors('password');
     }
 
     public function test_duplicate_username_is_rejected()
@@ -226,12 +278,12 @@ class UserManagementTest extends TestCase
 
         $this->actingAs($owner)
             ->patch(route('users.reset-password', $cashier->id), [
-                'password' => 'brandnewpass',
-                'password_confirmation' => 'brandnewpass',
+                'password' => 'brandnewpass1',
+                'password_confirmation' => 'brandnewpass1',
             ])
             ->assertSessionHasNoErrors();
 
-        $this->assertTrue(Hash::check('brandnewpass', $cashier->fresh()->password));
+        $this->assertTrue(Hash::check('brandnewpass1', $cashier->fresh()->password));
         $this->assertDatabaseHas('login_history', [
             'user_id' => $cashier->id,
             'event_type' => LoginEventType::ForcedLogout->value,

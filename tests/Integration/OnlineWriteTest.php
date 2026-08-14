@@ -224,8 +224,8 @@ class OnlineWriteTest extends TestCase
                 'name' => 'Roaming Cashier',
                 'username' => 'roaming',
                 'role' => 'cashier',
-                'password' => 'a-strong-password',
-                'password_confirmation' => 'a-strong-password',
+                'password' => 'a-strong-password1',
+                'password_confirmation' => 'a-strong-password1',
             ])->assertSessionHasNoErrors();
 
         $this->assertSame(1, (int) $this->remote("select count(*) as n from users where username = 'roaming'")[0]['n']);
@@ -235,7 +235,7 @@ class OnlineWriteTest extends TestCase
         // it existed on exactly one machine.
         $this->hydrateAs(self::$documentB);
 
-        $this->post('/login', ['username' => 'roaming', 'password' => 'a-strong-password'])
+        $this->post('/login', ['username' => 'roaming', 'password' => 'a-strong-password1'])
             ->assertSessionHasNoErrors();
 
         $this->assertAuthenticated();

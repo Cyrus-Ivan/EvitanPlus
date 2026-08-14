@@ -62,8 +62,8 @@ class RequirePasswordChangeTest extends TestCase
             ->from(route('password.edit'))
             ->put(route('password.update'), [
                 'current_password' => 'password',
-                'password' => 'a-password-of-my-own',
-                'password_confirmation' => 'a-password-of-my-own',
+                'password' => 'a-password-of-my-own-1',
+                'password_confirmation' => 'a-password-of-my-own-1',
             ])
             ->assertSessionHasNoErrors();
 
@@ -98,8 +98,8 @@ class RequirePasswordChangeTest extends TestCase
         $this->actingAs($user)
             ->put(route('password.update'), [
                 'current_password' => 'password',
-                'password' => 'a-brand-new-password',
-                'password_confirmation' => 'a-brand-new-password',
+                'password' => 'a-brand-new-password-1',
+                'password_confirmation' => 'a-brand-new-password-1',
             ])
             ->assertSessionHasNoErrors();
 

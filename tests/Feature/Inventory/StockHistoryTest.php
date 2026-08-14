@@ -7,12 +7,15 @@ use App\Models\User;
 use App\Models\Variant;
 use App\Support\Inventory\StockLedger;
 use App\Support\Search\LikeQuery;
+use Illuminate\Database\Connection;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Str;
+use Tests\Feature\Inventory\Concerns\FakesThePendingQueue;
 use Tests\TestCase;
 
 class StockHistoryTest extends TestCase
 {
-    use RefreshDatabase;
+    use FakesThePendingQueue, RefreshDatabase;
 
     public function test_cashier_can_view_stock_history()
     {
@@ -340,6 +343,64 @@ class StockHistoryTest extends TestCase
             ->getJson(route('stock-history.request', 'not-a-uuid'))
             ->assertOk()
             ->assertExactJson(['request' => null]);
+    }
+
+    /**
+     * The lookup carries the same branch authority as the page it opens from.
+     *
+     * The id names a Postgres row directly, so before this the one read in the
+     * app that reaches another branch did it on the most permissive route in the
+     * app — while index() is careful to snap a Cashier back to `local`. The
+     * BranchGrants matrix is the only boundary of its kind now that RLS is a
+     * settled non-goal, so an app-layer reach that outruns its own screen is the
+     * erosion that matters.
+     */
+    public function test_a_cashier_cannot_read_the_request_behind_another_branchs_movement()
+    {
+        $remote = $this->fakeBusinessQueue();
+        $id = $this->pendingElsewhere($remote);
+
+        $this->actingAs(User::factory()->cashier()->create())
+            ->getJson(route('stock-history.request', $id))
+            ->assertOk()
+            ->assertExactJson(['request' => null]);
+    }
+
+    /**
+     * The other half, and the reason the filter is not unconditional: an Admin
+     * may already read any branch's movements on the page this dialog opens
+     * from, so filtering them here would break the drill-down under a wider
+     * scope rather than protect anything.
+     */
+    public function test_an_admin_can_read_the_request_behind_another_branchs_movement()
+    {
+        $remote = $this->fakeBusinessQueue();
+        $id = $this->pendingElsewhere($remote);
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->getJson(route('stock-history.request', $id))
+            ->assertOk()
+            ->assertJsonPath('request.requested', 4);
+    }
+
+    /** A pending row belonging to a branch that is not this device's. */
+    private function pendingElsewhere(Connection $remote): string
+    {
+        $id = (string) Str::uuid();
+
+        $remote->table('inventory_update_queue')->insert([
+            'id' => $id,
+            'branch_id' => '00000000-0000-0000-0000-00000000e15e',
+            'variant_id' => Variant::factory()->create()->id,
+            'quantity' => 4,
+            'reference_type' => 'manual_adjustment',
+            'status' => 'pending',
+            'issued_by' => User::factory()->admin()->create()->id,
+            'created_at' => now()->toDateTimeString(),
+            'updated_at' => now()->toDateTimeString(),
+        ]);
+
+        return $id;
     }
 
     // ---------------------------------------------------------------- helpers

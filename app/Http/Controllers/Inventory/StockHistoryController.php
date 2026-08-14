@@ -171,15 +171,45 @@ class StockHistoryController extends Controller
      * and null offline. Neither is an error: the row's own `notes` already carry
      * the sentence version of this, precisely so it reads with no connection.
      */
-    public function request(string $entry): JsonResponse
+    public function request(Request $request, string $entry): JsonResponse
     {
         if (! Str::isUuid($entry)) {
             return response()->json(['request' => null]);
         }
 
+        // The same authority the PAGE runs on, applied to the row this reads.
+        //
+        // The id names a Postgres row directly and the route is Cashier-level, so
+        // without this the one lookup in the app that reaches another branch does
+        // it for the role least entitled to — while index() is careful to snap a
+        // Cashier back to `local`. Not a practical leak (the id is a uuid, and a
+        // Cashier only ever sees this branch's ledger ids to click), but a viewer
+        // who may not widen the scope must not widen it here either. `BranchGrants`
+        // is the only boundary of its kind now that RLS is a settled non-goal, so
+        // an app-layer reach that outruns the screen it belongs to is exactly the
+        // erosion that matters.
+        //
+        // Only the LOCAL case is constrained: an Admin or Owner may already read
+        // any branch's movements on the page this dialog opens from, so filtering
+        // them here would break the drill-down under a wider scope rather than
+        // protect anything.
+        $viewer = $request->user();
+        $canViewAll = $viewer->isAdmin() || $viewer->isOwner();
+        $ownBranchId = $canViewAll ? null : Instance::current()?->branch_id;
+
+        // Fail closed: a restricted viewer whose device has no branch identity
+        // has no branch to be restricted TO, and `when(null, ...)` would drop the
+        // filter and read every branch — the opposite of what is being asked for.
+        if (! $canViewAll && $ownBranchId === null) {
+            return response()->json(['request' => null]);
+        }
+
         $data = rescue(fn (): ?array => $this->read->run(
-            function (Connection $remote) use ($entry): ?array {
-                $row = $remote->table('inventory_update_queue')->where('id', $entry)->first();
+            function (Connection $remote) use ($entry, $ownBranchId): ?array {
+                $row = $remote->table('inventory_update_queue')
+                    ->where('id', $entry)
+                    ->when($ownBranchId, fn ($query) => $query->where('branch_id', $ownBranchId))
+                    ->first();
 
                 if ($row === null) {
                     return null;

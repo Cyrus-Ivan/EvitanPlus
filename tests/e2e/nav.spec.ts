@@ -128,9 +128,25 @@ test('a lagging navigation shows the loading bar', async ({ page }) => {
     // Drawn along the top edge, and drawn at all: the failure this guards is a
     // prefetch hiding the element mid-navigation, which leaves it in the DOM
     // with an empty box rather than removing it.
-    const box = (await bar.boundingBox())!;
-    expect(box.y).toBeLessThan(4);
-    expect(box.height).toBeGreaterThan(0);
+    //
+    // Polled rather than read once, because the thing being asserted is the
+    // thing that makes a single read unsafe. `prefetch()` hides the ONE shared
+    // #nprogress element and only the following visit un-hides it (see the note
+    // in nav-main.tsx), so between `toBeVisible()` above and a bare
+    // `boundingBox()` the element can be display:none — and boundingBox()
+    // answers null, which fails as `Cannot read properties of null (reading
+    // 'y')` rather than as anything describing the bar. That raced about one
+    // full-suite run in three on main, long before this was touched; the whole
+    // point of the assertion survives, since a bar that never settles at the top
+    // with a height still fails, it just no longer depends on catching it in the
+    // gap between two round trips.
+    await expect
+        .poll(async () => {
+            const box = await bar.boundingBox();
+
+            return box === null ? null : { atTop: box.y < 4, drawn: box.height > 0 };
+        })
+        .toEqual({ atTop: true, drawn: true });
 
     await page.waitForURL('**/inventory');
     await expect(bar).toBeHidden();

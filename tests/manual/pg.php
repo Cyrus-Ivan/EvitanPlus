@@ -136,6 +136,13 @@ exit(0);
  * figure minus everything the year moves, so the tills still come up on exactly
  * the numbers this table names.
  *
+ * It also seeds the SHIFTS behind that year ({@see tests/manual/attendance.php}),
+ * derived from the same events so every sale falls inside one — which is what
+ * `/employee-performance` is a calendar of. That is why each branch draws its
+ * sales from its OWN staff below: one shared pool put every cashier at both
+ * branches on the same day, and a person cannot be signed in at two branches at
+ * once without the consolidated scope reading as a year of phantom open shifts.
+ *
  * `wizard` mode seeds none of it, and that is deliberate rather than lazy.
  * `OpeningWindow::isOpen()` is derived from "this branch has no `type = 'sale'`
  * row", so a year of trading permanently closes M13.5's opening-stock import on
@@ -151,6 +158,7 @@ function seedCatalog(string $root, string $pathA, string $pathB, string $mode): 
     }
 
     require_once __DIR__.'/sales.php';
+    require_once __DIR__.'/attendance.php';
 
     $a = readDocument($pathA);
     $b = readDocument($pathB);
@@ -182,9 +190,15 @@ function seedCatalog(string $root, string $pathA, string $pathB, string $mode): 
 
     // MNL is the busier branch. The difference is the whole point of the
     // consolidated per-branch table, which reads as a bug when both rows match.
+    //
+    // `staff` indexes seedStaff()'s roster, and each branch has its OWN people:
+    // the Owner works out of MNL and the Admin out of CEB, with a cashier each.
+    // Users are still business-wide (§6) and both tills hydrate all four — this
+    // says who RINGS SALES where, which is what lets a shift cover them (see
+    // tests/manual/attendance.php).
     $branches = [
-        ['id' => $a['branch']['id'], 'code' => $a['branch']['code'], 'per_day' => 12.0, 'column' => 8],
-        ['id' => $b['branch']['id'], 'code' => $b['branch']['code'], 'per_day' => 9.0, 'column' => 9],
+        ['id' => $a['branch']['id'], 'code' => $a['branch']['code'], 'per_day' => 12.0, 'column' => 8, 'staff' => [0, 2]],
+        ['id' => $b['branch']['id'], 'code' => $b['branch']['code'], 'per_day' => 9.0, 'column' => 9, 'staff' => [1, 3]],
     ];
 
     $pdo = adminConnection($root);
@@ -223,6 +237,8 @@ function seedCatalog(string $root, string $pathA, string $pathB, string $mode): 
         mt_srand(RIG_SALES_SEED);
 
         $sales = 0;
+        $sessions = 0;
+        $nights = 0;
 
         foreach ($branches as $branch) {
             $closing = [];
@@ -231,8 +247,11 @@ function seedCatalog(string $root, string $pathA, string $pathB, string $mode): 
                 $closing[$index] = (int) $row[$branch['column']];
             }
 
+            // This branch's own people, in the roster's order.
+            $staff = array_map(static fn (int $index): array => $users[$index], $branch['staff']);
+
             $view = rigVariantView($variants, $closing);
-            $plan = $mode === 'ready' ? rigPlanYear($branch, $view, $users, $start, $end) : [];
+            $plan = $mode === 'ready' ? rigPlanYear($branch, $view, $staff, $start, $end) : [];
 
             $net = rigNetMovements($plan);
             $opening = [];
@@ -273,9 +292,27 @@ function seedCatalog(string $root, string $pathA, string $pathB, string $mode): 
             }
 
             $sales += count(array_filter($plan, static fn (array $e): bool => $e['kind'] === 'sale'));
+
+            // The shifts behind that year, planned from the very events it just
+            // wrote so every sale falls inside one.
+            $shifts = rigPlanShifts($plan, $staff, $start, $end);
+
+            // Counted here because it is the only way to know the night rota
+            // actually produced night shifts without opening the calendar.
+            $nights += count(array_filter(
+                $shifts,
+                static fn (array $shift): bool => $shift['out'] !== null
+                    && $shift['out']->format('Y-m-d') !== $shift['in']->format('Y-m-d'),
+            ));
+
+            $sessions += rigWriteShifts($pdo, $branch, $shifts);
         }
 
         assertStockAgreesWithLedger($pdo);
+
+        if ($mode === 'ready') {
+            assertSalesFallInsideShifts($pdo);
+        }
 
         $pdo->commit();
     } catch (Throwable $e) {
@@ -287,6 +324,8 @@ function seedCatalog(string $root, string $pathA, string $pathB, string $mode): 
 
     if ($mode === 'ready') {
         echo 'seeded '.$sales.' sales over '.RIG_SALES_DAYS." days\n";
+        echo 'seeded '.$sessions.' sign-in/out events around them, '
+            .$nights." of the shifts running past midnight\n";
     }
 }
 
@@ -373,14 +412,20 @@ function rigVariantView(array $variants, array $closing): array
  * Provisioning mints exactly one user, so without these every receipt in the
  * seeded year would name "Rig Owner" and there would be nobody to sign in as to
  * see a role-gated screen behave. Users are business-wide (§6), so both tills
- * hydrate all four; the weights are how much of the year each one rang up.
+ * hydrate all four; the weights are how much of a BRANCH's year each of its own
+ * people rang up, drawn against the others posted there rather than against all
+ * four (see `$branches['staff']`).
  *
  * bcrypt through PHP's own hasher rather than the framework's, which is not
  * loaded here. It is the same algorithm the app's `'password' => 'hashed'` cast
  * verifies against, and the cost need not match to verify — the same point
  * `BusinessProvisioner::seed()` makes where it mints the Owner.
  *
- * @return list<array{id: string, weight: int}> The Owner first.
+ * The ORDER is load-bearing: `$branches['staff']` indexes this list, so it reads
+ * Owner, Admin, Cashier One, Cashier Two. `role` is carried because attendance
+ * treats a manager's sale-less day differently from a cashier's.
+ *
+ * @return list<array{id: string, weight: int, role: string}> The Owner first.
  */
 function seedStaff(PDO $pdo, string $stamp): array
 {
@@ -407,7 +452,7 @@ function seedStaff(PDO $pdo, string $stamp): array
     // function already does for the three accounts below, extended by one row.
     $pdo->prepare('update users set password = ? where id = ?')->execute([$hash, (string) $owner]);
 
-    $users = [['id' => (string) $owner, 'weight' => 10]];
+    $users = [['id' => (string) $owner, 'weight' => 10, 'role' => 'owner']];
 
     foreach ([
         ['Rig Admin', 'admin', 'admin', 15],
@@ -417,7 +462,7 @@ function seedStaff(PDO $pdo, string $stamp): array
         $id = uuid();
         $insert->execute([$id, $name, $username, $hash, $role, $stamp, $stamp]);
 
-        $users[] = ['id' => $id, 'weight' => $weight];
+        $users[] = ['id' => $id, 'weight' => $weight, 'role' => $role];
     }
 
     return $users;
@@ -470,6 +515,49 @@ function assertStockAgreesWithLedger(PDO $pdo): void
         count($rows).' snapshot(s) disagree with the ledger behind them — the first is variant '
         ."{$first['variant_id']}, holding {$first['snapshot']} against a ledger summing to {$first['ledger']}. "
         .'A branch seeded this way can never sync.'
+    );
+}
+
+/**
+ * The invariant the attendance seeder exists to satisfy: every sale was rung by
+ * somebody who was signed in at that branch at the time.
+ *
+ * The test is per person and exact — the last event that user has at that branch
+ * before the sale must be their `login` — so it catches a shift that starts too
+ * late, one that ends too early, and the subtler one that actually happened: an
+ * `application_crash` row stamped in the middle of a day it was meant to close,
+ * which silently signs somebody out from under their own afternoon.
+ *
+ * Checked before the commit for the same reason the stock invariant is. A
+ * calendar showing ₱4,200 rung on a day nobody was signed in teaches whoever is
+ * looking at the rig to distrust the screen, which is the opposite of what the
+ * rig is for.
+ */
+function assertSalesFallInsideShifts(PDO $pdo): void
+{
+    $rows = $pdo->query(
+        "select t.id, t.transaction_number, t.created_at
+           from transactions t
+          where coalesce((
+                select h.event_type
+                  from login_history h
+                 where h.user_id = t.user_id
+                   and h.branch_id = t.branch_id
+                   and coalesce(h.occurred_at, h.created_at) <= t.created_at
+                 order by coalesce(h.occurred_at, h.created_at) desc
+                 limit 1
+          ), 'none') <> 'login'
+          limit 5"
+    )->fetchAll(PDO::FETCH_ASSOC);
+
+    if ($rows === []) {
+        return;
+    }
+
+    throw new RuntimeException(
+        'Seeded sales were rung while their cashier was signed out — the first is '
+        ."{$rows[0]['transaction_number']} at {$rows[0]['created_at']}. "
+        .'The shifts and the year they were derived from have drifted apart.'
     );
 }
 

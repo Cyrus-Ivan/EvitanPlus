@@ -100,11 +100,33 @@ const RIG_MONTH_FACTORS = [
     7 => 0.95, 8 => 1.00, 9 => 1.00, 10 => 1.05, 11 => 1.10, 12 => 1.35,
 ];
 
-/** Trading hours, weighted for the lunch and after-work peaks. */
+/**
+ * DAY trading hours, weighted for the lunch and after-work peaks. The nights a
+ * branch stays open past these draw from {@see RIG_NIGHT_HOUR_WEIGHTS} instead.
+ */
 const RIG_HOUR_WEIGHTS = [
     8 => 4, 9 => 6, 10 => 8, 11 => 12, 12 => 14, 13 => 10,
     14 => 7, 15 => 7, 16 => 8, 17 => 11, 18 => 12, 19 => 7,
 ];
+
+/**
+ * ISO days (Monday = 1) whose NIGHT a branch trades through. Weekends, which is
+ * also where {@see RIG_DOW_FACTORS} already puts the busy days.
+ */
+const RIG_NIGHT_NIGHTS = [5, 6];
+
+/**
+ * Late-night trading hours.
+ *
+ * Keys past 23 are hours of the NEXT calendar day — 24 is midnight, 27 is 03:00.
+ * That is what keeps one night's sales one night: they are planned from the
+ * evening they started, so `tests/manual/attendance.php` can derive a single
+ * shift over the pair.
+ */
+const RIG_NIGHT_HOUR_WEIGHTS = [20 => 10, 21 => 12, 22 => 10, 23 => 8, 24 => 6, 25 => 4, 26 => 3, 27 => 2];
+
+/** A night's sales, as a percentage of that day's daytime count. */
+const RIG_NIGHT_SHARE = 45;
 
 /** Distinct variants on one receipt. */
 const RIG_LINE_WEIGHTS = [1 => 30, 2 => 32, 3 => 20, 4 => 12, 5 => 6];
@@ -169,24 +191,32 @@ const RIG_COLUMNS = [
  * The caller seeds the RNG, once, so that the two branches draw from one stream
  * and do not come out as the same day repeated twice with different totals.
  *
+ * This is also where the branch's NIGHT ROTA lives, because who is on has to be
+ * decided before who sold: on the nights named by {@see RIG_NIGHT_NIGHTS} the
+ * branch trades past midnight, and the one person working it
+ * ({@see rigNightUser()}) rings the night's sales and none of that day's.
+ *
  * @param  array{per_day: float}  $branch
  * @param  list<array{price: int, cost: int, weight: int, final: int}>  $variants  Indexed as pg.php's catalog.
- * @param  list<array{id: string, weight: int}>  $users
+ * @param  list<array{id: string, weight: int, role: string}>  $users
  * @return list<array<string, mixed>> Sales and after-sales events, chronological.
  */
 function rigPlanYear(array $branch, array $variants, array $users, DateTimeImmutable $start, DateTimeImmutable $end): array
 {
     $sales = [];
+    $nightUser = rigNightUser($users);
 
     for ($day = $start; $day <= $end; $day = $day->modify('+1 day')) {
-        $count = (int) round(
+        $count = max(1, (int) round(
             $branch['per_day']
             * RIG_DOW_FACTORS[(int) $day->format('N')]
             * RIG_MONTH_FACTORS[(int) $day->format('n')]
             * (mt_rand(75, 125) / 100)
-        );
+        ));
 
-        for ($i = 0; $i < max(1, $count); $i++) {
+        $night = $nightUser !== null && in_array((int) $day->format('N'), RIG_NIGHT_NIGHTS, true);
+
+        for ($i = 0; $i < $count; $i++) {
             $at = $day->setTime((int) rigPick(RIG_HOUR_WEIGHTS), mt_rand(0, 59), mt_rand(0, 59));
 
             // Today is a part-day: the window ends at the moment of seeding, and
@@ -195,24 +225,29 @@ function rigPlanYear(array $branch, array $variants, array $users, DateTimeImmut
                 continue;
             }
 
-            $discount = match (true) {
-                mt_rand(1, 100) > RIG_DISCOUNT_RATE => [null, 0.0],
-                mt_rand(1, 2) === 1 => ['percentage', (float) [5, 10, 15][mt_rand(0, 2)]],
-                default => ['amount', (float) [10, 20, 50][mt_rand(0, 2)]],
-            };
+            // Whoever is on nights tonight rings NOTHING today. Let them sell at
+            // lunch as well and their day's events run 08:00 to 04:00, which
+            // derives as one twenty-hour shift rather than a night shift — see
+            // tests/manual/attendance.php.
+            $sales[] = rigReceipt($at, rigPickUser($users, $night ? $nightUser : null), $variants);
+        }
 
-            $sales[] = [
-                'kind' => 'sale',
-                'at' => $at,
-                'user' => rigPickUser($users),
-                'payment_type' => (string) rigPick(RIG_PAYMENT_WEIGHTS),
-                'discount_type' => $discount[0],
-                'discount_input' => $discount[1],
-                'comment' => mt_rand(1, 100) <= RIG_COMMENT_RATE
-                    ? RIG_COMMENTS[mt_rand(0, count(RIG_COMMENTS) - 1)]
-                    : null,
-                'lines' => rigLines($variants),
-            ];
+        if (! $night) {
+            continue;
+        }
+
+        for ($i = 0, $n = (int) ceil($count * RIG_NIGHT_SHARE / 100); $i < $n; $i++) {
+            $hour = (int) rigPick(RIG_NIGHT_HOUR_WEIGHTS);
+
+            // Past 23 is tomorrow morning, and it belongs to tonight.
+            $at = $day->modify('+'.intdiv($hour, 24).' day')
+                ->setTime($hour % 24, mt_rand(0, 59), mt_rand(0, 59));
+
+            if ($at > $end) {
+                continue;
+            }
+
+            $sales[] = rigReceipt($at, $nightUser, $variants);
         }
     }
 
@@ -224,7 +259,7 @@ function rigPlanYear(array $branch, array $variants, array $users, DateTimeImmut
     // after-sales events are appended and the merge below is a stable sort on a
     // strictly later timestamp, so nothing reorders the sales among themselves.
     foreach (array_keys($sales) as $ordinal) {
-        $event = rigAfterSale($sales, $ordinal, $variants, $users, $end);
+        $event = rigAfterSale($sales, $ordinal, $variants, $users, $nightUser, $end);
 
         if ($event !== null) {
             $events[] = $event;
@@ -237,15 +272,45 @@ function rigPlanYear(array $branch, array $variants, array $users, DateTimeImmut
 }
 
 /**
+ * One receipt, ready to be sorted into the year.
+ *
+ * @param  list<array{price: int, cost: int, weight: int, final: int}>  $variants
+ * @return array<string, mixed>
+ */
+function rigReceipt(DateTimeImmutable $at, string $user, array $variants): array
+{
+    $discount = match (true) {
+        mt_rand(1, 100) > RIG_DISCOUNT_RATE => [null, 0.0],
+        mt_rand(1, 2) === 1 => ['percentage', (float) [5, 10, 15][mt_rand(0, 2)]],
+        default => ['amount', (float) [10, 20, 50][mt_rand(0, 2)]],
+    };
+
+    return [
+        'kind' => 'sale',
+        'at' => $at,
+        'user' => $user,
+        'payment_type' => (string) rigPick(RIG_PAYMENT_WEIGHTS),
+        'discount_type' => $discount[0],
+        'discount_input' => $discount[1],
+        'comment' => mt_rand(1, 100) <= RIG_COMMENT_RATE
+            ? RIG_COMMENTS[mt_rand(0, count(RIG_COMMENTS) - 1)]
+            : null,
+        'lines' => rigLines($variants),
+    ];
+}
+
+/**
  * A return or a defect against one sale, or null — most sales have neither, and
  * some cannot have one at all.
  *
  * @param  list<array<string, mixed>>  $sales
  * @param  list<array{price: int, cost: int, weight: int, final: int}>  $variants
- * @param  list<array{id: string, weight: int}>  $users
+ * @param  list<array{id: string, weight: int, role: string}>  $users
+ * @param  string|null  $nightUser  Whoever works this branch's nights, so a night they
+ *                                  are on cannot also hand them an afternoon.
  * @return array<string, mixed>|null
  */
-function rigAfterSale(array $sales, int $ordinal, array $variants, array $users, DateTimeImmutable $end): ?array
+function rigAfterSale(array $sales, int $ordinal, array $variants, array $users, ?string $nightUser, DateTimeImmutable $end): ?array
 {
     if (mt_rand(1, 100) > RIG_RETURN_RATE) {
         return null;
@@ -281,7 +346,11 @@ function rigAfterSale(array $sales, int $ordinal, array $variants, array $users,
     return [
         'kind' => $isReturn ? 'return' : 'defect',
         'at' => $at,
-        'user' => rigPickUser($users),
+        // Always rung in daylight (the hours above), so the day rota applies
+        // unchanged: on a night they are working, the night person is not here
+        // in the afternoon to hand a refund over.
+        'user' => rigPickUser($users, $nightUser !== null
+            && in_array((int) $at->format('N'), RIG_NIGHT_NIGHTS, true) ? $nightUser : null),
         // The sale's ORDINAL, not its position in the merged list — the two stop
         // agreeing the moment these events are folded in. It indexes the sales in
         // the order they are written, which is the order they were sorted into.
@@ -690,15 +759,50 @@ function rigPick(array $weights): int|string
 }
 
 /**
- * @param  list<array{id: string, weight: int}>  $users
+ * One of this branch's people, weighted by how much of the till they work.
+ *
+ * $exclude is the night rota: the person on tonight is not also on today. It
+ * costs no extra draw either way — {@see rigPick()} takes exactly one whatever
+ * the map holds — so excluding nobody leaves the stream where it was.
+ *
+ * @param  list<array{id: string, weight: int, role: string}>  $users
  */
-function rigPickUser(array $users): string
+function rigPickUser(array $users, ?string $exclude = null): string
 {
     $weights = [];
 
     foreach ($users as $index => $user) {
-        $weights[$index] = $user['weight'];
+        if ($user['id'] !== $exclude) {
+            $weights[$index] = $user['weight'];
+        }
+    }
+
+    // A branch with nobody left on days is not a roster pg.php can produce, but
+    // rigPick() on an empty map returns a null key and the fatal lands two
+    // frames away from the cause.
+    if ($weights === []) {
+        return $users[0]['id'];
     }
 
     return $users[rigPick($weights)]['id'];
+}
+
+/**
+ * The person who works this branch's nights: its cashier.
+ *
+ * Null when the branch has none, which pg.php's roster never produces — the
+ * caller then simply plans no night trading rather than pressing the Owner into
+ * a 20:00 start.
+ *
+ * @param  list<array{id: string, weight: int, role: string}>  $users
+ */
+function rigNightUser(array $users): ?string
+{
+    foreach ($users as $user) {
+        if ($user['role'] === 'cashier') {
+            return $user['id'];
+        }
+    }
+
+    return null;
 }

@@ -78,10 +78,16 @@ class SalesFigures
      * @param  Connection  $db  Local SQLite, or the business Postgres connection.
      * @param  string|null  $branchId  Null = every branch (and the only valid value
      *                                 on SQLite, whose tables carry no branch_id).
+     * @param  string|null  $userId  Null = every employee. Set by the employee
+     *                               performance report, which asks the same
+     *                               question of one cashier's sales; see
+     *                               {@see self::window()} for why the filter is
+     *                               not simply a column.
      */
     public function __construct(
         private readonly Connection $db,
         private readonly ?string $branchId = null,
+        private readonly ?string $userId = null,
     ) {}
 
     /**
@@ -647,12 +653,22 @@ class SalesFigures
     }
 
     /**
-     * The [from, to] window filter, plus the branch scope when there is one.
+     * The [from, to] window filter, plus the branch and employee scopes when
+     * there are any.
      *
      * Deliberately filters the RAW timestamp column rather than a converted one:
      * `created_at at time zone ?` is not sargable and would throw away the
      * `(branch_id, created_at)` indexes that exist on `transactions` and
      * `sale_returns` precisely for this query.
+     *
+     * The employee scope is not one column: a sale carries its cashier as
+     * `transactions.user_id`, and an after-sales event carries only whoever
+     * PROCESSED it (`sale_returns.performed_by`), which is a different question.
+     * A refund is attributed here to the cashier who made the SALE, because this
+     * report measures what an employee sold and what came back off it — so the
+     * `sr` alias reaches the seller through the transaction it refunds. Every
+     * refund still lands on exactly one employee, so the per-employee figures
+     * sum to the branch's exactly.
      *
      * @return Closure(Builder): void
      */
@@ -664,6 +680,21 @@ class SalesFigures
             if ($this->branchId !== null) {
                 $query->where($alias.'.branch_id', $this->branchId);
             }
+
+            if ($this->userId === null) {
+                return;
+            }
+
+            if ($alias === 'sr') {
+                $query->join('transactions as ut', 'ut.id', '=', 'sr.transaction_id')
+                    ->where('ut.user_id', $this->userId);
+
+                return;
+            }
+
+            // `t` (transactions) and `st` (the subtotals sub-query's own copy of
+            // them) both carry the cashier directly.
+            $query->where($alias.'.user_id', $this->userId);
         };
     }
 

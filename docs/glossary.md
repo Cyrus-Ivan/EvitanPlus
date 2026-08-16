@@ -785,8 +785,24 @@ heading is the failure this design refuses.
 ✗ **Not** on every screen with data worth widening. **Items** (`/items`) carries no scope at all,
 and that is the M13 split working: nothing on the catalog is per-branch, so there is nothing for a
 scope to change. Stock moved to `/inventory`, and the parameter went with it.
+✗ **Not** on every screen that reads across branches. **Employee Performance**
+(`/employee-performance`) has no scope either, and for the opposite reason to Items: it does not
+carry too little branch data to widen, it is **already as wide as it goes**. It is read only from
+the business database and always covers all of it. Every other scoped screen asks about a
+**branch** — what did this till sell, who signed in here, what is on this shelf — and `local` is an
+honest default there because the branch's own rows are on the device. This asks about a **person**,
+and a person is not a branch: somebody signs in at Manila on Monday and Cebu on Tuesday, so the
+local mirror is not a smaller true answer but a **wrong** one — a calendar that renders perfectly
+and says an employee posted elsewhere never came in all month. It is therefore the one read screen
+with **no offline path at all**: offline it renders and says it cannot report, rather than falling
+back (which is why `online: bool` replaces `consolidatedOnline: ?bool` there). Each shift instead
+carries the **branch code** it was worked at, and the summary splits the hours by branch — the
+per-branch answer the parameter would have given, on every row, without having to be asked for.
+*Anchor:* `EmployeePerformanceController` (no `normalizeScope()`, no `OffersBranchScope`);
+`AttendanceFigures::events()` for the `branches` join that only runs on `pgsql`.
 ✗ **Not** one permission. Reports restrict the wider scopes to the **Owner** (they carry cost
-and profit); login history, stock history, sales and inventory stock allow **Admin+**, per
+and profit); login history, stock history, sales, inventory stock and employee performance (which
+has no scope to gate, only a route) allow **Admin+**, per
 `MULTIBRANCH-BRAINSTORM.md` §6; Pending Stocks gates it on nothing at all, because every row it
 lists was already visible to every role and what bounds *answering* one is the branch rather than
 the role (§"Resolution"). A viewer who may not widen it is snapped back to `local` rather than

@@ -2,11 +2,10 @@
 
 namespace App\Support\Reports;
 
-use App\Models\Instance;
+use App\Support\Reports\Concerns\NamesReportScope;
 use App\Support\Settings\BusinessSettings;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
-use Illuminate\Support\Str;
 
 /**
  * The sales report as a PDF document (dompdf, pure PHP — no browser binary,
@@ -24,6 +23,8 @@ use Illuminate\Support\Str;
  */
 class SalesReportPdf
 {
+    use NamesReportScope;
+
     public function __construct(private readonly BusinessSettings $business) {}
 
     /**
@@ -70,69 +71,5 @@ class SalesReportPdf
     {
         return 'sales-report-'.$this->scopeSlug($report['scope'], $report['branches'])
             .$period.'-'.$from->toDateString().'-'.Carbon::now()->format('Ymd-His').'.pdf';
-    }
-
-    /**
-     * A human name for the reported scope, for the PDF header and the email
-     * subject.
-     *
-     * @param  list<array{id: string, code: string, name: string}>  $branches
-     */
-    public function scopeLabel(string $scope, array $branches): string
-    {
-        if ($scope === SalesReportBuilder::SCOPE_LOCAL) {
-            // A device that never hydrated has no branch name to print, and a
-            // single-install Evitan POS report never had one either.
-            $instance = Instance::current();
-
-            return $instance === null ? 'This branch' : (string) $instance->branch_name;
-        }
-
-        if ($scope === SalesReportBuilder::SCOPE_ALL) {
-            return 'All branches';
-        }
-
-        $branch = collect($branches)->firstWhere('id', $scope);
-
-        return $branch === null ? 'One branch' : $branch['code'].' — '.$branch['name'];
-    }
-
-    /**
-     * The branch this document was PRODUCED at, which is not the same question
-     * as which branches it reports on: an Owner at head office can email the
-     * consolidated figures, or one other branch's, from this device.
-     *
-     * Named as `CODE — Name` rather than by {@see self::scopeLabel}'s rules,
-     * since there is no `all` case to spell here — a device is always exactly
-     * one branch, or none at all before the wizard has hydrated it.
-     */
-    private function generatedFrom(): string
-    {
-        $instance = Instance::current();
-
-        return $instance === null
-            ? 'This device'
-            : $instance->branch_code.' — '.$instance->branch_name;
-    }
-
-    /**
-     * The scope's slug for the attachment filename, empty for the branch-local
-     * report.
-     *
-     * @param  list<array{id: string, code: string, name: string}>  $branches
-     */
-    private function scopeSlug(string $scope, array $branches): string
-    {
-        if ($scope === SalesReportBuilder::SCOPE_LOCAL) {
-            return '';
-        }
-
-        if ($scope === SalesReportBuilder::SCOPE_ALL) {
-            return 'all-branches-';
-        }
-
-        $branch = collect($branches)->firstWhere('id', $scope);
-
-        return $branch === null ? '' : Str::lower($branch['code']).'-';
     }
 }

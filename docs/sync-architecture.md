@@ -562,6 +562,17 @@ owning the connection — **but no version gate**, and that is the one deliberat
 the gate exists so a build below the floor cannot *write* stale data. Refusing to render a
 read-only screen would take away the display of the very problem.
 
+**Employee performance** (`/employee-performance`) is the one screen served by `OnlineRead`
+*alone*. It has no `scope` and no local path: the report is about a **person**, who can sign in
+at one branch on Monday and another on Tuesday, so the mirror's answer is not narrower but
+wrong — a month of zeros for somebody posted elsewhere, rendered as confidently as a real one.
+Offline it renders and says it cannot report (`online: false`), rather than falling back the way
+every scoped screen does. `EmployeePerformanceBuilder` takes the connection as an argument like
+every other figure class, and every employee on a multi-employee email is built inside **one**
+closure, since `BranchCycle` holds a Supavisor client slot for its length. The branch code on
+each shift comes from a LEFT JOIN onto `branches` inside `AttendanceFigures::events()` that runs
+only on `pgsql` — the local `login_history` has no `branch_id` and deliberately never will.
+
 `BranchRoster` is the one query behind every screen that names another branch, and it
 includes **disabled** branches by default: a disabled credential stops a branch receiving
 work, it does not unmake what that branch already did. The opposite case — picking a branch to

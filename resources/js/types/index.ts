@@ -588,6 +588,75 @@ export interface ReportTotals {
     uncosted_sales?: string;
 }
 
+// Employee performance: one employee, one month, attendance and sales on one
+// calendar. There is deliberately no profit or cost field anywhere in these —
+// the report never computes one, for anybody.
+
+// One shift: a sign-in paired with whatever ended it, anchored to the day it
+// STARTED. `end` and `hours` are null together on an open shift (still signed
+// in, or the app did not close cleanly and its recorded time is the next
+// launch's) — never 0, which would read as "worked no time".
+export interface EmployeeShift {
+    start: string;
+    end: string | null;
+    hours: number | null;
+    open: boolean;
+    // True when the shift ended on the following day — rendered as a "+1d"
+    // marker, not as a second entry on that day.
+    crosses_midnight: boolean;
+    // The code of the branch they signed IN at. The report covers the whole
+    // business, so a month split across branches has to say which day was which.
+    // Null for a row that carries no branch upstream.
+    branch: string | null;
+}
+
+// One calendar day. Every day of the month is present, worked or not: a missing
+// day reads as "no data", a zero day reads as "did not come in", and only the
+// second is a fact anybody can act on.
+export interface EmployeeDay {
+    date: string;
+    day: number;
+    // ISO weekday, Monday = 1.
+    weekday: number;
+    shifts: EmployeeShift[];
+    // Null when nothing about the day's hours is knowable (every shift open).
+    hours: number | null;
+    transactions: number;
+    gross_sales: string;
+    returns: string;
+    defects: string;
+    net_sales: string;
+}
+
+// The month's headline figures. `sales_per_hour` is null when no hours were
+// recorded — there is no rate to state, rather than a rate of zero.
+export interface EmployeeSummary {
+    days_worked: number;
+    shifts: number;
+    open_shifts: number;
+    hours: number;
+    // Where `hours` were worked, by branch code, ordered by code. Sums to
+    // `hours` exactly: open shifts contribute to neither. Empty when no shift
+    // closed.
+    hours_by_branch: { code: string; hours: number }[];
+    transactions: number;
+    gross_sales: string;
+    returns: string;
+    defects: string;
+    net_sales: string;
+    sales_per_hour: string | null;
+}
+
+// An employee as the picker, the page heading and the PDF name them. Archived
+// users stay listed: a month worked before somebody left is still readable.
+export interface EmployeeOption {
+    id: string;
+    name: string;
+    username: string;
+    role: UserRole;
+    archived: boolean;
+}
+
 // Stacked-chart legend entry: one per item (all its variants aggregated), plus a
 // trailing '__other__' bucket for items beyond the top few. `key` matches the
 // keys in ReportChartBucket.values.

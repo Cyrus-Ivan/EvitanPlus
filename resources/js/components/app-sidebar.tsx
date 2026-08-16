@@ -16,6 +16,7 @@ import {
     ShoppingCart,
     Store,
     Tags,
+    UserRoundCheck,
     UsersRound,
 } from 'lucide-react';
 import AppLogo from './app-logo';
@@ -68,6 +69,10 @@ const mainNavGroups: NavGroup[] = [
         title: 'Insights',
         items: [
             { title: 'Reports', url: '/reports', icon: ChartColumn, permission: 'access-reports' },
+            // One employee, one month: their shifts and their sales on one
+            // calendar. Gated by access-reports rather than an ability of its
+            // own — the page is Admin+ throughout and mints no new boundary.
+            { title: 'Employee Performance', url: '/employee-performance', icon: UserRoundCheck, permission: 'access-reports' },
             { title: 'Login History', url: '/login-history', icon: History }, // Cashier sees own
             { title: 'Audit Logs', url: '/audit-logs', icon: ScrollText, permission: 'access-audit-logs' },
         ],

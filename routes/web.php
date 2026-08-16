@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\BusinessSettingsController;
+use App\Http\Controllers\EmployeePerformanceController;
 use App\Http\Controllers\Inventory\CategoryController;
 use App\Http\Controllers\Inventory\InventoryController;
 use App\Http\Controllers\Inventory\InventoryImportController;
@@ -124,6 +125,22 @@ Route::middleware(['auth'])->group(function () {
         // normalizeScope(), so the same route can serve the branch-local report
         // an Admin is entitled to.
         Route::post('reports/email', [ReportsController::class, 'email'])->name('reports.email');
+
+        // Employee performance: one employee, one month, attendance and sales on
+        // one calendar. Admin+ and nothing narrower — the report carries no cost
+        // or profit, so there is nothing on it the Owner alone may see (the rule
+        // /sales and /login-history already follow).
+        //
+        // Alone among the reporting screens it takes NO branch scope: it is read
+        // only from the business database and always covers all of it, because a
+        // person is not a branch — somebody signs in at Manila on Monday and Cebu
+        // on Tuesday, and a branch-local month of theirs is wrong rather than
+        // narrow. Offline the screen renders and says it cannot report.
+        Route::get('employee-performance', [EmployeePerformanceController::class, 'index'])
+            ->name('employee-performance');
+        Route::post('employee-performance/email', [EmployeePerformanceController::class, 'email'])
+            ->name('employee-performance.email');
+
         Route::get('audit-logs', [AuditLogController::class, 'index'])->name('audit-logs'); // Phase 15
 
         // User management (Phase 13). Which roles an actor may create/assign and

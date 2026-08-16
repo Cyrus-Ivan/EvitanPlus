@@ -1,14 +1,14 @@
 import { BranchScopeSelect } from '@/components/branch-scope-select';
 import EmptyState from '@/components/empty-state';
-import Pagination from '@/components/pagination';
-import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
+import LoginEventCalendar from '@/components/login-history/event-calendar';
+import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import AppLayout from '@/layouts/app-layout';
-import type { BranchScope, BreadcrumbItem, LoginEventType, LoginHistoryEntry, Paginated, RosterBranch, User } from '@/types';
+import { MONTHS } from '@/lib/calendar';
+import { eventLabel } from '@/lib/login-events';
+import type { BranchScope, BreadcrumbItem, LoginDay, LoginEventType, RosterBranch, User } from '@/types';
 import { Head, router } from '@inertiajs/react';
-import { History, WifiOff } from 'lucide-react';
+import { ChevronLeft, ChevronRight, History, WifiOff } from 'lucide-react';
 
 const breadcrumbs: BreadcrumbItem[] = [{ title: 'Login History', href: '/login-history' }];
 
@@ -18,40 +18,20 @@ const ALL = 'all';
 // Cashier always gets. Any other value is read live from the business database.
 const LOCAL = 'local';
 
-// The props a filter or scope change reloads. Listed once because every control
-// funnels through applyFilters(): a prop left out of this list silently freezes
-// while the rest of the screen updates around it.
+// The props a filter, scope or month change reloads. Listed once because every
+// control funnels through applyFilters(): a prop left out of this list silently
+// freezes while the rest of the screen updates around it.
 //
-// `branches` is deliberately NOT in it. The roster arrives with every full page
-// render now, and asking for it again would make the server re-read it — over
-// the network — on every date or user filter change. The list is the same one
-// either way, so the copy the client already holds stands.
-const RELOADED = ['entries', 'filters', 'scope', 'consolidatedOnline'];
-
-// Human labels + badge tone per event. Clean sign-in/out reads neutral; the
-// abnormal terminations (crash / power loss / forced) read as warnings.
-const EVENT: Record<LoginEventType, { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' }> = {
-    login: { label: 'Login', variant: 'default' },
-    logout: { label: 'Logout', variant: 'secondary' },
-    // Any unclean exit (window closed / shutdown / crash / force-kill) is detected
-    // on the next launch and recorded uniformly as application_crash.
-    application_crash: { label: 'Unexpected exit', variant: 'destructive' },
-    forced_logout: { label: 'Forced logout', variant: 'destructive' },
-};
-
-function formatWhen(value: string | null): string {
-    if (!value) {
-        return '—';
-    }
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
-}
+// `branches`, `users` and `years` are deliberately NOT in it. None of the three
+// changes with the filters, and re-sending them would make the server re-read
+// the roster — over the network — on every step of the month.
+const RELOADED = ['days', 'total', 'filters', 'scope', 'consolidatedOnline'];
 
 /**
  * Shown when cross-branch sessions were asked for and the business database
  * could not be reached, so what is on screen is this branch's own history.
  *
- * The risk this guards against is a correct-looking table that covers fewer
+ * The risk this guards against is a correct-looking calendar that covers fewer
  * branches than its heading claims, so the first line names what is on screen.
  */
 function OfflineHistoryNotice() {
@@ -69,25 +49,39 @@ function OfflineHistoryNotice() {
 interface Filters {
     user: string | null;
     event: string | null;
-    date_from: string | null;
-    date_to: string | null;
+    // The month on screen, echoed back after normalisation, with the ‹ ›
+    // steppers' destinations already resolved server-side so a year rollover is
+    // decided in one place.
+    month: number;
+    year: number;
+    label: string;
+    prev_month: number;
+    prev_year: number;
+    next_month: number;
+    next_year: number;
 }
 
 export default function LoginHistory({
-    entries,
+    days,
+    total,
     canViewAll,
     users,
     eventTypes,
     filters,
+    years,
     scope,
     branches,
     consolidatedOnline,
 }: {
-    entries: Paginated<LoginHistoryEntry>;
+    // Every day of the selected month, each carrying its own events.
+    days: LoginDay[];
+    // The month's event count, across every day.
+    total: number;
     canViewAll: boolean;
     users: Pick<User, 'id' | 'name' | 'username'>[];
     eventTypes: LoginEventType[];
     filters: Filters;
+    years: number[];
     // M11.5. What was actually read — a failed online read comes back as
     // 'local' with consolidatedOnline false, never as the scope asked for.
     scope: BranchScope;
@@ -95,16 +89,19 @@ export default function LoginHistory({
     // Null when nothing cross-branch was asked for; false only on a fallback.
     consolidatedOnline: boolean | null;
 }) {
-    const applyFilters = (next: Partial<Filters> & { scope?: string }) => {
+    const applyFilters = (next: Partial<Record<'user' | 'event' | 'scope', string | null>> & { month?: number; year?: number }) => {
         const merged = { ...filters, scope, ...next };
+
         router.get(
             route('login-history'),
             {
                 user: merged.user && merged.user !== ALL ? merged.user : undefined,
                 event: merged.event && merged.event !== ALL ? merged.event : undefined,
-                date_from: merged.date_from || undefined,
-                date_to: merged.date_to || undefined,
-                // Carried through every filter change, or narrowing by date
+                // Always sent, so stepping the month cannot fall back to today's
+                // on the next filter change.
+                month: merged.month,
+                year: merged.year,
+                // Carried through every filter change, or narrowing by month
                 // would silently drop the screen back to this branch.
                 scope: merged.scope !== LOCAL ? merged.scope : undefined,
             },
@@ -130,7 +127,7 @@ export default function LoginHistory({
                     )}
                     {canViewAll && (
                         <Select value={filters.user ?? ALL} onValueChange={(value) => applyFilters({ user: value })}>
-                            <SelectTrigger className="w-56">
+                            <SelectTrigger className="w-56" aria-label="User">
                                 <SelectValue placeholder="All users" />
                             </SelectTrigger>
                             <SelectContent>
@@ -144,81 +141,85 @@ export default function LoginHistory({
                         </Select>
                     )}
                     <Select value={filters.event ?? ALL} onValueChange={(value) => applyFilters({ event: value })}>
-                        <SelectTrigger className="w-44">
+                        <SelectTrigger className="w-44" aria-label="Event">
                             <SelectValue placeholder="All events" />
                         </SelectTrigger>
                         <SelectContent>
                             <SelectItem value={ALL}>All events</SelectItem>
                             {eventTypes.map((type) => (
                                 <SelectItem key={type} value={type}>
-                                    {EVENT[type]?.label ?? type}
+                                    {eventLabel(type)}
                                 </SelectItem>
                             ))}
                         </SelectContent>
                     </Select>
-                    <div className="flex items-center gap-2">
-                        <span className="text-muted-foreground text-sm">From</span>
-                        <Input
-                            type="date"
-                            value={filters.date_from ?? ''}
-                            max={filters.date_to ?? undefined}
-                            onChange={(e) => applyFilters({ date_from: e.target.value || null })}
-                            className="w-40"
-                        />
-                        <span className="text-muted-foreground text-sm">To</span>
-                        <Input
-                            type="date"
-                            value={filters.date_to ?? ''}
-                            min={filters.date_from ?? undefined}
-                            onChange={(e) => applyFilters({ date_to: e.target.value || null })}
-                            className="w-40"
-                        />
+
+                    {/* The month, in the shape employee performance uses — the
+                        calendar's window is a month, so a free date range would
+                        be a control the grid could not honour. */}
+                    <div className="flex items-center gap-1">
+                        <Button
+                            variant="outline"
+                            size="icon"
+                            aria-label="Previous month"
+                            onClick={() => applyFilters({ month: filters.prev_month, year: filters.prev_year })}
+                        >
+                            <ChevronLeft className="size-4" />
+                        </Button>
+                        <Select value={String(filters.month)} onValueChange={(value) => applyFilters({ month: Number(value) })}>
+                            <SelectTrigger className="w-36" aria-label="Month">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {MONTHS.map((label, index) => (
+                                    <SelectItem key={label} value={String(index + 1)}>
+                                        {label}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                        <Select value={String(filters.year)} onValueChange={(value) => applyFilters({ year: Number(value) })}>
+                            <SelectTrigger className="w-28" aria-label="Year">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {years.map((value) => (
+                                    <SelectItem key={value} value={String(value)}>
+                                        {value}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                        <Button
+                            variant="outline"
+                            size="icon"
+                            aria-label="Next month"
+                            onClick={() => applyFilters({ month: filters.next_month, year: filters.next_year })}
+                        >
+                            <ChevronRight className="size-4" />
+                        </Button>
                     </div>
                 </div>
 
                 {consolidatedOnline === false && <OfflineHistoryNotice />}
 
-                {entries.data.length === 0 ? (
+                {total === 0 ? (
                     <EmptyState
                         icon={History}
-                        title="No login events"
-                        description="Authentication events will appear here as users sign in and out."
+                        title={`No login events in ${filters.label}`}
+                        description="Authentication events appear here as users sign in and out. Try another month, or widen the filters."
                     />
                 ) : (
-                    <div className="rounded-xl border">
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead>When</TableHead>
-                                    {/* The branch CODE — the identifier that
-                                        prefixes every receipt this till prints,
-                                        and the one a branch is called by. */}
-                                    <TableHead>Branch</TableHead>
-                                    {canViewAll && <TableHead>User</TableHead>}
-                                    <TableHead>Event</TableHead>
-                                    <TableHead>Notes</TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {entries.data.map((entry) => (
-                                    <TableRow key={entry.id}>
-                                        <TableCell className="tabular-nums">{formatWhen(entry.occurred_at ?? entry.created_at)}</TableCell>
-                                        <TableCell className="font-medium">{entry.branch ?? '—'}</TableCell>
-                                        {canViewAll && <TableCell>{entry.user?.name ?? entry.user?.username ?? '—'}</TableCell>}
-                                        <TableCell>
-                                            <Badge variant={EVENT[entry.event_type]?.variant ?? 'outline'}>
-                                                {EVENT[entry.event_type]?.label ?? entry.event_type}
-                                            </Badge>
-                                        </TableCell>
-                                        <TableCell className="text-muted-foreground">{entry.notes ?? '—'}</TableCell>
-                                    </TableRow>
-                                ))}
-                            </TableBody>
-                        </Table>
-                    </div>
-                )}
+                    <>
+                        {/* The count, above the grid: a month whose events sit in
+                            three cells otherwise reads as an empty month. */}
+                        <p className="text-muted-foreground text-sm">
+                            {total} {total === 1 ? 'event' : 'events'} in {filters.label}. Select a day to see it in full.
+                        </p>
 
-                <Pagination links={entries.links} />
+                        <LoginEventCalendar days={days} canViewAll={canViewAll} />
+                    </>
+                )}
             </div>
         </AppLayout>
     );

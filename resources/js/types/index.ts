@@ -395,6 +395,20 @@ export interface LoginHistoryEntry {
     user: Pick<User, 'id' | 'name' | 'username'> | null;
 }
 
+// One cell of the login history calendar. Every day of the month is present,
+// event or not: a missing day reads as "no data", an empty day reads as "nobody
+// signed in", and only the second is a fact anybody can act on.
+export interface LoginDay {
+    date: string;
+    day: number;
+    // ISO weekday, Monday = 1.
+    weekday: number;
+    // The day's events, oldest first — a day reads forward as it happened. Carried
+    // in full so the day dialog opens without a request, which is also what lets
+    // it work offline in the local scope.
+    entries: LoginHistoryEntry[];
+}
+
 // A row from the immutable audit log (Phase 15, display only). Cost-bearing keys
 // in old_values/new_values are stripped server-side for non-Owner viewers.
 export interface AuditLogEntry {

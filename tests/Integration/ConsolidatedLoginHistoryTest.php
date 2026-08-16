@@ -69,6 +69,9 @@ class ConsolidatedLoginHistoryTest extends TestCase
     /** The reported day, in business-local time. */
     private const DAY = '2026-04-14';
 
+    /** The month the seeded day sits in — the screen's window is a month. */
+    private const MONTH = ['month' => 4, 'year' => 2026];
+
     /** @var array<string, mixed>|null */
     private static ?array $documentA = null;
 
@@ -146,7 +149,7 @@ class ConsolidatedLoginHistoryTest extends TestCase
     public function test_the_owner_sees_every_branchs_sessions_attributed_to_the_right_branch(): void
     {
         $this->actingAs($this->owner())
-            ->get(route('login-history', ['scope' => 'all']))
+            ->get(route('login-history', ['scope' => 'all'] + self::MONTH))
             ->assertOk()
             ->assertInertia(function ($page) {
                 $page->component('login-history', false)
@@ -158,9 +161,10 @@ class ConsolidatedLoginHistoryTest extends TestCase
                 // Five sessions across two branches, on a device that holds none
                 // of them: its own SQLite login_history is empty (nothing has
                 // logged in on it but the acting-as above, which writes no row).
-                $this->assertCount(5, $props['entries']['data']);
+                $this->assertSame(5, $props['total']);
+                $this->assertCount(5, $this->entriesOf($props));
 
-                $byBranch = collect($props['entries']['data'])->countBy('branch');
+                $byBranch = collect($this->entriesOf($props))->countBy('branch');
 
                 $this->assertSame(3, $byBranch[self::BRANCH_A]);
                 $this->assertSame(2, $byBranch[self::BRANCH_B]);
@@ -177,62 +181,107 @@ class ConsolidatedLoginHistoryTest extends TestCase
     public function test_a_single_branch_scope_reports_only_that_branch(): void
     {
         $this->actingAs($this->owner())
-            ->get(route('login-history', ['scope' => self::$documentB['branch']['id']]))
+            ->get(route('login-history', ['scope' => self::$documentB['branch']['id']] + self::MONTH))
             ->assertOk()
             ->assertInertia(function ($page) {
                 $props = $page->toArray()['props'];
 
                 $page->where('scope', self::$documentB['branch']['id'])->where('consolidatedOnline', true);
 
-                $this->assertCount(2, $props['entries']['data']);
+                $this->assertSame(2, $props['total']);
                 $this->assertSame(
                     [self::BRANCH_B],
-                    collect($props['entries']['data'])->pluck('branch')->unique()->values()->all(),
+                    collect($this->entriesOf($props))->pluck('branch')->unique()->values()->all(),
                 );
             });
     }
 
-    public function test_the_day_filter_is_cut_on_the_business_day_not_the_utc_one(): void
+    public function test_a_row_is_bucketed_on_the_business_day_not_the_utc_one(): void
     {
         // Branch B's two sessions sit either side of local midnight: 23:30 on the
         // reported day and 00:30 on the next. In UTC both are the SAME day
-        // (15:30 and 16:30), so a window bound sent without its offset would pull
-        // the second into this day. Branch A's 23:59:59 is the other edge: the
-        // last second the column can hold, which the upper bound must include.
+        // (15:30 and 16:30), so a row localised late — or not at all — would put
+        // the second in the earlier cell. Branch A's 23:59:59 is the other edge:
+        // the last second the column can hold, which must stay on its own day.
         $this->actingAs($this->owner())
-            ->get(route('login-history', [
-                'scope' => 'all',
-                'date_from' => self::DAY,
-                'date_to' => self::DAY,
-            ]))
+            ->get(route('login-history', ['scope' => 'all'] + self::MONTH))
+            ->assertOk()
+            ->assertInertia(function ($page) {
+                $days = collect($page->toArray()['props']['days'])->keyBy('date');
+
+                // Branch A's three — the last of them at 23:59:59, which stays on
+                // this day only if the cell is chosen from the business-local
+                // moment — plus branch B's 23:30, and NOT branch B's 00:30.
+                $this->assertCount(4, $days[self::DAY]['entries']);
+
+                // And it IS in the next day's cell, which is the other half of
+                // the same fact.
+                $next = $days['2026-04-15']['entries'];
+
+                $this->assertCount(1, $next);
+                $this->assertSame(self::BRANCH_B, $next[0]['branch']);
+            });
+    }
+
+    public function test_a_day_reads_forward_and_every_day_of_the_month_is_a_cell(): void
+    {
+        $this->actingAs($this->owner())
+            ->get(route('login-history', ['scope' => 'all'] + self::MONTH))
             ->assertOk()
             ->assertInertia(function ($page) {
                 $props = $page->toArray()['props'];
 
-                // Branch A's three — the last of them at 23:59:59, which lands
-                // only if the upper bound is inclusive of the final second —
-                // plus branch B's 23:30, and NOT branch B's 00:30.
-                $this->assertCount(4, $props['entries']['data']);
+                // April has thirty days and every one of them is a cell, seeded
+                // or not — a day missing from the grid reads as "no data", an
+                // empty one reads as "nobody signed in".
+                $this->assertCount(30, $props['days']);
 
+                $times = collect($props['days'])->firstWhere('date', self::DAY)['entries'];
+
+                // Oldest first, including the 23:59:59 row last. The `id`
+                // tiebreak is what keeps this stable: `timestamptz` is precision
+                // 0 upstream, so two events can share a second.
                 $this->assertSame(
-                    [self::DAY],
-                    collect($props['entries']['data'])
-                        ->map(fn (array $row) => substr((string) $row['occurred_at'], 0, 10))
-                        ->unique()
-                        ->values()
+                    ['08:00', '17:00', '23:30', '23:59'],
+                    collect($times)
+                        ->map(fn (array $row) => Carbon::parse((string) $row['occurred_at'])
+                            ->setTimezone(config('app.timezone'))
+                            ->format('H:i'))
                         ->all(),
                 );
             });
+    }
 
-        // And it IS in the next day's, which is the other half of the same fact.
+    /**
+     * The window bounds are the other half of the same offset trap, and the
+     * month's first instant is where it bites hardest: 00:30 on 1 April in
+     * Manila is 16:30 on 31 MARCH in UTC, so a lower bound sent without its
+     * offset drops the row out of the month entirely.
+     */
+    public function test_the_months_first_local_hour_is_inside_the_month(): void
+    {
+        $this->seedSession(
+            (string) self::$documentB['branch']['id'],
+            (string) $this->owner()->getKey(),
+            'login',
+            '2026-04-01 00:30:00',
+        );
+
         $this->actingAs($this->owner())
-            ->get(route('login-history', ['scope' => 'all', 'date_from' => '2026-04-15', 'date_to' => '2026-04-15']))
+            ->get(route('login-history', ['scope' => 'all'] + self::MONTH))
+            ->assertOk()
             ->assertInertia(function ($page) {
-                $rows = $page->toArray()['props']['entries']['data'];
+                $props = $page->toArray()['props'];
 
-                $this->assertCount(1, $rows);
-                $this->assertSame(self::BRANCH_B, $rows[0]['branch']);
+                $this->assertSame(6, $props['total']);
+                $this->assertCount(1, collect($props['days'])->firstWhere('date', '2026-04-01')['entries']);
             });
+
+        // And it is NOT in March's, which is the half a missing offset would
+        // otherwise satisfy on its own.
+        $this->actingAs($this->owner())
+            ->get(route('login-history', ['scope' => 'all', 'month' => 3, 'year' => 2026]))
+            ->assertInertia(fn ($page) => $page->where('total', 0));
     }
 
     public function test_the_timestamps_arrive_in_business_local_time(): void
@@ -241,9 +290,9 @@ class ConsolidatedLoginHistoryTest extends TestCase
         // read would show branch B's 23:30 session as 15:30 — a plausible time
         // that is simply the wrong one, on the wrong day.
         $this->actingAs($this->owner())
-            ->get(route('login-history', ['scope' => self::$documentB['branch']['id']]))
+            ->get(route('login-history', ['scope' => self::$documentB['branch']['id']] + self::MONTH))
             ->assertInertia(function ($page) {
-                $times = collect($page->toArray()['props']['entries']['data'])
+                $times = collect($this->entriesOf($page->toArray()['props']))
                     ->map(fn (array $row) => Carbon::parse((string) $row['occurred_at'])
                         ->setTimezone(config('app.timezone'))
                         ->format('Y-m-d H:i'))
@@ -261,12 +310,12 @@ class ConsolidatedLoginHistoryTest extends TestCase
         // and works offline. Nothing was ever written to this device's SQLite, so
         // its own history is empty even though the business database is full.
         $this->actingAs($this->owner())
-            ->get(route('login-history'))
+            ->get(route('login-history', self::MONTH))
             ->assertOk()
             ->assertInertia(function ($page) {
                 $page->where('scope', 'local')
                     ->where('consolidatedOnline', null)
-                    ->has('entries.data', 0);
+                    ->where('total', 0);
 
                 // ...and yet the picker is already filled. The roster is read on
                 // every render for a viewer who may widen the scope, or naming
@@ -286,12 +335,12 @@ class ConsolidatedLoginHistoryTest extends TestCase
         // better answer to the same question and the only one that survives the
         // connection dropping.
         $this->actingAs($this->owner())
-            ->get(route('login-history', ['scope' => self::$documentA['branch']['id']]))
+            ->get(route('login-history', ['scope' => self::$documentA['branch']['id']] + self::MONTH))
             ->assertOk()
             ->assertInertia(fn ($page) => $page
                 ->where('scope', 'local')
                 ->where('consolidatedOnline', null)
-                ->has('entries.data', 0)
+                ->where('total', 0)
             );
     }
 
@@ -300,6 +349,21 @@ class ConsolidatedLoginHistoryTest extends TestCase
     private function owner(): User
     {
         return User::query()->where('username', self::OWNER_USERNAME)->sole();
+    }
+
+    /**
+     * Every event on the page, flattened out of its day cells.
+     *
+     * The screen is a calendar, so the rows arrive grouped and zero-filled. What
+     * most of these assertions are about is the SET of rows a scope returned,
+     * which the grouping is orthogonal to.
+     *
+     * @param  array<string, mixed>  $props
+     * @return list<array<string, mixed>>
+     */
+    private function entriesOf(array $props): array
+    {
+        return collect($props['days'])->flatMap(fn (array $day) => $day['entries'])->values()->all();
     }
 
     /**

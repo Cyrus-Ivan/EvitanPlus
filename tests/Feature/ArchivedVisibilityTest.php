@@ -114,16 +114,28 @@ class ArchivedVisibilityTest extends TestCase
     public function test_archived_user_still_appears_in_login_history(): void
     {
         $cashier = User::factory()->cashier()->create();
-        LoginHistory::factory()->create(['user_id' => $cashier->id]);
+
+        // Pinned to today, because the screen is a calendar of the CURRENT month
+        // and the factory's own `occurred_at` spans the last thirty days — which
+        // straddles two months on most days of the year.
+        $today = now();
+        LoginHistory::factory()->create([
+            'user_id' => $cashier->id,
+            'occurred_at' => $today,
+            'created_at' => $today,
+        ]);
 
         $cashier->delete();
+
+        // Day 1 of the month is cell 0.
+        $cell = $today->day - 1;
 
         $this->actingAs(User::factory()->admin()->create())
             ->get(route('login-history'))
             ->assertOk()
             ->assertInertia(fn ($page) => $page
                 ->component('login-history', false)
-                ->where('entries.data.0.user.username', $cashier->username));
+                ->where("days.{$cell}.entries.0.user.username", $cashier->username));
     }
 
     public function test_archived_user_still_appears_as_audit_log_actor(): void

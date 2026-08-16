@@ -3,29 +3,48 @@
 namespace App\Http\Controllers;
 
 use App\Enums\LoginEventType;
-use App\Http\Controllers\Concerns\NormalizesDateFilter;
+use App\Http\Controllers\Concerns\NormalizesMonthFilter;
 use App\Http\Controllers\Concerns\OffersBranchScope;
 use App\Models\Instance;
 use App\Models\LoginHistory;
 use App\Models\User;
+use App\Support\LoginHistory\LoginCalendar;
 use App\Support\Sync\BranchRoster;
 use App\Support\Sync\OnlineRead;
+// The base Carbon, matching what NormalizesMonthFilter's window is: hinting
+// Laravel's narrower subclass here is a TypeError that `rescue()` swallows, and
+// the screen reports as being offline.
+use Carbon\Carbon;
 use Illuminate\Database\Connection;
 use Illuminate\Http\Request;
-use Illuminate\Pagination\LengthAwarePaginator;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
 
 /**
- * Login History display (Phase 14; cross-branch in M11.5). Read-only view over
- * the append-only login_history captured since Phase 2 — no capture logic lives
- * here.
+ * Login History display (Phase 14; cross-branch in M11.5; a calendar since).
+ * Read-only view over the append-only login_history captured since Phase 2 — no
+ * capture logic lives here.
  *
  * Role scoping: a Cashier may only ever see their own events; Admins and the
  * Owner see everyone and may filter by user. The own-only constraint is applied
  * server-side and cannot be widened by a crafted `user` query parameter.
+ *
+ * ## A month, not a page
+ *
+ * The screen is a calendar and the window is therefore ONE MONTH, picked by
+ * month and year ({@see NormalizesMonthFilter}, shared with employee
+ * performance) rather than by a free date range. There is no pagination: the
+ * month is the page, its rows come back in one read, and
+ * {@see LoginCalendar::days()} cuts them into day cells. A day's events are
+ * carried in full so the day dialog opens from data the client already holds —
+ * which is also what makes it work offline in the `local` scope, where a second
+ * request would have nothing to ask.
+ *
+ * Both reads are ordered ASCENDING, unlike every other index in the app. A
+ * paginated list is newest-first because its far end is unbounded; a day is
+ * bounded and reads forward as it happened, and a truncated cell should hide the
+ * end of the day rather than its beginning.
  *
  * ## The `scope` parameter (M11.5)
  *
@@ -61,7 +80,7 @@ use Inertia\Response;
  */
 class LoginHistoryController extends Controller
 {
-    use NormalizesDateFilter, OffersBranchScope;
+    use NormalizesMonthFilter, OffersBranchScope;
 
     /** This branch's own sessions: SQLite, works offline. */
     private const SCOPE_LOCAL = 'local';
@@ -69,20 +88,23 @@ class LoginHistoryController extends Controller
     /** Every branch's sessions: Postgres, read live. */
     private const SCOPE_ALL = 'all';
 
-    private const PER_PAGE = 20;
-
-    public function __construct(private readonly OnlineRead $read) {}
+    public function __construct(
+        private readonly OnlineRead $read,
+        private readonly LoginCalendar $calendar,
+    ) {}
 
     public function index(Request $request): Response
     {
         $viewer = $request->user();
         $canViewAll = $viewer->isAdmin() || $viewer->isOwner();
 
+        [$from, $to] = $this->monthWindow($request->query('month'), $request->query('year'));
+
         $filters = [
             'user' => $canViewAll ? ($request->query('user') ?: null) : $viewer->getKey(),
             'event' => $this->normalizeEvent($request->query('event')),
-            'from' => $this->normalizeDate($request->query('date_from')),
-            'to' => $this->normalizeDate($request->query('date_to')),
+            'from' => $from,
+            'to' => $to,
         ];
 
         $scope = $this->normalizeScope($request->query('scope'), $canViewAll);
@@ -98,7 +120,11 @@ class LoginHistoryController extends Controller
         $roster = $history['consolidatedOnline'] === null ? null : $history['branches'];
 
         return Inertia::render('login-history', [
-            'entries' => $history['entries'],
+            // Every day of the month, each carrying its own events oldest-first.
+            'days' => $this->calendar->days($from, $to, $history['entries']),
+            // The month's event count. On screen above the grid, so a filtered
+            // month that renders as empty cells still says how much it matched.
+            'total' => count($history['entries']),
             'canViewAll' => $canViewAll,
             // Only offered to those who may see everyone; archived users included
             // so their historical events stay filterable. Read locally in every
@@ -111,9 +137,14 @@ class LoginHistoryController extends Controller
             'filters' => [
                 'user' => $canViewAll ? $filters['user'] : null,
                 'event' => $filters['event'],
-                'date_from' => $filters['from']?->toDateString(),
-                'date_to' => $filters['to']?->toDateString(),
+                // The month, its label and the ‹ › steppers' destinations —
+                // echoed back AFTER normalisation, so a hand-typed `?month=13`
+                // leaves the control showing the month actually read.
+                ...$this->monthFilters($from),
             ],
+            // Never in the frontend's reload list: stepping the month must not
+            // re-send a list that cannot change.
+            'years' => $this->yearsOffered(),
             // M11.5. Echoed back AFTER normalisation and after any fallback, so
             // the control always shows what was actually read rather than what
             // was asked for.
@@ -127,10 +158,10 @@ class LoginHistoryController extends Controller
 
     /**
      * This branch's own sessions, from the local mirror. Unchanged since Phase
-     * 14 apart from the branch column, and deliberately so — it is what every
-     * Cashier sees and what the screen falls back to.
+     * 14 apart from the branch column and the month window, and deliberately so
+     * — it is what every Cashier sees and what the screen falls back to.
      *
-     * @param  array{user: ?string, event: ?string, from: ?Carbon, to: ?Carbon}  $filters
+     * @param  array{user: ?string, event: ?string, from: Carbon, to: Carbon}  $filters
      * @return array<string, mixed>
      */
     private function branchLocal(array $filters): array
@@ -145,20 +176,22 @@ class LoginHistoryController extends Controller
             ->when($filters['user'], fn ($query) => $query->where('user_id', $filters['user']))
             ->when($filters['event'], fn ($query) => $query->where('event_type', $filters['event']))
             // Filter on the displayed "When" value (occurred_at falls back to
-            // created_at) so the range matches exactly what the table shows.
-            ->when($filters['from'], fn ($query) => $query->whereRaw(
+            // created_at) so the month matches exactly what the cells show —
+            // this same COALESCE is what LoginCalendar buckets on.
+            ->whereRaw(
                 'COALESCE(occurred_at, created_at) >= ?',
-                [$filters['from']->startOfDay()->format('Y-m-d H:i:s')],
-            ))
-            ->when($filters['to'], fn ($query) => $query->whereRaw(
+                [$filters['from']->format('Y-m-d H:i:s')],
+            )
+            ->whereRaw(
                 'COALESCE(occurred_at, created_at) <= ?',
-                [$filters['to']->endOfDay()->format('Y-m-d H:i:s')],
-            ))
-            ->orderByDesc('occurred_at')
-            ->orderByDesc('created_at')
-            ->paginate(self::PER_PAGE)
-            ->withQueryString()
-            ->through(fn (LoginHistory $entry) => [
+                [$filters['to']->format('Y-m-d H:i:s')],
+            )
+            // Ascending: a day reads forward. The `id` tiebreak keeps two events
+            // sharing a second in a stable order, as AttendanceFigures does.
+            ->orderByRaw('COALESCE(occurred_at, created_at)')
+            ->orderBy('id')
+            ->get()
+            ->map(fn (LoginHistory $entry) => [
                 'id' => $entry->id,
                 'branch' => $branch,
                 'event_type' => $entry->event_type,
@@ -170,7 +203,8 @@ class LoginHistoryController extends Controller
                     'name' => $entry->user->name,
                     'username' => $entry->user->username,
                 ] : null,
-            ]);
+            ])
+            ->all();
 
         return [
             'entries' => $entries,
@@ -190,7 +224,7 @@ class LoginHistoryController extends Controller
      * hold two Supavisor client slots for one screen.
      *
      * @param  string  $scope  'all', or a branch id.
-     * @param  array{user: ?string, event: ?string, from: ?Carbon, to: ?Carbon}  $filters
+     * @param  array{user: ?string, event: ?string, from: Carbon, to: Carbon}  $filters
      * @return array<string, mixed>
      */
     private function consolidated(string $scope, array $filters): array
@@ -209,7 +243,7 @@ class LoginHistoryController extends Controller
                 $branchId = $requested !== null && isset($branches[$requested]) ? $requested : null;
 
                 return [
-                    'entries' => $this->remotePage($remote, $branchId, $filters, $branches),
+                    'entries' => $this->remoteEntries($remote, $branchId, $filters, $branches),
                     'scope' => $branchId ?? self::SCOPE_ALL,
                     'branches' => array_values($branches),
                     'consolidatedOnline' => true,
@@ -231,14 +265,14 @@ class LoginHistoryController extends Controller
     }
 
     /**
-     * One page of upstream login history, named and localised.
+     * The month of upstream login history, named and localised.
      *
      * Three things here do not port from the local query above, and all of them
      * fail silently (the same class of trap M11 documents for reports):
      *
      *  - **The window bounds carry their offset.** These columns are
      *    `timestamptz` and the session timezone is UTC, so a naive Manila bound
-     *    lands eight hours out — a shift that sorts and renders perfectly and
+     *    lands eight hours out — a month that sorts and renders perfectly and
      *    answers the wrong question. The sub-second digits ride along for the
      *    same reason `SalesFigures::bound()` keeps them (one format, one rule);
      *    they are inert here, since `timestampTz` takes Laravel's default
@@ -246,30 +280,36 @@ class LoginHistoryController extends Controller
      *  - **The timestamps come back with an offset.** They are converted to the
      *    business timezone in PHP rather than with `to_char`, which keeps one
      *    code path for formatting and avoids binding a format string per column.
+     *    It is also what lets {@see LoginCalendar} bucket a row on the business
+     *    day it happened rather than the UTC one.
      *  - **The user is joined, not eager-loaded.** A LEFT JOIN so a row survives
      *    a user that is missing upstream, and unfiltered on `deleted_at` because
      *    archived users must still resolve in login history (CLAUDE.md).
      *
-     * @param  array{user: ?string, event: ?string, from: ?Carbon, to: ?Carbon}  $filters
+     * @param  array{user: ?string, event: ?string, from: Carbon, to: Carbon}  $filters
      * @param  array<string, array{id: string, code: string, name: string}>  $branches
+     * @return list<array<string, mixed>>
      */
-    private function remotePage(Connection $remote, ?string $branchId, array $filters, array $branches): LengthAwarePaginator
+    private function remoteEntries(Connection $remote, ?string $branchId, array $filters, array $branches): array
     {
-        $page = $remote->table('login_history as history')
+        $rows = $remote->table('login_history as history')
             ->leftJoin('users as actor', 'actor.id', '=', 'history.user_id')
             ->when($branchId, fn ($query) => $query->where('history.branch_id', $branchId))
             ->when($filters['user'], fn ($query) => $query->where('history.user_id', $filters['user']))
             ->when($filters['event'], fn ($query) => $query->where('history.event_type', $filters['event']))
-            ->when($filters['from'], fn ($query) => $query->whereRaw(
+            ->whereRaw(
                 'coalesce(history.occurred_at, history.created_at) >= ?',
-                [$this->bound($filters['from']->startOfDay())],
-            ))
-            ->when($filters['to'], fn ($query) => $query->whereRaw(
+                [$this->bound($filters['from'])],
+            )
+            ->whereRaw(
                 'coalesce(history.occurred_at, history.created_at) <= ?',
-                [$this->bound($filters['to']->endOfDay())],
-            ))
-            ->orderByDesc('history.occurred_at')
-            ->orderByDesc('history.created_at')
+                [$this->bound($filters['to'])],
+            )
+            // Ascending with an `id` tiebreak: `timestamptz` is precision 0
+            // upstream, so a sign-out and the sign-in after it can share a
+            // second and would otherwise order differently on every read.
+            ->orderByRaw('coalesce(history.occurred_at, history.created_at)')
+            ->orderBy('history.id')
             ->select(
                 'history.id',
                 'history.branch_id',
@@ -281,10 +321,9 @@ class LoginHistoryController extends Controller
                 'actor.name as user_name',
                 'actor.username as user_username',
             )
-            ->paginate(self::PER_PAGE)
-            ->withQueryString();
+            ->get();
 
-        return $page->setCollection($page->getCollection()->map(fn (object $row): array => [
+        return $rows->map(fn (object $row): array => [
             'id' => (string) $row->id,
             // A branch missing from the roster would be a row whose branch was
             // hard-deleted, which `restrictOnDelete` forbids — but the table
@@ -299,12 +338,12 @@ class LoginHistoryController extends Controller
                 'name' => $row->user_name === null ? null : (string) $row->user_name,
                 'username' => (string) $row->user_username,
             ],
-        ]));
+        ])->all();
     }
 
     /**
      * A window bound Postgres will read as the Manila wall-clock time it means.
-     * Both halves matter — see {@see self::remotePage()}.
+     * Both halves matter — see {@see self::remoteEntries()}.
      */
     private function bound(Carbon $moment): string
     {

@@ -3,6 +3,7 @@
 namespace App\Support\Auth;
 
 use App\Enums\LoginEventType;
+use App\Models\LoginHistory;
 use App\Models\User;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -51,13 +52,77 @@ class SessionManager
     }
 
     /**
-     * Record a successful login. The desktop app is single-window, so the one
-     * session cookie already guarantees a single active user; forcing out a
-     * session that lingered from an earlier run is the boot-session guard's job.
+     * Record a successful login, closing any session this branch left open.
+     *
+     * A branch has one till and a till holds one session, so two `login` rows
+     * with nothing between them is a shape the business cannot produce. The
+     * desktop app is single-window, so the one session cookie guarantees that
+     * much while the app is running, and the boot-session guard closes a session
+     * that outlived its run. Neither covers an IDLE one: `session.lifetime` is
+     * 120 minutes and a cashier who steps away past it is returned to the login
+     * screen with nothing written at all, so without this their next sign-in
+     * would stack a second `login` on the first.
      */
     public function handleLogin(User $user): void
     {
+        $this->closeDanglingSession();
+
         $this->recorder->record($user, LoginEventType::Login);
+    }
+
+    /**
+     * Close a session left open at this branch, if the last event was a sign-in.
+     *
+     * Every local row is this branch's by construction — the SQLite table has no
+     * branch_id and the push stamps one from `instance` — so "the last event at
+     * this branch" is simply the last row, read the way every other reader of
+     * this table orders it.
+     *
+     * The session belongs to whoever opened it, which need not be the person
+     * signing in now. What ended it, and when, are both unknowable here, so it
+     * is recorded as the same ApplicationCrash every other unclean exit is: the
+     * causes are indistinguishable after the fact, and AttendanceFigures already
+     * declines to believe that row's timestamp and books the shift as open with
+     * no hours — which is the honest answer here too.
+     *
+     * A no-op on the ordinary restart path: EnforceBootSession has already
+     * written this row, so the last event is not a `login` any more.
+     */
+    private function closeDanglingSession(): void
+    {
+        $last = LoginHistory::query()
+            ->orderByRaw('COALESCE(occurred_at, created_at) desc')
+            ->orderByDesc('id')
+            ->first();
+
+        if ($last === null || $last->event_type !== LoginEventType::Login) {
+            return;
+        }
+
+        $user = $last->user;
+
+        if ($user === null) {
+            return;
+        }
+
+        $this->recorder->record(
+            $user,
+            LoginEventType::ApplicationCrash,
+            // A second before the sign-in that noticed it, but NEVER before the
+            // sign-in it closes.
+            //
+            // The two new rows are written in one request and every reader
+            // orders on COALESCE(occurred_at, created_at), where whole seconds
+            // are all there are — these columns are `timestamp(0) with time
+            // zone` upstream — so sharing that second would leave the order of a
+            // session and the one that replaced it resting on the id tiebreak.
+            // Hence the second back. But two sign-ins inside ONE second would
+            // then put this row before the session it is closing, and a branch
+            // reading `crash, login, login` is the exact adjacency this method
+            // exists to prevent — so the earlier stamp wins when it is later.
+            now()->subSecond()->max($last->occurred_at ?? $last->created_at),
+            'Signed out: the session was never closed and had ended by the next sign-in at this branch.',
+        );
     }
 
     /**

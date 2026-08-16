@@ -70,7 +70,9 @@ class LoginHistoryDisplayTest extends TestCase
             ->assertInertia(fn ($page) => $page
                 ->where('total', 3)
                 ->where('canViewAll', false)
-                ->where('users', [])
+                // There is no user picker on this screen at all — the roster it
+                // would need is not sent to anybody.
+                ->missing('users')
                 // Both of the 10th's, in one cell.
                 ->has('days.9.entries', 2)
                 ->has('days.10.entries', 1)
@@ -79,7 +81,7 @@ class LoginHistoryDisplayTest extends TestCase
             );
     }
 
-    public function test_cashier_cannot_widen_scope_via_the_user_parameter()
+    public function test_a_user_parameter_is_ignored_and_cannot_widen_a_cashiers_view()
     {
         $cashier = User::factory()->cashier()->create();
         $other = User::factory()->cashier()->create();
@@ -88,7 +90,9 @@ class LoginHistoryDisplayTest extends TestCase
         $this->eventAt($other, '2026-01-10 09:00:00');
         $this->eventAt($other, '2026-01-10 10:00:00');
 
-        // Even when passing another user's id, the cashier still only sees theirs.
+        // The screen reads no `user` parameter at all now, so a crafted one is
+        // not overridden so much as never consulted — and a Cashier is still
+        // pinned to their own events by the role check that always did it.
         $this->actingAs($cashier)->get(route('login-history', ['user' => $other->id]))
             ->assertInertia(fn ($page) => $page->where('total', 1));
     }
@@ -107,7 +111,11 @@ class LoginHistoryDisplayTest extends TestCase
             ->assertInertia(fn ($page) => $page->where('total', 4)->where('canViewAll', true));
     }
 
-    public function test_admin_can_filter_by_user()
+    /**
+     * The other half of the same rule: an Admin's view is not narrowed by a
+     * `user` parameter either. The per-person view is /employee-performance.
+     */
+    public function test_an_admin_sees_everyone_even_when_a_user_parameter_is_passed()
     {
         $admin = User::factory()->admin()->create();
         $cashier = User::factory()->cashier()->create();
@@ -119,7 +127,11 @@ class LoginHistoryDisplayTest extends TestCase
         $this->eventAt($cashier, '2026-01-11 17:00:00');
 
         $this->actingAs($admin)->get(route('login-history', ['user' => $cashier->id]))
-            ->assertInertia(fn ($page) => $page->where('total', 3)->has('days.10.entries', 3));
+            ->assertInertia(fn ($page) => $page
+                ->where('total', 5)
+                ->has('days.9.entries', 2)
+                ->has('days.10.entries', 3)
+            );
     }
 
     public function test_can_filter_by_event_type()

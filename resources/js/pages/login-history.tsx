@@ -6,7 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import AppLayout from '@/layouts/app-layout';
 import { MONTHS } from '@/lib/calendar';
 import { eventLabel } from '@/lib/login-events';
-import type { BranchScope, BreadcrumbItem, LoginDay, LoginEventType, RosterBranch, User } from '@/types';
+import type { BranchScope, BreadcrumbItem, LoginDay, LoginEventType, RosterBranch } from '@/types';
 import { Head, router } from '@inertiajs/react';
 import { ChevronLeft, ChevronRight, History, WifiOff } from 'lucide-react';
 
@@ -22,9 +22,9 @@ const LOCAL = 'local';
 // control funnels through applyFilters(): a prop left out of this list silently
 // freezes while the rest of the screen updates around it.
 //
-// `branches`, `users` and `years` are deliberately NOT in it. None of the three
-// changes with the filters, and re-sending them would make the server re-read
-// the roster — over the network — on every step of the month.
+// `branches` and `years` are deliberately NOT in it. Neither changes with the
+// filters, and re-sending them would make the server re-read the roster — over
+// the network — on every step of the month.
 const RELOADED = ['days', 'total', 'filters', 'scope', 'consolidatedOnline'];
 
 /**
@@ -47,7 +47,6 @@ function OfflineHistoryNotice() {
 }
 
 interface Filters {
-    user: string | null;
     event: string | null;
     // The month on screen, echoed back after normalisation, with the ‹ ›
     // steppers' destinations already resolved server-side so a year rollover is
@@ -65,7 +64,6 @@ export default function LoginHistory({
     days,
     total,
     canViewAll,
-    users,
     eventTypes,
     filters,
     years,
@@ -78,7 +76,6 @@ export default function LoginHistory({
     // The month's event count, across every day.
     total: number;
     canViewAll: boolean;
-    users: Pick<User, 'id' | 'name' | 'username'>[];
     eventTypes: LoginEventType[];
     filters: Filters;
     years: number[];
@@ -89,13 +86,12 @@ export default function LoginHistory({
     // Null when nothing cross-branch was asked for; false only on a fallback.
     consolidatedOnline: boolean | null;
 }) {
-    const applyFilters = (next: Partial<Record<'user' | 'event' | 'scope', string | null>> & { month?: number; year?: number }) => {
+    const applyFilters = (next: Partial<Record<'event' | 'scope', string | null>> & { month?: number; year?: number }) => {
         const merged = { ...filters, scope, ...next };
 
         router.get(
             route('login-history'),
             {
-                user: merged.user && merged.user !== ALL ? merged.user : undefined,
                 event: merged.event && merged.event !== ALL ? merged.event : undefined,
                 // Always sent, so stepping the month cannot fall back to today's
                 // on the next filter change.
@@ -125,21 +121,9 @@ export default function LoginHistory({
                             label="Branches shown"
                         />
                     )}
-                    {canViewAll && (
-                        <Select value={filters.user ?? ALL} onValueChange={(value) => applyFilters({ user: value })}>
-                            <SelectTrigger className="w-56" aria-label="User">
-                                <SelectValue placeholder="All users" />
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value={ALL}>All users</SelectItem>
-                                {users.map((user) => (
-                                    <SelectItem key={user.id} value={user.id}>
-                                        {user.name ?? user.username}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                    )}
+                    {/* No user picker: this screen is about the branch, and the
+                        per-person question is /employee-performance. See
+                        LoginHistoryController's docblock. */}
                     <Select value={filters.event ?? ALL} onValueChange={(value) => applyFilters({ event: value })}>
                         <SelectTrigger className="w-44" aria-label="Event">
                             <SelectValue placeholder="All events" />

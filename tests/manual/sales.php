@@ -128,6 +128,24 @@ const RIG_NIGHT_HOUR_WEIGHTS = [20 => 10, 21 => 12, 22 => 10, 23 => 8, 24 => 6, 
 /** A night's sales, as a percentage of that day's daytime count. */
 const RIG_NIGHT_SHARE = 45;
 
+/**
+ * Percentage of days the till changes hands part-way through, rather than being
+ * worked start to finish by one person.
+ *
+ * A branch has one till and a till holds one session, so the day is a sequence
+ * of RUNS and never a mixture: whoever is on rings everything until they hand
+ * over. See {@see rigDayRoster()}.
+ */
+const RIG_HANDOVER_RATE = 30;
+
+/**
+ * The hours the till can change hands, inside {@see RIG_HOUR_WEIGHTS}' span.
+ *
+ * Around the middle of the trading day, so both runs carry enough sales to read
+ * as shifts rather than one run and an errand.
+ */
+const RIG_HANDOVER_HOURS = [13, 16];
+
 /** Distinct variants on one receipt. */
 const RIG_LINE_WEIGHTS = [1 => 30, 2 => 32, 3 => 20, 4 => 12, 5 => 6];
 
@@ -191,10 +209,17 @@ const RIG_COLUMNS = [
  * The caller seeds the RNG, once, so that the two branches draw from one stream
  * and do not come out as the same day repeated twice with different totals.
  *
- * This is also where the branch's NIGHT ROTA lives, because who is on has to be
- * decided before who sold: on the nights named by {@see RIG_NIGHT_NIGHTS} the
- * branch trades past midnight, and the one person working it
- * ({@see rigNightUser()}) rings the night's sales and none of that day's.
+ * This is also where the branch's ROTA lives, because who is on has to be
+ * decided before who sold — a branch has one till, so at any moment exactly one
+ * person is at it:
+ *
+ *  - the NIGHT rota: on the nights named by {@see RIG_NIGHT_NIGHTS} the branch
+ *    trades past midnight, and the one person working it
+ *    ({@see rigNightUser()}) rings the night's sales and none of that day's.
+ *  - the DAY rota ({@see rigDayRoster()}): the trading day is one run, or two
+ *    either side of a handover. Every sale goes to whoever holds the run its
+ *    hour falls in, which is what makes the shifts derived from these events in
+ *    tests/manual/attendance.php a sequence rather than a pile.
  *
  * @param  array{per_day: float}  $branch
  * @param  list<array{price: int, cost: int, weight: int, final: int}>  $variants  Indexed as pg.php's catalog.
@@ -206,6 +231,10 @@ function rigPlanYear(array $branch, array $variants, array $users, DateTimeImmut
     $sales = [];
     $nightUser = rigNightUser($users);
 
+    // [Y-m-d => that day's runs]. Kept for the whole year because an after-sale
+    // lands days later and has to be handed over by whoever was on THEN.
+    $rosters = [];
+
     for ($day = $start; $day <= $end; $day = $day->modify('+1 day')) {
         $count = max(1, (int) round(
             $branch['per_day']
@@ -216,6 +245,13 @@ function rigPlanYear(array $branch, array $variants, array $users, DateTimeImmut
 
         $night = $nightUser !== null && in_array((int) $day->format('N'), RIG_NIGHT_NIGHTS, true);
 
+        // Whoever is on nights tonight rings NOTHING today. Let them sell at
+        // lunch as well and their day's events run 08:00 to 04:00, which derives
+        // as one twenty-hour shift rather than a night shift — see
+        // tests/manual/attendance.php.
+        $roster = rigDayRoster($users, $night ? $nightUser : null);
+        $rosters[$day->format('Y-m-d')] = $roster;
+
         for ($i = 0; $i < $count; $i++) {
             $at = $day->setTime((int) rigPick(RIG_HOUR_WEIGHTS), mt_rand(0, 59), mt_rand(0, 59));
 
@@ -225,11 +261,7 @@ function rigPlanYear(array $branch, array $variants, array $users, DateTimeImmut
                 continue;
             }
 
-            // Whoever is on nights tonight rings NOTHING today. Let them sell at
-            // lunch as well and their day's events run 08:00 to 04:00, which
-            // derives as one twenty-hour shift rather than a night shift — see
-            // tests/manual/attendance.php.
-            $sales[] = rigReceipt($at, rigPickUser($users, $night ? $nightUser : null), $variants);
+            $sales[] = rigReceipt($at, rigOnDuty($roster, (int) $at->format('G')), $variants);
         }
 
         if (! $night) {
@@ -259,7 +291,7 @@ function rigPlanYear(array $branch, array $variants, array $users, DateTimeImmut
     // after-sales events are appended and the merge below is a stable sort on a
     // strictly later timestamp, so nothing reorders the sales among themselves.
     foreach (array_keys($sales) as $ordinal) {
-        $event = rigAfterSale($sales, $ordinal, $variants, $users, $nightUser, $end);
+        $event = rigAfterSale($sales, $ordinal, $variants, $rosters, $end);
 
         if ($event !== null) {
             $events[] = $event;
@@ -305,12 +337,10 @@ function rigReceipt(DateTimeImmutable $at, string $user, array $variants): array
  *
  * @param  list<array<string, mixed>>  $sales
  * @param  list<array{price: int, cost: int, weight: int, final: int}>  $variants
- * @param  list<array{id: string, weight: int, role: string}>  $users
- * @param  string|null  $nightUser  Whoever works this branch's nights, so a night they
- *                                  are on cannot also hand them an afternoon.
+ * @param  array<string, list<array{user: string, from: int}>>  $rosters  Every day's runs, by date.
  * @return array<string, mixed>|null
  */
-function rigAfterSale(array $sales, int $ordinal, array $variants, array $users, ?string $nightUser, DateTimeImmutable $end): ?array
+function rigAfterSale(array $sales, int $ordinal, array $variants, array $rosters, DateTimeImmutable $end): ?array
 {
     if (mt_rand(1, 100) > RIG_RETURN_RATE) {
         return null;
@@ -346,11 +376,13 @@ function rigAfterSale(array $sales, int $ordinal, array $variants, array $users,
     return [
         'kind' => $isReturn ? 'return' : 'defect',
         'at' => $at,
-        // Always rung in daylight (the hours above), so the day rota applies
-        // unchanged: on a night they are working, the night person is not here
-        // in the afternoon to hand a refund over.
-        'user' => rigPickUser($users, $nightUser !== null
-            && in_array((int) $at->format('N'), RIG_NIGHT_NIGHTS, true) ? $nightUser : null),
+        // Handed over by whoever was at the till THEN, which is the whole point
+        // of carrying the year's rosters this far: a refund given by somebody
+        // not on that day would derive a shift of its own beside the one that
+        // was really worked, and put two people on one device again. Always rung
+        // in daylight (the hours above), so the day rota answers on its own —
+        // and it already excludes whoever is on that night.
+        'user' => rigOnDuty($rosters[$at->format('Y-m-d')], (int) $at->format('G')),
         // The sale's ORDINAL, not its position in the merged list — the two stop
         // agreeing the moment these events are folded in. It indexes the sales in
         // the order they are written, which is the order they were sorted into.
@@ -761,18 +793,26 @@ function rigPick(array $weights): int|string
 /**
  * One of this branch's people, weighted by how much of the till they work.
  *
- * $exclude is the night rota: the person on tonight is not also on today. It
- * costs no extra draw either way — {@see rigPick()} takes exactly one whatever
- * the map holds — so excluding nobody leaves the stream where it was.
+ * The weights are a share of the branch's YEAR, and drawing a run's holder
+ * rather than a receipt's spends them the same way: runs are roughly a day or
+ * half a day each, so a person's share of the runs is their share of the sales
+ * in expectation. What changes is only that the sales come in blocks, which is
+ * how one till actually works.
+ *
+ * $exclude is the rota — whoever is on tonight is not also on today, and
+ * whoever is handing over is not who takes over. It costs no extra draw either
+ * way ({@see rigPick()} takes exactly one whatever the map holds), so excluding
+ * nobody leaves the stream where it was.
  *
  * @param  list<array{id: string, weight: int, role: string}>  $users
+ * @param  list<string>  $exclude
  */
-function rigPickUser(array $users, ?string $exclude = null): string
+function rigPickUser(array $users, array $exclude = []): string
 {
     $weights = [];
 
     foreach ($users as $index => $user) {
-        if ($user['id'] !== $exclude) {
+        if (! in_array($user['id'], $exclude, true)) {
             $weights[$index] = $user['weight'];
         }
     }
@@ -805,4 +845,68 @@ function rigNightUser(array $users): ?string
     }
 
     return null;
+}
+
+/**
+ * Who is at the till today, as the RUNS of the trading day.
+ *
+ * A branch has one device and a device holds one session, so a day cannot be a
+ * mixture of two people's receipts — it is one person's, or one person's and
+ * then another's. Most days are a single run; {@see RIG_HANDOVER_RATE} of them
+ * change hands around the middle of the afternoon.
+ *
+ * Two shapes fall out of drawing this per day rather than per receipt, and both
+ * are shapes the rig never had. A DAY OFF: a branch's other person is simply not
+ * drawn, and works nothing that day. A HANDOVER: two shifts in one calendar
+ * cell, the till passing from one to the other, which is what the login history
+ * of a real branch looks like.
+ *
+ * $onNights is whoever is working tonight — excluded from the day for the reason
+ * {@see rigPlanYear()} gives. A branch has two people, so a night night leaves
+ * exactly one for the day and there is nobody to hand over to; the rota is one
+ * run and the roll is skipped rather than drawn and discarded.
+ *
+ * @param  list<array{id: string, weight: int, role: string}>  $users
+ * @return list<array{user: string, from: int}> Runs in order, the first opening the day.
+ */
+function rigDayRoster(array $users, ?string $onNights): array
+{
+    $exclude = $onNights === null ? [] : [$onNights];
+    $opens = rigPickUser($users, $exclude);
+
+    if (count($users) - count($exclude) < 2 || mt_rand(1, 100) > RIG_HANDOVER_RATE) {
+        return [['user' => $opens, 'from' => 0]];
+    }
+
+    return [
+        ['user' => $opens, 'from' => 0],
+        [
+            // The point of a handover is that the till changes hands.
+            'user' => rigPickUser($users, [...$exclude, $opens]),
+            'from' => mt_rand(RIG_HANDOVER_HOURS[0], RIG_HANDOVER_HOURS[1]),
+        ],
+    ];
+}
+
+/**
+ * Whoever holds the run this hour falls in.
+ *
+ * The runs are in order and the first opens the day, so the last one to have
+ * started is the one that is running.
+ *
+ * @param  list<array{user: string, from: int}>  $roster
+ */
+function rigOnDuty(array $roster, int $hour): string
+{
+    $user = $roster[0]['user'];
+
+    foreach ($roster as $run) {
+        if ($run['from'] > $hour) {
+            break;
+        }
+
+        $user = $run['user'];
+    }
+
+    return $user;
 }

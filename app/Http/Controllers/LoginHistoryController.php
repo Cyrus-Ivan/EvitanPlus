@@ -7,7 +7,6 @@ use App\Http\Controllers\Concerns\NormalizesMonthFilter;
 use App\Http\Controllers\Concerns\OffersBranchScope;
 use App\Models\Instance;
 use App\Models\LoginHistory;
-use App\Models\User;
 use App\Support\LoginHistory\LoginCalendar;
 use App\Support\Sync\BranchRoster;
 use App\Support\Sync\OnlineRead;
@@ -27,8 +26,18 @@ use Inertia\Response;
  * capture logic lives here.
  *
  * Role scoping: a Cashier may only ever see their own events; Admins and the
- * Owner see everyone and may filter by user. The own-only constraint is applied
- * server-side and cannot be widened by a crafted `user` query parameter.
+ * Owner see everyone. The own-only constraint is applied server-side, and no
+ * `user` query parameter is read at all, so nothing crafted can widen it.
+ *
+ * ## A branch, not a person
+ *
+ * There is no user filter here, and that is the screen's subject rather than an
+ * omission. This is the per-BRANCH view — who signed in at this till, and when.
+ * The per-person question is `/employee-performance`, which asks it of the same
+ * `login_history` (via AttendanceFigures) and answers it far better than a
+ * filtered event list could: one employee, one month, their shifts and their
+ * sales on the same calendar. A picker here would put a second, worse copy of
+ * that question on a screen about somewhere rather than somebody.
  *
  * ## A month, not a page
  *
@@ -69,9 +78,9 @@ use Inertia\Response;
  *
  * Unlike reports this is Admin+ rather than Owner-only — there is no cost or
  * profit here, and §6 names both roles. A Cashier asking for a wider scope is
- * snapped back to `local` rather than refused, exactly as their `user` filter is
- * snapped back to themselves: the same route still owes them the view they are
- * entitled to.
+ * snapped back to `local` rather than refused, exactly as they are pinned to
+ * their own events rather than refused the screen: the same route still owes
+ * them the view they are entitled to.
  *
  * When the online read fails the screen falls back to the branch-local history
  * and SAYS SO (`consolidatedOnline: false`, scope snapped back to `local`).
@@ -101,7 +110,10 @@ class LoginHistoryController extends Controller
         [$from, $to] = $this->monthWindow($request->query('month'), $request->query('year'));
 
         $filters = [
-            'user' => $canViewAll ? ($request->query('user') ?: null) : $viewer->getKey(),
+            // Not a filter — the Cashier's own-only constraint, which is why
+            // nothing here reads a `user` query parameter. See the class
+            // docblock.
+            'user' => $canViewAll ? null : $viewer->getKey(),
             'event' => $this->normalizeEvent($request->query('event')),
             'from' => $from,
             'to' => $to,
@@ -126,16 +138,8 @@ class LoginHistoryController extends Controller
             // month that renders as empty cells still says how much it matched.
             'total' => count($history['entries']),
             'canViewAll' => $canViewAll,
-            // Only offered to those who may see everyone; archived users included
-            // so their historical events stay filterable. Read locally in every
-            // scope: `users` is the one table mirrored business-wide, precisely
-            // so any user can be resolved at any branch offline.
-            'users' => $canViewAll
-                ? User::withTrashed()->orderBy('name')->get(['id', 'name', 'username'])
-                : [],
             'eventTypes' => array_map(fn (LoginEventType $type) => $type->value, LoginEventType::cases()),
             'filters' => [
-                'user' => $canViewAll ? $filters['user'] : null,
                 'event' => $filters['event'],
                 // The month, its label and the ‹ › steppers' destinations —
                 // echoed back AFTER normalisation, so a hand-typed `?month=13`

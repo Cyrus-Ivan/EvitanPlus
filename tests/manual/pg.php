@@ -142,6 +142,9 @@ exit(0);
  * sales from its OWN staff below: one shared pool put every cashier at both
  * branches on the same day, and a person cannot be signed in at two branches at
  * once without the consolidated scope reading as a year of phantom open shifts.
+ * Within a branch the same rule holds for the same reason — one till, one open
+ * session — and it is the day rota in `sales.php` that keeps it, asserted before
+ * the commit by {@see assertOneSessionPerBranch()}.
  *
  * `wizard` mode seeds none of it, and that is deliberate rather than lazy.
  * `OpeningWindow::isOpen()` is derived from "this branch has no `type = 'sale'`
@@ -312,6 +315,7 @@ function seedCatalog(string $root, string $pathA, string $pathB, string $mode): 
 
         if ($mode === 'ready') {
             assertSalesFallInsideShifts($pdo);
+            assertOneSessionPerBranch($pdo);
         }
 
         $pdo->commit();
@@ -558,6 +562,52 @@ function assertSalesFallInsideShifts(PDO $pdo): void
         'Seeded sales were rung while their cashier was signed out — the first is '
         ."{$rows[0]['transaction_number']} at {$rows[0]['created_at']}. "
         .'The shifts and the year they were derived from have drifted apart.'
+    );
+}
+
+/**
+ * The other invariant the attendance seeder exists to satisfy: a branch holds
+ * ONE session at a time.
+ *
+ * There is one device per branch (docs/glossary.md §"Till"), so a `login` with
+ * another `login` before it and nothing in between is a shape the business
+ * cannot produce — two people at one till, or one person signed in twice. It is
+ * also the shape this fixture produced for several milestones, by drawing the
+ * cashier per RECEIPT and deriving a whole-day shift for each of them, which is
+ * what the day rota in tests/manual/sales.php replaced.
+ *
+ * Checked per branch and in the read order every screen uses, so a seam the
+ * handover pass fails to close fails the seed rather than reaching a calendar.
+ * An `application_crash`, a `logout` and a `forced_logout` all close a session;
+ * only a bare `login` over an open one does not.
+ */
+function assertOneSessionPerBranch(PDO $pdo): void
+{
+    $rows = $pdo->query(
+        "select b.code, h.event_type, coalesce(h.occurred_at, h.created_at) as at
+           from (
+                select branch_id, event_type,
+                       occurred_at, created_at,
+                       lag(event_type) over (
+                           partition by branch_id
+                           order by coalesce(occurred_at, created_at), id
+                       ) as previous
+                  from login_history
+           ) h
+           join branches b on b.id = h.branch_id
+          where h.event_type = 'login' and h.previous = 'login'
+          order by at
+          limit 5"
+    )->fetchAll(PDO::FETCH_ASSOC);
+
+    if ($rows === []) {
+        return;
+    }
+
+    throw new RuntimeException(
+        count($rows).' seeded sign-in(s) landed on a branch that was already signed in — the first is '
+        ."{$rows[0]['code']} at {$rows[0]['at']}. "
+        .'A branch has one till, so a session has to be closed before the next one opens.'
     );
 }
 

@@ -58,16 +58,14 @@ declare(strict_types=1);
  *    launch carrying that moment, exactly as `SessionManager::markUncleanExit()`
  *    does. It contributes no hours, and the month says how many it excluded.
  *  - **A day worked with no sales** ({@see RIG_OFFICE_VISIT_RATE}) — the Owner
- *    or Admin signing in to read a report. Hours with no transactions beside
- *    them is a real shape the page has to render.
- *
- * What it still cannot produce is a DAY OFF. There is now a rota — the night
- * one, which is what took the night person off the day they work — but each
- * branch has two people and a dozen sales a day drawn between them, so somebody
- * rings something every day of the year and a shift has to cover it. Every month
- * therefore reads as 30-odd days worked, which is the one place this fixture is
- * still visibly a fixture. Days off would be the same trick as nights: decide
- * who is on in the sales generator, before deciding who sold.
+ *    or Admin signing in before the branch opens to read a report. Hours with no
+ *    transactions beside them is a real shape the page has to render.
+ *  - **A handover** — the till changing hands part-way through the day, so one
+ *    calendar cell holds two shifts and neither is the whole day
+ *    ({@see RIG_HANDOVER_RATE} in tests/manual/sales.php, where the rota has to
+ *    live).
+ *  - **A day off** — somebody the branch employs working nothing at all, because
+ *    the day rota did not draw them.
  */
 
 /**
@@ -98,6 +96,12 @@ const RIG_LATE_CLOSE_RATE = 3;
 /** Percentage of a non-cashier's sale-less days that carry a short session anyway. */
 const RIG_OFFICE_VISIT_RATE = 10;
 
+/** Minutes before the branch's first sale that an office visit ends. */
+const RIG_VISIT_GAP = [20, 60];
+
+/** How long an office visit lasts. */
+const RIG_VISIT_LENGTH = [30, 90];
+
 /** Rows per multi-row INSERT, for the same reason {@see RIG_INSERT_CHUNK} exists. */
 const RIG_SESSION_CHUNK = 1000;
 
@@ -114,19 +118,25 @@ const RIG_SESSION_COLUMNS = ['id', 'branch_id', 'user_id', 'event_type', 'occurr
  * (docs/glossary.md §"Till"), so a person signing in twice in a day is a shape
  * it cannot produce anyway.
  *
- * Two people posted to one branch therefore have OVERLAPPING sessions on one
- * device, which a real till could not produce: it holds one session at a time
- * and they would take turns. Deriving those turns would mean deriving them from
- * the sales, and the seeded year picks its cashier per SALE at random within a
- * day, so the runs alternate every receipt — seven ninety-minute sessions a day
- * each, which is a worse fixture for the screen this exists to fill. The fiction
- * is in the attribution, not in the shift. (A night is the one place the rota is
- * real: the person on it is the only one selling, so their session genuinely has
- * the till to itself.)
+ * ## One till, one open session
+ *
+ * A branch holds ONE session at a time, so these shifts are a sequence and never
+ * a pile: at no moment are two of them open. Most of that is settled before this
+ * file sees anything, by the rota in tests/manual/sales.php — the day is worked
+ * in RUNS ({@see rigDayRoster()}) and the night by whoever is on it
+ * ({@see rigNightUser()}), so no two people's events interleave.
+ *
+ * What is left is the SEAM. {@see RIG_SHIFT_LEAD} puts a sign-in up to 75
+ * minutes before the first sale and {@see RIG_SHIFT_TAIL} a sign-out up to 90
+ * after the last, which is enough to make one shift start before the one ahead
+ * of it has ended — always, between an evening's last sale and a night shift's
+ * 20:00 lead-in. So each shift is bounded by the HANDOVER moments either side of
+ * it ({@see rigHandover()}), a `min`/`max` clamp that can only ever pull a
+ * sign-in later or a sign-out earlier, never past the work it has to cover.
  *
  * @param  list<array<string, mixed>>  $events  A planned year, as rigPlanYear() returns it.
  * @param  list<array{id: string, weight: int, role: string}>  $staff  This branch's own staff.
- * @return list<array{user: string, in: DateTimeImmutable, last: DateTimeImmutable, out: ?DateTimeImmutable}> Chronological by sign-in.
+ * @return list<array{user: string, in: DateTimeImmutable, first: DateTimeImmutable, last: DateTimeImmutable, out: ?DateTimeImmutable}> Chronological by the work each covers, which is also by sign-in.
  */
 function rigPlanShifts(array $events, array $staff, DateTimeImmutable $start, DateTimeImmutable $end): array
 {
@@ -159,11 +169,15 @@ function rigPlanShifts(array $events, array $staff, DateTimeImmutable $start, Da
     for ($day = $start; $day <= $end; $day = $day->modify('+1 day')) {
         $date = $day->format('Y-m-d');
 
+        // The branch's first event of the day, which is when it opened and so
+        // the last moment an office visit can still have ended.
+        $opened = isset($worked[$date]) ? min(array_column($worked[$date], 0)) : null;
+
         foreach ($staff as $member) {
             $span = $worked[$date][$member['id']] ?? null;
 
             if ($span === null) {
-                $visit = rigOfficeVisit($member, $day, $end);
+                $visit = $opened === null ? null : rigOfficeVisit($member, $opened, $end);
 
                 if ($visit !== null) {
                     $shifts[] = $visit;
@@ -176,9 +190,73 @@ function rigPlanShifts(array $events, array $staff, DateTimeImmutable $start, Da
         }
     }
 
-    usort($shifts, static fn (array $a, array $b): int => $a['in'] <=> $b['in']);
+    // By the work rather than by the sign-in: the sign-ins are what the pass
+    // below is about to move, and the events they cover cannot overlap.
+    usort($shifts, static fn (array $a, array $b): int => $a['first'] <=> $b['first']);
+
+    // The seam. Both bounds are read from the UNCLAMPED neighbours, which is
+    // what makes one pass enough — a handover depends only on the work either
+    // side of it, never on a sign-in this loop has already moved.
+    foreach ($shifts as $index => $shift) {
+        $before = $index > 0 ? rigHandover($shifts[$index - 1], $shift)['opens'] : null;
+        $after = isset($shifts[$index + 1]) ? rigHandover($shift, $shifts[$index + 1])['closes'] : null;
+
+        if ($before !== null && $shift['in'] < $before) {
+            $shifts[$index]['in'] = $before;
+        }
+
+        // An unclean exit has no sign-out to clamp; the row that closes it is
+        // written at the next launch and is bounded by definition.
+        if ($after !== null && $shift['out'] !== null && $shift['out'] > $after) {
+            $shifts[$index]['out'] = $after;
+        }
+    }
 
     return $shifts;
+}
+
+/**
+ * The moment the till passes from one shift to the next: the MIDPOINT of the gap
+ * between the work each covers.
+ *
+ * A midpoint rather than a draw because it has to satisfy both sides at once —
+ * strictly after everything the earlier shift did, strictly before everything
+ * the later one did — and because it only bites when the gap is small. Across a
+ * night, where the gap is a dozen hours, it lands in the small hours and leaves
+ * both a late close ({@see RIG_LATE_CLOSE_RATE}, 00:05–00:50) and the next
+ * morning's lead-in exactly where they were. Between an evening and a night
+ * shift, where the gap is minutes, it is the whole point.
+ *
+ * The two sides are a SECOND APART, never the same instant. `timestamp(0) with
+ * time zone` is all the precision there is upstream, so a sign-out and the
+ * sign-in that replaced it sharing one would leave their order resting on the id
+ * tiebreak — and an id here is ordered by when the row was GENERATED, which is
+ * only accidentally the order it happened in. A branch reading as signed in
+ * twice over one second is precisely what this pass exists to prevent.
+ *
+ * @param  array{first: DateTimeImmutable, last: DateTimeImmutable}  $earlier
+ * @param  array{first: DateTimeImmutable, last: DateTimeImmutable}  $later
+ * @return array{closes: DateTimeImmutable, opens: DateTimeImmutable}
+ */
+function rigHandover(array $earlier, array $later): array
+{
+    $from = $earlier['last']->getTimestamp();
+
+    // Two shifts whose work touches leaves nowhere to put the handover. The
+    // rota makes this unreachable — one person is at the till at a time — but
+    // an off-by-one there should not mint a sign-in before a sign-out.
+    $gap = max(0, $later['first']->getTimestamp() - $from);
+
+    $closes = $earlier['last']->setTimestamp($from + intdiv($gap, 2));
+    $opens = $closes->modify('+1 second');
+
+    return [
+        'closes' => $closes,
+        // Never past the work it has to cover: on a one-second gap the midpoint
+        // IS the earlier shift's last moment, and the second after it is the
+        // later shift's first.
+        'opens' => $opens > $later['first'] ? $later['first'] : $opens,
+    ];
 }
 
 /**
@@ -195,9 +273,10 @@ function rigBusinessDay(DateTimeImmutable $at): string
  *
  * The sign-in is always before the first sale and the sign-out (when there is
  * one) always after the last, which is what makes every seeded sale fall inside
- * a shift on the calendar.
+ * a shift on the calendar. The handover pass in {@see rigPlanShifts()} may pull
+ * either end back towards the work, and never past it.
  *
- * @return array{user: string, in: DateTimeImmutable, last: DateTimeImmutable, out: ?DateTimeImmutable}
+ * @return array{user: string, in: DateTimeImmutable, first: DateTimeImmutable, last: DateTimeImmutable, out: ?DateTimeImmutable}
  */
 function rigShiftAround(string $user, DateTimeImmutable $first, DateTimeImmutable $last, DateTimeImmutable $end): array
 {
@@ -222,8 +301,11 @@ function rigShiftAround(string $user, DateTimeImmutable $first, DateTimeImmutabl
     return [
         'user' => $user,
         'in' => $in,
-        // Carried so an unclean exit can be detected AFTER the work it ended,
-        // never in the middle of it — see rigWriteShifts().
+        // The work itself, either end. Carried so an unclean exit can be
+        // detected AFTER the work it ended rather than in the middle of it (see
+        // rigWriteShifts()), and so the handover pass has something to bound
+        // the sign-in and sign-out against.
+        'first' => $first,
         'last' => $last,
         'out' => $out !== null && $out <= $end ? $out : null,
     ];
@@ -231,25 +313,40 @@ function rigShiftAround(string $user, DateTimeImmutable $first, DateTimeImmutabl
 
 /**
  * A short session on a day this person rang nothing — the Owner or Admin opening
- * the app to read a report. Null most days, and always for a cashier.
+ * the app to read yesterday's report. Null most days, and always for a cashier.
+ *
+ * BEFORE THE BRANCH OPENS, ending shortly before its first sale. The till is
+ * free then, which is the only time of day that is true: whoever is on rings
+ * everything from the moment it opens, and a manager signing in over their
+ * afternoon would be the second session on one device that the whole rota exists
+ * to prevent.
  *
  * @param  array{id: string, weight: int, role: string}  $member
- * @return array{user: string, in: DateTimeImmutable, last: DateTimeImmutable, out: ?DateTimeImmutable}|null
+ * @param  DateTimeImmutable  $opened  The branch's first event of that day.
+ * @return array{user: string, in: DateTimeImmutable, first: DateTimeImmutable, last: DateTimeImmutable, out: ?DateTimeImmutable}|null
  */
-function rigOfficeVisit(array $member, DateTimeImmutable $day, DateTimeImmutable $end): ?array
+function rigOfficeVisit(array $member, DateTimeImmutable $opened, DateTimeImmutable $end): ?array
 {
     if ($member['role'] === 'cashier' || mt_rand(1, 100) > RIG_OFFICE_VISIT_RATE) {
         return null;
     }
 
-    $in = $day->setTime(mt_rand(8, 16), mt_rand(0, 59));
-    $out = $in->modify('+'.mt_rand(30, 90).' minutes');
+    $out = $opened->modify('-'.mt_rand(RIG_VISIT_GAP[0], RIG_VISIT_GAP[1]).' minutes');
+    $in = $out->modify('-'.mt_rand(RIG_VISIT_LENGTH[0], RIG_VISIT_LENGTH[1]).' minutes');
 
     if ($in > $end) {
         return null;
     }
 
-    return ['user' => $member['id'], 'in' => $in, 'last' => $in, 'out' => $out <= $end ? $out : null];
+    // The visit IS the work, so both ends of it bound the handover — there is no
+    // sale to derive them from.
+    return [
+        'user' => $member['id'],
+        'in' => $in,
+        'first' => $in,
+        'last' => $out <= $end ? $out : $in,
+        'out' => $out <= $end ? $out : null,
+    ];
 }
 
 /**
@@ -258,16 +355,16 @@ function rigOfficeVisit(array $member, DateTimeImmutable $day, DateTimeImmutable
  * A shift with no sign-out gets its `application_crash` row at the NEXT launch
  * of this branch's device — whoever signs in next — carrying that moment and the
  * app's own note, because that is when the app notices and all it can honestly
- * say. The next launch AFTER the work ended, specifically: sessions on one
- * device overlap here (see {@see rigPlanShifts()}), and a crash row stamped
- * between two of this person's own sales would read as the app noticing an exit
- * that had not happened yet.
+ * say. This is the one place a `login` is not followed by a sign-out, and the
+ * one place it may not be: the row that closes it is written by the next
+ * session's own launch, which is exactly what `SessionManager` does on a real
+ * device.
  *
  * A shift with nothing after it is left open: the person is still signed in, or
  * the device has not been back.
  *
  * @param  array{id: string, code: string}  $branch
- * @param  list<array{user: string, in: DateTimeImmutable, last: DateTimeImmutable, out: ?DateTimeImmutable}>  $shifts
+ * @param  list<array{user: string, in: DateTimeImmutable, first: DateTimeImmutable, last: DateTimeImmutable, out: ?DateTimeImmutable}>  $shifts
  */
 function rigWriteShifts(PDO $pdo, array $branch, array $shifts): int
 {
@@ -304,7 +401,7 @@ function rigWriteShifts(PDO $pdo, array $branch, array $shifts): int
  * When this device was next started after $after — the moment an unclean exit
  * would have been noticed. Null when nothing followed it.
  *
- * @param  list<array{user: string, in: DateTimeImmutable, last: DateTimeImmutable, out: ?DateTimeImmutable}>  $shifts
+ * @param  list<array{user: string, in: DateTimeImmutable, first: DateTimeImmutable, last: DateTimeImmutable, out: ?DateTimeImmutable}>  $shifts
  */
 function rigNextLaunchAfter(array $shifts, int $index, DateTimeImmutable $after): ?DateTimeImmutable
 {

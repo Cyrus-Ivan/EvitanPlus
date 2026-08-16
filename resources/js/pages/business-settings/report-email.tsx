@@ -1,12 +1,13 @@
-import HeadingSmall from '@/components/heading-small';
-import ReportEmailSettingsFields, { type ReportEmailSettingsData } from '@/components/report-email-settings-fields';
+import SubmitButton from '@/components/forms/submit-button';
+import HeadingSmall from '@/components/page/heading-small';
+import ReportEmailSettingsFields, { type ReportEmailSettingsData } from '@/components/settings/report-email-settings-fields';
 import { Button } from '@/components/ui/button';
 import AppLayout from '@/layouts/app-layout';
 import BusinessSettingsLayout from '@/layouts/business-settings/layout';
 import { type BreadcrumbItem } from '@/types';
 import { Transition } from '@headlessui/react';
 import { Head, router, useForm } from '@inertiajs/react';
-import { LoaderCircle, Mail } from 'lucide-react';
+import { Mail } from 'lucide-react';
 import { FormEventHandler } from 'react';
 
 const breadcrumbs: BreadcrumbItem[] = [
@@ -95,10 +96,7 @@ export default function ReportEmail({ reportEmailSettings }: { reportEmailSettin
                         />
 
                         <div className="flex items-center gap-3">
-                            <Button disabled={email.processing}>
-                                {email.processing && <LoaderCircle className="h-4 w-4 animate-spin" />}
-                                Save
-                            </Button>
+                            <SubmitButton processing={email.processing}>Save</SubmitButton>
                             <Button
                                 type="button"
                                 variant="outline"

@@ -1,21 +1,18 @@
-import InputError from '@/components/input-error';
-import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import Field from '@/components/forms/field';
+import { FormDialog } from '@/components/forms/form-dialog';
+import InputError from '@/components/forms/input-error';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
+import { closeOnSuccess, useDialogForm } from '@/hooks/use-dialog-form';
+import { PAYMENT, paymentLabel } from '@/lib/payment';
 import type { PaymentType, SaleReturnType, TransactionDetail } from '@/types';
-import { useForm } from '@inertiajs/react';
-import { LoaderCircle } from 'lucide-react';
 import { FormEventHandler, useEffect, useState } from 'react';
 
-const REFUND_METHODS: { value: PaymentType; label: string }[] = [
-    { value: 'cash', label: 'Cash' },
-    { value: 'cashless', label: 'Cashless' },
-    { value: 'others', label: 'Others' },
-];
+// The refund goes back by one of the ways money comes in, so the list is the
+// payment types themselves rather than a fourth hand-written copy of them.
+const REFUND_METHODS = Object.keys(PAYMENT) as PaymentType[];
 
 const COPY: Record<SaleReturnType, { title: string; description: string; action: string }> = {
     return: {
@@ -54,21 +51,21 @@ export default function ReturnDialog({
         .map((line) => ({ line, remaining: line.quantity - line.returned_quantity }))
         .filter((row) => row.remaining > 0);
 
-    const form = useForm<{ reason: string; refund_payment_type: PaymentType }>({
+    const form = useDialogForm<{ reason: string; refund_payment_type: PaymentType }>(open, () => ({
         reason: '',
         refund_payment_type: 'cash',
-    });
-    const { data, setData, errors, processing, clearErrors, reset, transform } = form;
+    }));
+    const { data, setData, errors, processing, transform } = form;
 
+    // The per-line quantities are local state rather than form data — they are
+    // reshaped into `lines` by `transform` below — so they need clearing on open
+    // of their own accord; `useDialogForm` only knows about the form.
     const [quantities, setQuantities] = useState<Record<string, number>>({});
 
     useEffect(() => {
         if (open) {
-            reset();
-            clearErrors();
             setQuantities({});
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open]);
 
     const setQuantity = (id: string, value: string, max: number) => {
@@ -97,103 +94,88 @@ export default function ReturnDialog({
                 .filter((line) => line.quantity > 0),
         }));
 
-        form.post(route('sales.returns.store', transaction.id), {
-            preserveScroll: true,
-            onSuccess: () => onOpenChange(false),
-        });
+        form.post(route('sales.returns.store', transaction.id), closeOnSuccess(onOpenChange));
     };
 
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="max-w-lg">
-                <form onSubmit={submit} className="space-y-4">
-                    <DialogHeader>
-                        <DialogTitle>{copy.title}</DialogTitle>
-                        <DialogDescription>{copy.description}</DialogDescription>
-                    </DialogHeader>
+        <FormDialog
+            open={open}
+            onOpenChange={onOpenChange}
+            title={copy.title}
+            description={copy.description}
+            submitLabel={copy.action}
+            processing={processing}
+            submitDisabled={!canSubmit}
+            onSubmit={submit}
+            className="max-w-lg"
+        >
+            <div className="rounded-lg border">
+                <Table>
+                    <TableHeader>
+                        <TableRow>
+                            <TableHead>Product</TableHead>
+                            <TableHead className="text-right">Remaining</TableHead>
+                            <TableHead className="w-28 text-right">Qty</TableHead>
+                        </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                        {remainingLines.map(({ line, remaining }) => (
+                            <TableRow key={line.id}>
+                                <TableCell className="font-medium">{line.label}</TableCell>
+                                <TableCell className="text-muted-foreground text-right tabular-nums">{remaining}</TableCell>
+                                <TableCell className="text-right">
+                                    <Input
+                                        type="number"
+                                        min={0}
+                                        max={remaining}
+                                        value={quantities[line.id] ?? 0}
+                                        onChange={(e) => setQuantity(line.id, e.target.value, remaining)}
+                                        aria-label={`Quantity to ${isDefect ? 'write off' : 'return'} — ${line.label}`}
+                                        className="text-right tabular-nums"
+                                    />
+                                </TableCell>
+                            </TableRow>
+                        ))}
+                        {remainingLines.length === 0 && (
+                            <TableRow>
+                                <TableCell colSpan={3} className="text-muted-foreground text-center text-sm">
+                                    Every line has already been fully returned.
+                                </TableCell>
+                            </TableRow>
+                        )}
+                    </TableBody>
+                </Table>
+            </div>
 
-                    <div className="rounded-lg border">
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead>Product</TableHead>
-                                    <TableHead className="text-right">Remaining</TableHead>
-                                    <TableHead className="w-28 text-right">Qty</TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {remainingLines.map(({ line, remaining }) => (
-                                    <TableRow key={line.id}>
-                                        <TableCell className="font-medium">{line.label}</TableCell>
-                                        <TableCell className="text-muted-foreground text-right tabular-nums">{remaining}</TableCell>
-                                        <TableCell className="text-right">
-                                            <Input
-                                                type="number"
-                                                min={0}
-                                                max={remaining}
-                                                value={quantities[line.id] ?? 0}
-                                                onChange={(e) => setQuantity(line.id, e.target.value, remaining)}
-                                                className="text-right tabular-nums"
-                                            />
-                                        </TableCell>
-                                    </TableRow>
-                                ))}
-                                {remainingLines.length === 0 && (
-                                    <TableRow>
-                                        <TableCell colSpan={3} className="text-muted-foreground text-center text-sm">
-                                            Every line has already been fully returned.
-                                        </TableCell>
-                                    </TableRow>
-                                )}
-                            </TableBody>
-                        </Table>
-                    </div>
+            <InputError message={lineError ?? errorBag.type} />
 
-                    <InputError message={lineError ?? errorBag.type} />
+            {!isDefect && (
+                <Field label="Refund method" htmlFor="refund-method" error={errors.refund_payment_type}>
+                    <Select value={data.refund_payment_type} onValueChange={(value) => setData('refund_payment_type', value as PaymentType)}>
+                        <SelectTrigger id="refund-method">
+                            <SelectValue placeholder="Select a refund method" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {REFUND_METHODS.map((method) => (
+                                <SelectItem key={method} value={method}>
+                                    {paymentLabel(method)}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                </Field>
+            )}
 
-                    {!isDefect && (
-                        <div className="grid gap-2">
-                            <Label htmlFor="refund-method">Refund method</Label>
-                            <Select value={data.refund_payment_type} onValueChange={(value) => setData('refund_payment_type', value as PaymentType)}>
-                                <SelectTrigger id="refund-method">
-                                    <SelectValue placeholder="Select a refund method" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    {REFUND_METHODS.map((method) => (
-                                        <SelectItem key={method.value} value={method.value}>
-                                            {method.label}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                            <InputError message={errors.refund_payment_type} />
-                        </div>
-                    )}
-
-                    <div className="grid gap-2">
-                        <Label htmlFor="return-reason">Reason (optional)</Label>
-                        <Textarea
-                            id="return-reason"
-                            value={data.reason}
-                            onChange={(e) => setData('reason', e.target.value)}
-                            maxLength={500}
-                            rows={2}
-                            placeholder="e.g. wrong size, damaged on arrival"
-                        />
-                        <InputError message={errors.reason} />
-                    </div>
-
-                    <DialogFooter>
-                        <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-                            Cancel
-                        </Button>
-                        <Button disabled={processing || !canSubmit}>
-                            {processing && <LoaderCircle className="h-4 w-4 animate-spin" />}
-                            {copy.action}
-                        </Button>
-                    </DialogFooter>
-                </form>
-            </DialogContent>
-        </Dialog>
+            <Field label="Reason (optional)" htmlFor="return-reason" error={errors.reason}>
+                <Textarea
+                    id="return-reason"
+                    value={data.reason}
+                    onChange={(e) => setData('reason', e.target.value)}
+                    maxLength={500}
+                    rows={2}
+                    placeholder="e.g. wrong size, damaged on arrival"
+                />
+            </Field>
+        </FormDialog>
     );
 }

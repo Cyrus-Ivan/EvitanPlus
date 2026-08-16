@@ -1,6 +1,6 @@
-import InputError from '@/components/input-error';
-import ReportEmailGuide from '@/components/report-email-guide';
-import ReportScheduleFields from '@/components/report-schedule-fields';
+import InputError from '@/components/forms/input-error';
+import ReportEmailGuide from '@/components/settings/report-email-guide';
+import ReportScheduleFields from '@/components/settings/report-schedule-fields';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';

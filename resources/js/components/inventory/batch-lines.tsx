@@ -1,4 +1,4 @@
-import InputError from '@/components/input-error';
+import InputError from '@/components/forms/input-error';
 import VariantPicker from '@/components/inventory/variant-picker';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';

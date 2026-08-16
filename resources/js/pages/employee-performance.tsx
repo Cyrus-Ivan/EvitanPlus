@@ -1,16 +1,20 @@
-import EmptyState from '@/components/empty-state';
+import EmptyState from '@/components/data/empty-state';
+import StatCard from '@/components/data/stat-card';
+import FilterBar from '@/components/filters/filter-bar';
+import MonthYearPicker from '@/components/filters/month-year-picker';
+import PageShell from '@/components/page/page-shell';
 import AttendanceCalendar from '@/components/reports/attendance-calendar';
 import { type ReportEmailProp } from '@/components/reports/email-report-dialog';
 import EmployeeReportDialog from '@/components/reports/employee-report-dialog';
+import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useCurrency } from '@/hooks/use-currency';
 import AppLayout from '@/layouts/app-layout';
-import { MONTHS } from '@/lib/calendar';
+import { formatHours } from '@/lib/format';
 import type { BreadcrumbItem, EmployeeDay, EmployeeOption, EmployeeSummary } from '@/types';
 import { Head, router } from '@inertiajs/react';
-import { ChevronLeft, ChevronRight, Mail, UsersRound, WifiOff } from 'lucide-react';
+import { Mail, UsersRound, WifiOff } from 'lucide-react';
 import { useState } from 'react';
 
 const breadcrumbs: BreadcrumbItem[] = [{ title: 'Employee Performance', href: '/employee-performance' }];
@@ -41,25 +45,13 @@ interface Filters {
  */
 function OfflineNotice() {
     return (
-        <div role="alert" className="flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
-            <WifiOff className="mt-0.5 size-4 shrink-0" />
+        <Alert variant="warning">
+            <WifiOff />
             <p>
                 <span className="font-medium">This report is read from the business database.</span> It covers every branch, because an employee can
                 work at more than one — so there is no partial version of it to show while this device is offline. Reconnect and it will load.
             </p>
-        </div>
-    );
-}
-
-function StatCard({ label, value, hint }: { label: string; value: string; hint?: string }) {
-    return (
-        <Card>
-            <CardContent className="p-4">
-                <div className="text-muted-foreground text-xs font-medium tracking-wide uppercase">{label}</div>
-                <div className="mt-1 text-2xl font-semibold tabular-nums">{value}</div>
-                {hint && <div className="text-muted-foreground mt-1 text-xs">{hint}</div>}
-            </CardContent>
-        </Card>
+        </Alert>
     );
 }
 
@@ -105,8 +97,25 @@ export default function EmployeePerformance({
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="Employee Performance" />
-            <div className="flex min-h-full flex-1 flex-col gap-4 p-4">
-                <div className="flex flex-wrap items-center gap-2">
+            <PageShell>
+                <FilterBar
+                    actions={
+                        /* Enabled even when email is not set up yet: a disabled
+                           button with no explanation is the worse failure, and the
+                           dialog is where the explanation lives. Offline is the one
+                           case that does disable it, because there is no report to
+                           attach — and the reason is on screen right below. */
+                        <Button
+                            variant="outline"
+                            disabled={!online}
+                            title={online ? undefined : 'The business database cannot be reached, so there is no report to send.'}
+                            onClick={() => setEmailOpen(true)}
+                        >
+                            <Mail className="size-4" />
+                            Email report
+                        </Button>
+                    }
+                >
                     <Select value={employee?.id ?? ''} onValueChange={(value) => reload({ user: value })}>
                         <SelectTrigger className="w-60" aria-label="Employee">
                             <SelectValue placeholder="Pick an employee" />
@@ -121,65 +130,15 @@ export default function EmployeePerformance({
                         </SelectContent>
                     </Select>
 
-                    <div className="flex items-center gap-1">
-                        <Button
-                            variant="outline"
-                            size="icon"
-                            aria-label="Previous month"
-                            onClick={() => reload({ month: filters.prev_month, year: filters.prev_year })}
-                        >
-                            <ChevronLeft className="size-4" />
-                        </Button>
-                        <Select value={String(filters.month)} onValueChange={(value) => reload({ month: value })}>
-                            <SelectTrigger className="w-36" aria-label="Month">
-                                <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {MONTHS.map((label, index) => (
-                                    <SelectItem key={label} value={String(index + 1)}>
-                                        {label}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                        <Select value={String(filters.year)} onValueChange={(value) => reload({ year: value })}>
-                            <SelectTrigger className="w-28" aria-label="Year">
-                                <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {years.map((value) => (
-                                    <SelectItem key={value} value={String(value)}>
-                                        {value}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                        <Button
-                            variant="outline"
-                            size="icon"
-                            aria-label="Next month"
-                            onClick={() => reload({ month: filters.next_month, year: filters.next_year })}
-                        >
-                            <ChevronRight className="size-4" />
-                        </Button>
-                    </div>
-
-                    {/* Enabled even when email is not set up yet: a disabled
-                        button with no explanation is the worse failure, and the
-                        dialog is where the explanation lives. Offline is the one
-                        case that does disable it, because there is no report to
-                        attach — and the reason is on screen right below. */}
-                    <Button
-                        variant="outline"
-                        className="ml-auto"
-                        disabled={!online}
-                        title={online ? undefined : 'The business database cannot be reached, so there is no report to send.'}
-                        onClick={() => setEmailOpen(true)}
-                    >
-                        <Mail className="size-4" />
-                        Email report
-                    </Button>
-                </div>
+                    <MonthYearPicker
+                        month={filters.month}
+                        year={filters.year}
+                        years={years}
+                        onChange={reload}
+                        previous={{ month: filters.prev_month, year: filters.prev_year }}
+                        next={{ month: filters.next_month, year: filters.next_year }}
+                    />
+                </FilterBar>
 
                 <EmployeeReportDialog
                     open={emailOpen}
@@ -264,12 +223,12 @@ export default function EmployeePerformance({
                             are in neither, so this always foots to it. */}
                         {summary.hours_by_branch.length > 0 && (
                             <p className="text-muted-foreground text-sm">
-                                Hours by branch: {summary.hours_by_branch.map((branch) => `${branch.code} ${branch.hours.toFixed(2)}h`).join(' · ')}
+                                Hours by branch: {summary.hours_by_branch.map((branch) => `${branch.code} ${formatHours(branch.hours)}`).join(' · ')}
                             </p>
                         )}
                     </>
                 )}
-            </div>
+            </PageShell>
         </AppLayout>
     );
 }

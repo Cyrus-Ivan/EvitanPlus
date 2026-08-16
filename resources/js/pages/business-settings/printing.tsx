@@ -1,12 +1,13 @@
-import HeadingSmall from '@/components/heading-small';
-import PrinterSettingsFields, { type PrinterSettingsData } from '@/components/printer-settings-fields';
+import SubmitButton from '@/components/forms/submit-button';
+import HeadingSmall from '@/components/page/heading-small';
+import PrinterSettingsFields, { type PrinterSettingsData } from '@/components/settings/printer-settings-fields';
 import { Button } from '@/components/ui/button';
 import AppLayout from '@/layouts/app-layout';
 import BusinessSettingsLayout from '@/layouts/business-settings/layout';
 import { type BreadcrumbItem } from '@/types';
 import { Transition } from '@headlessui/react';
 import { Head, router, useForm } from '@inertiajs/react';
-import { LoaderCircle, Printer } from 'lucide-react';
+import { Printer } from 'lucide-react';
 import { FormEventHandler } from 'react';
 
 const breadcrumbs: BreadcrumbItem[] = [
@@ -54,10 +55,7 @@ export default function Printing({ printerSettings }: { printerSettings: Printer
                         />
 
                         <div className="flex items-center gap-3">
-                            <Button disabled={printer.processing}>
-                                {printer.processing && <LoaderCircle className="h-4 w-4 animate-spin" />}
-                                Save
-                            </Button>
+                            <SubmitButton processing={printer.processing}>Save</SubmitButton>
                             <Button
                                 type="button"
                                 variant="outline"

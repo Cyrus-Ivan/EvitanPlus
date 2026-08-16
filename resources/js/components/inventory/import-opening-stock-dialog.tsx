@@ -1,12 +1,13 @@
-import InputError from '@/components/input-error';
-import { OfflineNotice } from '@/components/offline-notice';
+import InputError from '@/components/forms/input-error';
+import SubmitButton from '@/components/forms/submit-button';
+import { OfflineNotice } from '@/components/sync/offline-notice';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { useDialogForm } from '@/hooks/use-dialog-form';
 import type { OpeningStockPreview } from '@/types';
-import { useForm } from '@inertiajs/react';
-import { AlertTriangle, Download, LoaderCircle } from 'lucide-react';
+import { AlertTriangle, Download } from 'lucide-react';
 import { FormEventHandler, useEffect, useRef, useState } from 'react';
 
 /**
@@ -31,7 +32,8 @@ import { FormEventHandler, useEffect, useRef, useState } from 'react';
  *
  * Same two-post shape and the same reasons: check writes nothing, the file is
  * re-uploaded to be applied rather than parked on the server, and the apply is
- * all-or-nothing over the file it is actually applying.
+ * all-or-nothing over the file it is actually applying. It is not a
+ * {@see FormDialog} for the same reason either — see that dialog's note.
  */
 export default function ImportOpeningStockDialog({
     open,
@@ -50,20 +52,19 @@ export default function ImportOpeningStockDialog({
     // landing on this branch. See OpeningStockImportRequest.
     scope: string;
 }) {
-    const form = useForm<{ file: File | null }>({ file: null });
+    const form = useDialogForm<{ file: File | null }>(open, () => ({ file: null }));
     const { data, setData, errors, processing, reset, clearErrors } = form;
 
     const [preview, setPreview] = useState<OpeningStockPreview | null>(null);
     const [checking, setChecking] = useState(false);
     const fileInput = useRef<HTMLInputElement>(null);
 
+    // The preview is local state, so it clears on open of its own accord;
+    // `useDialogForm` only knows about the form.
     useEffect(() => {
         if (open) {
             setPreview(null);
-            reset();
-            clearErrors();
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open]);
 
     const chooseFile = (file: File | null) => {
@@ -159,10 +160,9 @@ export default function ImportOpeningStockDialog({
                                     aria-label="CSV file"
                                 />
                             </div>
-                            <Button type="submit" variant="outline" disabled={!data.file || checking || processing}>
-                                {checking && <LoaderCircle className="h-4 w-4 animate-spin" />}
+                            <SubmitButton variant="outline" processing={checking} disabled={!data.file || processing}>
                                 Check file
-                            </Button>
+                            </SubmitButton>
                             {/* A plain anchor: the template is a streamed
                                 download and must not go through Inertia. */}
                             <Button variant="ghost" asChild>
@@ -255,10 +255,12 @@ export default function ImportOpeningStockDialog({
                     <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
                         Cancel
                     </Button>
-                    <Button disabled={!preview || blocked || processing || !online} onClick={apply}>
-                        {processing && <LoaderCircle className="h-4 w-4 animate-spin" />}
+                    {/* type="button": it sits outside the "Check file" form, but a
+                        bare <button> in a dialog still defaults to submit if one is
+                        ever wrapped around it. */}
+                    <SubmitButton type="button" processing={processing} disabled={!preview || blocked || !online} onClick={apply}>
                         {preview ? `Set stock for ${moves} product${moves === 1 ? '' : 's'}` : 'Import'}
-                    </Button>
+                    </SubmitButton>
                 </DialogFooter>
             </DialogContent>
         </Dialog>

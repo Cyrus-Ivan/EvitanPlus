@@ -1,19 +1,11 @@
-import InputError from '@/components/input-error';
-import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import Field from '@/components/forms/field';
+import { FormDialog } from '@/components/forms/form-dialog';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { closeOnSuccess, useDialogForm } from '@/hooks/use-dialog-form';
+import { ROLE_LABEL } from '@/lib/roles';
 import type { UserRole } from '@/types';
-import { useForm } from '@inertiajs/react';
-import { LoaderCircle } from 'lucide-react';
-import { FormEventHandler, useEffect } from 'react';
-
-const ROLE_LABEL: Record<UserRole, string> = {
-    owner: 'Owner',
-    admin: 'Admin',
-    cashier: 'Cashier',
-};
+import { FormEventHandler } from 'react';
 
 /**
  * Create a new employee. Name is immutable after creation, so it is only set
@@ -29,125 +21,94 @@ export default function UserDialog({
     onOpenChange: (open: boolean) => void;
     assignableRoles: UserRole[];
 }) {
-    const form = useForm<{ name: string; username: string; role: string; password: string; password_confirmation: string }>({
+    // `role` is a plain string, not a `UserRole`: the Select hands back whatever
+    // the reader picked and the server is the authority on whether they may
+    // assign it. Narrowing it here would only move that check somewhere it
+    // cannot be enforced.
+    const form = useDialogForm<{ name: string; username: string; role: string; password: string; password_confirmation: string }>(open, () => ({
         name: '',
         username: '',
+        // The lowest role the actor may assign, which is the safe default: an
+        // account created by a slip of the Enter key should be a Cashier.
         role: assignableRoles[0] ?? '',
         password: '',
         password_confirmation: '',
-    });
-    const { data, setData, errors, processing, reset, clearErrors } = form;
-
-    // Reset fields/errors each time the dialog opens so nothing leaks between uses.
-    useEffect(() => {
-        if (open) {
-            reset();
-            setData('role', assignableRoles[0] ?? '');
-            clearErrors();
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open]);
+    }));
+    const { data, setData, errors, processing } = form;
 
     const submit: FormEventHandler = (e) => {
         e.preventDefault();
-        form.post(route('users.store'), {
-            preserveScroll: true,
-            onSuccess: () => {
-                reset();
-                onOpenChange(false);
-            },
-        });
+        form.post(route('users.store'), closeOnSuccess(onOpenChange));
     };
 
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent>
-                <form onSubmit={submit} className="space-y-4">
-                    <DialogHeader>
-                        <DialogTitle>New user</DialogTitle>
-                        <DialogDescription>Create an employee account. The name cannot be changed later.</DialogDescription>
-                    </DialogHeader>
+        <FormDialog
+            open={open}
+            onOpenChange={onOpenChange}
+            title="New user"
+            description="Create an employee account. The name cannot be changed later."
+            submitLabel="Create"
+            processing={processing}
+            onSubmit={submit}
+        >
+            <Field label="Name" htmlFor="user-name" error={errors.name}>
+                <Input
+                    id="user-name"
+                    value={data.name}
+                    onChange={(e) => setData('name', e.target.value)}
+                    required
+                    autoFocus
+                    placeholder="e.g. Jane Dela Cruz"
+                />
+            </Field>
 
-                    <div className="grid gap-2">
-                        <Label htmlFor="user-name">Name</Label>
-                        <Input
-                            id="user-name"
-                            value={data.name}
-                            onChange={(e) => setData('name', e.target.value)}
-                            required
-                            autoFocus
-                            placeholder="e.g. Jane Dela Cruz"
-                        />
-                        <InputError message={errors.name} />
-                    </div>
+            <Field label="Username" htmlFor="user-username" error={errors.username}>
+                <Input
+                    id="user-username"
+                    value={data.username}
+                    onChange={(e) => setData('username', e.target.value)}
+                    required
+                    autoComplete="off"
+                    placeholder="Used to sign in"
+                />
+            </Field>
 
-                    <div className="grid gap-2">
-                        <Label htmlFor="user-username">Username</Label>
-                        <Input
-                            id="user-username"
-                            value={data.username}
-                            onChange={(e) => setData('username', e.target.value)}
-                            required
-                            autoComplete="off"
-                            placeholder="Used to sign in"
-                        />
-                        <InputError message={errors.username} />
-                    </div>
+            <Field label="Role" htmlFor="user-role" error={errors.role}>
+                <Select value={data.role} onValueChange={(value) => setData('role', value)}>
+                    <SelectTrigger id="user-role">
+                        <SelectValue placeholder="Select a role" />
+                    </SelectTrigger>
+                    <SelectContent>
+                        {assignableRoles.map((role) => (
+                            <SelectItem key={role} value={role}>
+                                {ROLE_LABEL[role]}
+                            </SelectItem>
+                        ))}
+                    </SelectContent>
+                </Select>
+            </Field>
 
-                    <div className="grid gap-2">
-                        <Label htmlFor="user-role">Role</Label>
-                        <Select value={data.role} onValueChange={(value) => setData('role', value)}>
-                            <SelectTrigger id="user-role">
-                                <SelectValue placeholder="Select a role" />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {assignableRoles.map((role) => (
-                                    <SelectItem key={role} value={role}>
-                                        {ROLE_LABEL[role]}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                        <InputError message={errors.role} />
-                    </div>
+            <Field label="Password" htmlFor="user-password" error={errors.password}>
+                <Input
+                    id="user-password"
+                    type="password"
+                    value={data.password}
+                    onChange={(e) => setData('password', e.target.value)}
+                    required
+                    autoComplete="new-password"
+                />
+            </Field>
 
-                    <div className="grid gap-2">
-                        <Label htmlFor="user-password">Password</Label>
-                        <Input
-                            id="user-password"
-                            type="password"
-                            value={data.password}
-                            onChange={(e) => setData('password', e.target.value)}
-                            required
-                            autoComplete="new-password"
-                        />
-                        <InputError message={errors.password} />
-                    </div>
-
-                    <div className="grid gap-2">
-                        <Label htmlFor="user-password-confirm">Confirm password</Label>
-                        <Input
-                            id="user-password-confirm"
-                            type="password"
-                            value={data.password_confirmation}
-                            onChange={(e) => setData('password_confirmation', e.target.value)}
-                            required
-                            autoComplete="new-password"
-                        />
-                        <InputError message={errors.password_confirmation} />
-                    </div>
-
-                    <DialogFooter>
-                        <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-                            Cancel
-                        </Button>
-                        <Button disabled={processing}>
-                            {processing && <LoaderCircle className="h-4 w-4 animate-spin" />}
-                            Create
-                        </Button>
-                    </DialogFooter>
-                </form>
-            </DialogContent>
-        </Dialog>
+            <Field label="Confirm password" htmlFor="user-password-confirm" error={errors.password_confirmation}>
+                <Input
+                    id="user-password-confirm"
+                    type="password"
+                    value={data.password_confirmation}
+                    onChange={(e) => setData('password_confirmation', e.target.value)}
+                    required
+                    autoComplete="new-password"
+                />
+            </Field>
+        </FormDialog>
     );
 }

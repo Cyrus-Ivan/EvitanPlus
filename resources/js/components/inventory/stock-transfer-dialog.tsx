@@ -1,14 +1,11 @@
-import InputError from '@/components/input-error';
-import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import Field from '@/components/forms/field';
+import { FormDialog } from '@/components/forms/form-dialog';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import useBranchRoster from '@/hooks/use-branch-roster';
+import { closeOnSuccess, useDialogForm } from '@/hooks/use-dialog-form';
 import type { Variant } from '@/types';
-import { useForm } from '@inertiajs/react';
-import { LoaderCircle } from 'lucide-react';
 import { FormEventHandler, useEffect, useState } from 'react';
 
 /**
@@ -74,23 +71,21 @@ export default function StockTransferDialog({
     variant: Variant | null;
     itemName?: string;
 }) {
-    const form = useForm<TransferForm>({ value: '', notes: '' });
-    const { data, setData, errors, processing, reset, clearErrors } = form;
+    const form = useDialogForm<TransferForm>(open, () => ({ value: '', notes: '' }), [variant?.id]);
+    const { data, setData, errors, processing } = form;
 
     const [source, setSource] = useState<string>(HERE);
     const [destination, setDestination] = useState<string>('');
     const { branches, here: thisBranch, loading } = useBranchRoster(open);
 
-    // Reset on open so values/errors never leak between variants.
+    // The two branch pickers are local state rather than form data (the payload is
+    // built by `transform` at submit), so they clear on open of their own accord.
     useEffect(() => {
         if (open) {
-            setData({ value: '', notes: '' });
             setSource(HERE);
             setDestination('');
-            clearErrors();
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open, variant?.id]);
+    }, [open]);
 
     const others = branches.filter((branch) => !branch.is_this_branch);
     const nowhereToSend = !loading && others.length === 0;
@@ -117,133 +112,117 @@ export default function StockTransferDialog({
             notes: data.notes,
         }));
 
-        form.post(route('stock-transfers.store'), {
-            preserveScroll: true,
-            onSuccess: () => {
-                reset();
-                onOpenChange(false);
-            },
-        });
+        form.post(route('stock-transfers.store'), closeOnSuccess(onOpenChange));
     };
 
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent>
-                <form onSubmit={submit} className="space-y-4">
-                    <DialogHeader>
-                        <DialogTitle>Transfer stock</DialogTitle>
-                        <DialogDescription>
-                            {variant ? (
-                                <>
-                                    {itemName ? `${itemName} — ` : ''}
-                                    {variant.name || itemName}
-                                </>
-                            ) : null}
-                        </DialogDescription>
-                    </DialogHeader>
+        <FormDialog
+            open={open}
+            onOpenChange={onOpenChange}
+            title="Transfer stock"
+            description={
+                variant ? (
+                    <>
+                        {itemName ? `${itemName} — ` : ''}
+                        {variant.name || itemName}
+                    </>
+                ) : null
+            }
+            // With nowhere to send, the dialog exists only to say so: no submit at
+            // all rather than a disabled one, and the cancel becomes the way out
+            // rather than a way to abandon something.
+            submitLabel={nowhereToSend ? null : 'Request transfer'}
+            cancelLabel={nowhereToSend ? 'Close' : 'Cancel'}
+            processing={processing}
+            submitDisabled={!canSubmit}
+            onSubmit={submit}
+        >
+            {nowhereToSend ? (
+                <p className="text-muted-foreground text-sm">
+                    There is no other branch to send stock to. Either this business has one branch, or this device cannot reach the business database
+                    right now — a transfer has to be recorded there.
+                </p>
+            ) : (
+                <>
+                    <Field label="From" htmlFor="transfer-source" error={errors.from_branch_id}>
+                        <Select value={source} onValueChange={setSource}>
+                            <SelectTrigger id="transfer-source">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value={HERE}>This branch</SelectItem>
+                                {others.map((branch) => (
+                                    <SelectItem key={branch.id} value={branch.id}>
+                                        {branch.code} — {branch.name}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    </Field>
 
-                    {nowhereToSend ? (
-                        <p className="text-muted-foreground text-sm">
-                            There is no other branch to send stock to. Either this business has one branch, or this device cannot reach the business
-                            database right now — a transfer has to be recorded there.
-                        </p>
-                    ) : (
-                        <>
-                            <div className="grid gap-2">
-                                <Label htmlFor="transfer-source">From</Label>
-                                <Select value={source} onValueChange={setSource}>
-                                    <SelectTrigger id="transfer-source">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value={HERE}>This branch</SelectItem>
-                                        {others.map((branch) => (
-                                            <SelectItem key={branch.id} value={branch.id}>
-                                                {branch.code} — {branch.name}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                                <InputError message={errors.from_branch_id} />
-                            </div>
+                    <Field label="To" htmlFor="transfer-destination" error={errors.to_branch_id}>
+                        <Select value={destination} onValueChange={setDestination}>
+                            <SelectTrigger id="transfer-destination">
+                                <SelectValue placeholder="Pick the receiving branch" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {branches
+                                    .filter((branch) => (source === HERE ? !branch.is_this_branch : branch.id !== source))
+                                    .map((branch) => (
+                                        <SelectItem key={branch.id} value={branch.id}>
+                                            {branch.code} — {branch.name}
+                                        </SelectItem>
+                                    ))}
+                            </SelectContent>
+                        </Select>
+                    </Field>
 
-                            <div className="grid gap-2">
-                                <Label htmlFor="transfer-destination">To</Label>
-                                <Select value={destination} onValueChange={setDestination}>
-                                    <SelectTrigger id="transfer-destination">
-                                        <SelectValue placeholder="Pick the receiving branch" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {branches
-                                            .filter((branch) => (source === HERE ? !branch.is_this_branch : branch.id !== source))
-                                            .map((branch) => (
-                                                <SelectItem key={branch.id} value={branch.id}>
-                                                    {branch.code} — {branch.name}
-                                                </SelectItem>
-                                            ))}
-                                    </SelectContent>
-                                </Select>
-                                <InputError message={errors.to_branch_id} />
-                            </div>
+                    <p className="text-muted-foreground text-sm">
+                        Nothing moves yet. The sending branch confirms what actually left, and that asks the receiving branch what actually arrived —
+                        either can approve part of it.
+                    </p>
 
+                    <Field label="How many are moving" htmlFor="transfer-quantity" error={errors.quantity}>
+                        <Input
+                            id="transfer-quantity"
+                            type="number"
+                            inputMode="numeric"
+                            step={1}
+                            min={1}
+                            value={data.value}
+                            onChange={(e) => setData('value', e.target.value)}
+                            required
+                            autoFocus
+                            placeholder="e.g. 10"
+                        />
+                        {quantityInvalid ? (
+                            <p className="text-destructive text-sm">Enter how many are being moved.</p>
+                        ) : (
                             <p className="text-muted-foreground text-sm">
-                                Nothing moves yet. The sending branch confirms what actually left, and that asks the receiving branch what actually
-                                arrived — either can approve part of it.
+                                Which way the stock goes is the From and To above — this is just how many.
                             </p>
-
-                            <div className="grid gap-2">
-                                <Label htmlFor="transfer-quantity">How many are moving</Label>
-                                <Input
-                                    id="transfer-quantity"
-                                    type="number"
-                                    inputMode="numeric"
-                                    step={1}
-                                    min={1}
-                                    value={data.value}
-                                    onChange={(e) => setData('value', e.target.value)}
-                                    required
-                                    autoFocus
-                                    placeholder="e.g. 10"
-                                />
-                                {quantityInvalid ? (
-                                    <p className="text-destructive text-sm">Enter how many are being moved.</p>
-                                ) : (
-                                    <p className="text-muted-foreground text-sm">
-                                        Which way the stock goes is the From and To above — this is just how many.
-                                    </p>
-                                )}
-                                <InputError message={errors.quantity} />
-                            </div>
-
-                            <div className="grid gap-2">
-                                <Label htmlFor="transfer-notes">
-                                    Notes <span className="text-muted-foreground">(optional)</span>
-                                </Label>
-                                <Textarea
-                                    id="transfer-notes"
-                                    value={data.notes}
-                                    onChange={(e) => setData('notes', e.target.value)}
-                                    rows={2}
-                                    placeholder="e.g. Restocking the branch ahead of the weekend."
-                                />
-                                <InputError message={errors.notes} />
-                            </div>
-                        </>
-                    )}
-
-                    <DialogFooter>
-                        <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-                            {nowhereToSend ? 'Close' : 'Cancel'}
-                        </Button>
-                        {!nowhereToSend && (
-                            <Button disabled={processing || !canSubmit}>
-                                {processing && <LoaderCircle className="h-4 w-4 animate-spin" />}
-                                Request transfer
-                            </Button>
                         )}
-                    </DialogFooter>
-                </form>
-            </DialogContent>
-        </Dialog>
+                    </Field>
+
+                    <Field
+                        label={
+                            <>
+                                Notes <span className="text-muted-foreground">(optional)</span>
+                            </>
+                        }
+                        htmlFor="transfer-notes"
+                        error={errors.notes}
+                    >
+                        <Textarea
+                            id="transfer-notes"
+                            value={data.notes}
+                            onChange={(e) => setData('notes', e.target.value)}
+                            rows={2}
+                            placeholder="e.g. Restocking the branch ahead of the weekend."
+                        />
+                    </Field>
+                </>
+            )}
+        </FormDialog>
     );
 }

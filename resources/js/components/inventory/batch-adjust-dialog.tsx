@@ -1,13 +1,12 @@
-import InputError from '@/components/input-error';
+import Field from '@/components/forms/field';
+import { FormDialog } from '@/components/forms/form-dialog';
+import InputError from '@/components/forms/input-error';
 import { BatchLines, BatchNotes, emptyLine, type Line } from '@/components/inventory/batch-lines';
-import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import useBranchRoster from '@/hooks/use-branch-roster';
-import { useForm } from '@inertiajs/react';
-import { LoaderCircle } from 'lucide-react';
+import { closeOnSuccess, useDialogForm } from '@/hooks/use-dialog-form';
 import { FormEventHandler, useEffect } from 'react';
 
 type Mode = 'add' | 'remove' | 'set';
@@ -44,28 +43,24 @@ type AdjustBatchForm = {
  * stock — including when the branch is this one.
  */
 export default function BatchAdjustDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-    const form = useForm<AdjustBatchForm>({
-        mode: 'add',
-        branch_id: '',
-        notes: '',
-        lines: [emptyLine()],
-    });
-    const { data, setData, errors, processing, reset, clearErrors } = form;
-
     // Unlike the per-variant dialog, the picker lists EVERY branch including this
     // one: an adjustment aimed here is the common case.
     const { branches, here } = useBranchRoster(open);
 
-    useEffect(() => {
-        if (open) {
-            reset();
-            clearErrors();
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open]);
+    const form = useDialogForm<AdjustBatchForm>(open, () => ({
+        mode: 'add',
+        branch_id: here?.id ?? '',
+        notes: '',
+        lines: [emptyLine()],
+    }));
+    const { data, setData, errors, processing } = form;
 
     // Default to this branch once the roster lands, so a recount here needs no
-    // picking.
+    // picking. Only for the FIRST open, when the fetch is still in flight and the
+    // initial values above had no `here` to read; every reopen finds the roster
+    // already in state and seeds itself. Without both halves the default was lost
+    // on reopen — `here` is a new object per fetch but `here?.id` is the same
+    // string, so this effect does not re-run.
     useEffect(() => {
         if (here && data.branch_id === '') {
             setData('branch_id', here.id);
@@ -105,13 +100,7 @@ export default function BatchAdjustDialog({ open, onOpenChange }: { open: boolea
             lines: current.lines.map((line) => ({ variant_id: line.variant_id, quantity: Number(line.quantity) })),
         }));
 
-        form.post(route('stock-batches.store'), {
-            preserveScroll: true,
-            onSuccess: () => {
-                reset();
-                onOpenChange(false);
-            },
-        });
+        form.post(route('stock-batches.store'), closeOnSuccess(onOpenChange));
     };
 
     // Nested error keys are not on the typed form's shape, so they are read off a
@@ -119,78 +108,68 @@ export default function BatchAdjustDialog({ open, onOpenChange }: { open: boolea
     const lineErrors = errors as Record<string, string | undefined>;
 
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
-                <form onSubmit={submit} className="space-y-4">
-                    <DialogHeader>
-                        <DialogTitle>Batch adjustment</DialogTitle>
-                        <DialogDescription>
-                            Ask for several products on one branch's shelves to change as one request. Somebody at that branch confirms it before any
-                            stock moves.
-                        </DialogDescription>
-                    </DialogHeader>
+        <FormDialog
+            open={open}
+            onOpenChange={onOpenChange}
+            title="Batch adjustment"
+            description="Ask for several products on one branch's shelves to change as one request. Somebody at that branch confirms it before any stock moves."
+            submitLabel={`Request ${data.lines.length} ${data.lines.length === 1 ? 'product' : 'products'}`}
+            processing={processing}
+            submitDisabled={!canSubmit}
+            onSubmit={submit}
+            className="max-h-[90vh] overflow-y-auto sm:max-w-3xl"
+        >
+            <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Branch" htmlFor="batch-branch" error={errors.branch_id}>
+                    <Select value={data.branch_id || undefined} onValueChange={chooseTargetBranch}>
+                        <SelectTrigger id="batch-branch">
+                            <SelectValue placeholder="Which branch" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {branches.map((branch) => (
+                                <SelectItem key={branch.id} value={branch.id}>
+                                    {branch.code} — {branch.name}
+                                    {branch.is_this_branch ? ' (this branch)' : ''}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                </Field>
+                {/* Not a <Field>: that names ONE control, and a `<label for>`
+                    cannot name a group of them. The group carries its own
+                    aria-label. */}
+                <div className="grid gap-2">
+                    <Label>How</Label>
+                    <ToggleGroup
+                        type="single"
+                        variant="outline"
+                        value={data.mode}
+                        onValueChange={(value) => value && setData('mode', value as Mode)}
+                        aria-label="How"
+                        className="justify-start"
+                    >
+                        <ToggleGroupItem value="add">Add</ToggleGroupItem>
+                        <ToggleGroupItem value="remove">Remove</ToggleGroupItem>
+                        {/* Hidden for another branch: deriving a delta would
+                            need that branch's on-hand, which this device only
+                            knows as a baseline missing its unsynced sales. */}
+                        {!remote && <ToggleGroupItem value="set">Set to count</ToggleGroupItem>}
+                    </ToggleGroup>
+                    <InputError message={errors.mode} />
+                </div>
+            </div>
 
-                    <div className="grid gap-4 sm:grid-cols-2">
-                        <div className="grid gap-2">
-                            <Label htmlFor="batch-branch">Branch</Label>
-                            <Select value={data.branch_id || undefined} onValueChange={chooseTargetBranch}>
-                                <SelectTrigger id="batch-branch">
-                                    <SelectValue placeholder="Which branch" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    {branches.map((branch) => (
-                                        <SelectItem key={branch.id} value={branch.id}>
-                                            {branch.code} — {branch.name}
-                                            {branch.is_this_branch ? ' (this branch)' : ''}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                            <InputError message={errors.branch_id} />
-                        </div>
-                        <div className="grid gap-2">
-                            <Label>How</Label>
-                            <ToggleGroup
-                                type="single"
-                                variant="outline"
-                                value={data.mode}
-                                onValueChange={(value) => value && setData('mode', value as Mode)}
-                                className="justify-start"
-                            >
-                                <ToggleGroupItem value="add">Add</ToggleGroupItem>
-                                <ToggleGroupItem value="remove">Remove</ToggleGroupItem>
-                                {/* Hidden for another branch: deriving a delta would
-                                    need that branch's on-hand, which this device only
-                                    knows as a baseline missing its unsynced sales. */}
-                                {!remote && <ToggleGroupItem value="set">Set to count</ToggleGroupItem>}
-                            </ToggleGroup>
-                            <InputError message={errors.mode} />
-                        </div>
-                    </div>
+            <BatchLines
+                lines={data.lines}
+                branch={data.branch_id}
+                remote={remote}
+                quantityPlaceholder={data.mode === 'set' ? 'count' : 'qty'}
+                errors={lineErrors}
+                linesError={errors.lines}
+                onChange={(lines) => setData('lines', lines)}
+            />
 
-                    <BatchLines
-                        lines={data.lines}
-                        branch={data.branch_id}
-                        remote={remote}
-                        quantityPlaceholder={data.mode === 'set' ? 'count' : 'qty'}
-                        errors={lineErrors}
-                        linesError={errors.lines}
-                        onChange={(lines) => setData('lines', lines)}
-                    />
-
-                    <BatchNotes value={data.notes} onChange={(notes) => setData('notes', notes)} required={notesRequired} error={errors.notes} />
-
-                    <DialogFooter>
-                        <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-                            Cancel
-                        </Button>
-                        <Button disabled={processing || !canSubmit}>
-                            {processing && <LoaderCircle className="h-4 w-4 animate-spin" />}
-                            Request {data.lines.length} {data.lines.length === 1 ? 'product' : 'products'}
-                        </Button>
-                    </DialogFooter>
-                </form>
-            </DialogContent>
-        </Dialog>
+            <BatchNotes value={data.notes} onChange={(notes) => setData('notes', notes)} required={notesRequired} error={errors.notes} />
+        </FormDialog>
     );
 }

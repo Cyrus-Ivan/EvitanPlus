@@ -1,6 +1,6 @@
-import AppLogoIcon from '@/components/app-logo-icon';
-import { BranchIdentity } from '@/components/branch-identity';
-import { SyncIndicator } from '@/components/sync-indicator';
+import AppLogoIcon from '@/components/layout/app-logo-icon';
+import { BranchIdentity } from '@/components/sync/branch-identity';
+import { SyncIndicator } from '@/components/sync/sync-indicator';
 import { Link } from '@inertiajs/react';
 
 interface AuthLayoutProps {

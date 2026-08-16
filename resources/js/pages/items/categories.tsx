@@ -1,11 +1,15 @@
-import { useConfirm } from '@/components/confirm-dialog';
-import EmptyState from '@/components/empty-state';
+import EmptyState from '@/components/data/empty-state';
+import { ArchivedBadge } from '@/components/data/status-badge';
+import TableCard from '@/components/data/table-card';
+import FilterBar from '@/components/filters/filter-bar';
+import StatusFilter from '@/components/filters/status-filter';
+import { useConfirm } from '@/components/forms/confirm-dialog';
 import CategoryDialog from '@/components/inventory/category-dialog';
-import { OfflineNotice } from '@/components/offline-notice';
-import { Badge } from '@/components/ui/badge';
+import PageShell from '@/components/page/page-shell';
+import { OfflineNotice } from '@/components/sync/offline-notice';
 import { Button } from '@/components/ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { useListFilters } from '@/hooks/use-list-filters';
 import { usePermissions } from '@/hooks/use-permissions';
 import AppLayout from '@/layouts/app-layout';
 import type { BreadcrumbItem, Category } from '@/types';
@@ -36,13 +40,12 @@ export default function Categories({ categories, filters, online }: { categories
         setDialogOpen(true);
     };
 
-    const changeStatus = (status: string) => {
-        router.get(
-            route('categories.index'),
-            { status: status !== 'active' ? status : undefined },
-            { preserveState: true, preserveScroll: true, replace: true, only: ['categories', 'filters'] },
-        );
-    };
+    const { apply } = useListFilters({
+        url: route('categories.index'),
+        values: filters,
+        defaults: { status: 'active' },
+        only: ['categories', 'filters'],
+    });
 
     const archiveCategory = async (category: Category) => {
         if (
@@ -66,76 +69,66 @@ export default function Categories({ categories, filters, online }: { categories
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="Categories" />
-            <div className="flex min-h-full flex-1 flex-col gap-4 p-4">
+            <PageShell>
                 {!online && <OfflineNotice what="The product catalog" />}
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                    <Select value={filters.status} onValueChange={changeStatus}>
-                        <SelectTrigger className="w-36">
-                            <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectItem value="active">Active</SelectItem>
-                            <SelectItem value="archived">Archived</SelectItem>
-                            <SelectItem value="all">All</SelectItem>
-                        </SelectContent>
-                    </Select>
+                <FilterBar actions={canManage && <Button onClick={openCreate}>New category</Button>}>
+                    <StatusFilter value={filters.status} onChange={(value) => apply({ status: value })} />
+                </FilterBar>
 
-                    {canManage && <Button onClick={openCreate}>New category</Button>}
-                </div>
-
-                {categories.length === 0 ? (
-                    <EmptyState
-                        icon={Tags}
-                        title="No categories"
-                        description="Categories group items in the catalog and POS."
-                        action={canManage ? <Button onClick={openCreate}>New category</Button> : undefined}
-                    />
-                ) : (
-                    <div className="rounded-xl border">
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead>Name</TableHead>
-                                    <TableHead>Items</TableHead>
-                                    <TableHead>Status</TableHead>
-                                    {canManage && <TableHead className="text-right">Actions</TableHead>}
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {categories.map((category) => (
-                                    <TableRow key={category.id}>
-                                        <TableCell className="font-medium">{category.name}</TableCell>
-                                        <TableCell>{category.items_count ?? 0}</TableCell>
-                                        <TableCell>
-                                            {category.archived_at ? <Badge variant="secondary">Archived</Badge> : <Badge>Active</Badge>}
-                                        </TableCell>
-                                        {canManage && (
-                                            <TableCell className="text-right">
-                                                <div className="flex justify-end gap-1">
-                                                    <Button variant="ghost" size="sm" onClick={() => openEdit(category)}>
-                                                        Edit
+                <TableCard
+                    isEmpty={categories.length === 0}
+                    empty={
+                        <EmptyState
+                            icon={Tags}
+                            title="No categories"
+                            description="Categories group items in the catalog and POS."
+                            action={canManage ? <Button onClick={openCreate}>New category</Button> : undefined}
+                        />
+                    }
+                >
+                    <Table>
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead>Name</TableHead>
+                                <TableHead>Items</TableHead>
+                                <TableHead>Status</TableHead>
+                                {canManage && <TableHead className="text-right">Actions</TableHead>}
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {categories.map((category) => (
+                                <TableRow key={category.id}>
+                                    <TableCell className="font-medium">{category.name}</TableCell>
+                                    <TableCell>{category.items_count ?? 0}</TableCell>
+                                    <TableCell>
+                                        <ArchivedBadge archived={Boolean(category.archived_at)} />
+                                    </TableCell>
+                                    {canManage && (
+                                        <TableCell className="text-right">
+                                            <div className="flex justify-end gap-1">
+                                                <Button variant="ghost" size="sm" onClick={() => openEdit(category)}>
+                                                    Edit
+                                                </Button>
+                                                {category.archived_at ? (
+                                                    <Button variant="ghost" size="sm" onClick={() => restoreCategory(category)}>
+                                                        Restore
                                                     </Button>
-                                                    {category.archived_at ? (
-                                                        <Button variant="ghost" size="sm" onClick={() => restoreCategory(category)}>
-                                                            Restore
-                                                        </Button>
-                                                    ) : (
-                                                        <Button variant="ghost" size="sm" onClick={() => archiveCategory(category)}>
-                                                            Archive
-                                                        </Button>
-                                                    )}
-                                                </div>
-                                            </TableCell>
-                                        )}
-                                    </TableRow>
-                                ))}
-                            </TableBody>
-                        </Table>
-                    </div>
-                )}
+                                                ) : (
+                                                    <Button variant="ghost" size="sm" onClick={() => archiveCategory(category)}>
+                                                        Archive
+                                                    </Button>
+                                                )}
+                                            </div>
+                                        </TableCell>
+                                    )}
+                                </TableRow>
+                            ))}
+                        </TableBody>
+                    </Table>
+                </TableCard>
 
                 <CategoryDialog open={dialogOpen} onOpenChange={setDialogOpen} category={editing} />
-            </div>
+            </PageShell>
         </AppLayout>
     );
 }

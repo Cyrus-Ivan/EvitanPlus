@@ -1,5 +1,5 @@
-import AppLogoIcon from '@/components/app-logo-icon';
-import HeadingSmall from '@/components/heading-small';
+import AppLogoIcon from '@/components/layout/app-logo-icon';
+import HeadingSmall from '@/components/page/heading-small';
 import AppLayout from '@/layouts/app-layout';
 import SettingsLayout from '@/layouts/settings/layout';
 import { type BreadcrumbItem } from '@/types';

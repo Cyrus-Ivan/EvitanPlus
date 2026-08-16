@@ -1,14 +1,18 @@
-import InputError from '@/components/input-error';
+import InputError from '@/components/forms/input-error';
+import SubmitButton from '@/components/forms/submit-button';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { formatWhen } from '@/lib/format';
+import { requestStatusVariant } from '@/lib/request-status';
+import { roleLabel } from '@/lib/roles';
 import { cn } from '@/lib/utils';
 import type { BranchRef, PendingRequest, RequestActor, RequestLeg } from '@/types';
 import { useForm } from '@inertiajs/react';
-import { ArrowRight, LoaderCircle } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
 import { useState } from 'react';
 
 const SOURCE: Record<string, string> = {
@@ -17,24 +21,8 @@ const SOURCE: Record<string, string> = {
     transfer: 'Transfer',
 };
 
-const ROLE: Record<string, string> = {
-    owner: 'Owner',
-    admin: 'Admin',
-    cashier: 'Cashier',
-};
-
 function signed(quantity: number): string {
     return quantity > 0 ? `+${quantity}` : String(quantity);
-}
-
-function formatWhen(value: string | null): string {
-    if (value === null) {
-        return '—';
-    }
-
-    const date = new Date(value);
-
-    return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
 }
 
 /** "CODE — Name", or a dash where a branch could not be named. */
@@ -58,7 +46,7 @@ function Actor({ actor }: { actor: RequestActor }) {
             {actor.name}
             {actor.role && (
                 <Badge variant="outline" className="font-normal">
-                    {ROLE[actor.role] ?? actor.role}
+                    {roleLabel(actor.role)}
                 </Badge>
             )}
         </span>
@@ -147,7 +135,7 @@ function Answer({ leg }: { leg: RequestLeg }) {
     return (
         <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={leg.status === 'rejected' ? 'destructive' : 'secondary'}>
+                <Badge variant={requestStatusVariant(leg.status)}>
                     {leg.status === 'rejected'
                         ? 'Turned down'
                         : partial
@@ -384,10 +372,9 @@ function ApproveAll({ legs }: { legs: RequestLeg[] }) {
 
     return (
         <div className="flex justify-end">
-            <Button size="sm" onClick={approve} disabled={form.processing}>
-                {form.processing && <LoaderCircle className="mr-2 size-4 animate-spin" />}
+            <SubmitButton type="button" size="sm" onClick={approve} processing={form.processing}>
                 Approve all {legs.length}
-            </Button>
+            </SubmitButton>
         </div>
     );
 }
@@ -508,10 +495,9 @@ function AnswerForm({ leg, onDone }: { leg: RequestLeg; onDone: () => void }) {
             </div>
 
             <div className="flex justify-end">
-                <Button size="sm" onClick={submit} disabled={processing}>
-                    {processing && <LoaderCircle className="mr-2 size-4 animate-spin" />}
+                <SubmitButton type="button" size="sm" onClick={submit} processing={processing}>
                     Save answer
-                </Button>
+                </SubmitButton>
             </div>
         </div>
     );

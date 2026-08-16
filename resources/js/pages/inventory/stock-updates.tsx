@@ -1,23 +1,24 @@
-import { BranchScopeSelect } from '@/components/branch-scope-select';
-import { useConfirm } from '@/components/confirm-dialog';
-import EmptyState from '@/components/empty-state';
+import EmptyState from '@/components/data/empty-state';
+import { BranchScopeSelect } from '@/components/filters/branch-scope-select';
+import FilterBar from '@/components/filters/filter-bar';
+import { useConfirm } from '@/components/forms/confirm-dialog';
+import SubmitButton from '@/components/forms/submit-button';
 import { PendingRequestCard } from '@/components/inventory/pending-request-card';
-import { OfflineNotice } from '@/components/offline-notice';
-import { Button } from '@/components/ui/button';
+import PageShell, { PageHeader } from '@/components/page/page-shell';
+import { OfflineNotice } from '@/components/sync/offline-notice';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useListFilters } from '@/hooks/use-list-filters';
 import AppLayout from '@/layouts/app-layout';
+import { ALL } from '@/lib/filters';
 import type { BreadcrumbItem, PendingRequests } from '@/types';
-import { Head, router, useForm } from '@inertiajs/react';
-import { ClipboardCheck, LoaderCircle } from 'lucide-react';
+import { Head, useForm } from '@inertiajs/react';
+import { ClipboardCheck } from 'lucide-react';
 import { useState } from 'react';
 
 const breadcrumbs: BreadcrumbItem[] = [
     { title: 'Inventory', href: '/inventory' },
     { title: 'Pending Stocks', href: '/inventory/stock-updates' },
 ];
-
-// The sentinel for "both kinds", because a Select cannot hold an empty value.
-const ANY = 'any';
 
 /**
  * Pending Stocks.
@@ -55,16 +56,14 @@ export default function StockUpdates({ requests, branches, online, filters }: Pe
     // aimed elsewhere is not this device's to answer whatever is on screen.
     const answerable = requests.flatMap((request) => request.legs.filter((leg) => leg.actionable));
 
-    const apply = (next: { scope?: string; kind?: string }) => {
-        router.get(
-            route('stock-updates.index'),
-            {
-                scope: (next.scope ?? filters.scope) === 'local' ? undefined : (next.scope ?? filters.scope),
-                kind: (next.kind ?? filters.kind ?? ANY) === ANY ? undefined : (next.kind ?? filters.kind),
-            },
-            { preserveState: true, preserveScroll: true, replace: true },
-        );
-    };
+    // No `only`: this page has few props and every one of them changes with the
+    // filters, so a partial reload would list all of them.
+    const { apply } = useListFilters({
+        url: route('stock-updates.index'),
+        values: { scope: filters.scope, kind: filters.kind ?? ALL },
+        defaults: { scope: 'local', kind: ALL },
+        only: [],
+    });
 
     const approveAll = async () => {
         const agreed = await confirm({
@@ -94,46 +93,42 @@ export default function StockUpdates({ requests, branches, online, filters }: Pe
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="Pending Stocks" />
-            <div className="flex min-h-full flex-1 flex-col gap-4 p-4">
-                <div>
-                    <h1 className="text-lg font-semibold">Pending Stocks</h1>
-                    <p className="text-muted-foreground text-sm">
-                        Stock changes that have been asked for but have not moved yet. Nothing here is on the ledger until somebody at the branch
-                        confirms it happened.
-                    </p>
-                </div>
+            <PageShell>
+                <PageHeader
+                    title="Pending Stocks"
+                    description="Stock changes that have been asked for but have not moved yet. Nothing here is on the ledger until somebody at the branch confirms it happened."
+                />
 
                 {!online && <OfflineNotice what="Pending Stocks" />}
 
                 {online && (
                     <>
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex flex-wrap items-center gap-2">
-                                <BranchScopeSelect
-                                    scope={filters.scope}
-                                    branches={branches}
-                                    onChange={(scope) => apply({ scope })}
-                                    label="Branches shown"
-                                />
-                                <Select value={filters.kind ?? ANY} onValueChange={(kind) => apply({ kind })}>
-                                    <SelectTrigger className="w-44" aria-label="Kind of request">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value={ANY}>Transfers and adjustments</SelectItem>
-                                        <SelectItem value="transfer">Transfers only</SelectItem>
-                                        <SelectItem value="adjustment">Adjustments only</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </div>
-
-                            {answerable.length > 0 && (
-                                <Button size="sm" onClick={approveAll} disabled={approvingAll}>
-                                    {approvingAll && <LoaderCircle className="mr-2 size-4 animate-spin" />}
-                                    Approve all ({answerable.length})
-                                </Button>
-                            )}
-                        </div>
+                        <FilterBar
+                            actions={
+                                answerable.length > 0 && (
+                                    <SubmitButton type="button" size="sm" onClick={approveAll} processing={approvingAll}>
+                                        Approve all ({answerable.length})
+                                    </SubmitButton>
+                                )
+                            }
+                        >
+                            <BranchScopeSelect
+                                scope={filters.scope}
+                                branches={branches}
+                                onChange={(scope) => apply({ scope })}
+                                label="Branches shown"
+                            />
+                            <Select value={filters.kind ?? ALL} onValueChange={(kind) => apply({ kind })}>
+                                <SelectTrigger className="w-44" aria-label="Kind of request">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value={ALL}>Transfers and adjustments</SelectItem>
+                                    <SelectItem value="transfer">Transfers only</SelectItem>
+                                    <SelectItem value="adjustment">Adjustments only</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </FilterBar>
 
                         {requests.length === 0 ? (
                             <EmptyState
@@ -150,7 +145,7 @@ export default function StockUpdates({ requests, branches, online, filters }: Pe
                         )}
                     </>
                 )}
-            </div>
+            </PageShell>
         </AppLayout>
     );
 }

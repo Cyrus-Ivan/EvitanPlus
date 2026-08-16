@@ -1,5 +1,6 @@
-import HeadingSmall from '@/components/heading-small';
-import InputError from '@/components/input-error';
+import InputError from '@/components/forms/input-error';
+import SubmitButton from '@/components/forms/submit-button';
+import HeadingSmall from '@/components/page/heading-small';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
@@ -10,7 +11,7 @@ import { usePermissions } from '@/hooks/use-permissions';
 import type { Category, Item } from '@/types';
 import { Transition } from '@headlessui/react';
 import { Link, useForm } from '@inertiajs/react';
-import { LoaderCircle, Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import { FormEventHandler, useState } from 'react';
 
 // Declared as `type` (not `interface`) so they satisfy Inertia's
@@ -358,10 +359,7 @@ export default function ItemForm({ item, categories }: { item?: Item; categories
             </section>
 
             <div className="flex items-center gap-4">
-                <Button disabled={processing}>
-                    {processing && <LoaderCircle className="h-4 w-4 animate-spin" />}
-                    {isEdit ? 'Save changes' : 'Create item'}
-                </Button>
+                <SubmitButton processing={processing}>{isEdit ? 'Save changes' : 'Create item'}</SubmitButton>
                 <Button type="button" variant="outline" asChild>
                     <Link href={route('items.index')}>Cancel</Link>
                 </Button>

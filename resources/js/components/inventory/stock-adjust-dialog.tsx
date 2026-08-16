@@ -1,15 +1,13 @@
-import InputError from '@/components/input-error';
-import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import Field from '@/components/forms/field';
+import { FormDialog } from '@/components/forms/form-dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import useBranchRoster from '@/hooks/use-branch-roster';
+import { closeOnSuccess, useDialogForm } from '@/hooks/use-dialog-form';
 import type { Variant } from '@/types';
-import { useForm } from '@inertiajs/react';
-import { LoaderCircle } from 'lucide-react';
 import { FormEventHandler, useEffect, useState } from 'react';
 
 type Mode = 'add' | 'remove' | 'set';
@@ -87,21 +85,19 @@ export default function StockAdjustDialog({
     variant: Variant | null;
     itemName?: string;
 }) {
-    const form = useForm<AdjustForm>({ mode: 'add', value: '', notes: '' });
-    const { data, setData, errors, processing, reset, clearErrors } = form;
+    const form = useDialogForm<AdjustForm>(open, () => ({ mode: 'add', value: '', notes: '' }), [variant?.id]);
+    const { data, setData, errors, processing } = form;
 
     const [target, setTarget] = useState<string>(HERE);
     const { branches } = useBranchRoster(open);
 
-    // Reset on open so values/errors never leak between variants.
+    // The target branch is local state rather than form data (the remote payload
+    // is built by `transform` at submit), so it clears on open of its own accord.
     useEffect(() => {
         if (open) {
-            setData({ mode: 'add', value: '', notes: '' });
             setTarget(HERE);
-            clearErrors();
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open, variant?.id]);
+    }, [open]);
 
     const elsewhere = target !== HERE;
     const current = variant?.current_stock ?? 0;
@@ -128,13 +124,7 @@ export default function StockAdjustDialog({
             return;
         }
 
-        const done = {
-            preserveScroll: true,
-            onSuccess: () => {
-                reset();
-                onOpenChange(false);
-            },
-        };
+        const done = closeOnSuccess(onOpenChange);
 
         // Re-declared on every submit, so switching the target after one attempt
         // cannot leave the previous transform in place.
@@ -176,137 +166,127 @@ export default function StockAdjustDialog({
     const others = branches.filter((branch) => !branch.is_this_branch);
 
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent>
-                <form onSubmit={submit} className="space-y-4">
-                    <DialogHeader>
-                        <DialogTitle>Adjust stock</DialogTitle>
-                        <DialogDescription>
-                            {variant ? (
-                                <>
-                                    {itemName ? `${itemName} — ` : ''}
-                                    {variant.name}
-                                    {elsewhere ? null : (
-                                        <>
-                                            {' '}
-                                            · current on-hand <span className="text-foreground font-medium tabular-nums">{current}</span>
-                                        </>
-                                    )}
-                                </>
-                            ) : null}
-                        </DialogDescription>
-                    </DialogHeader>
-
-                    {others.length > 0 && (
-                        <div className="grid gap-2">
-                            <Label htmlFor="adjust-branch">Branch</Label>
-                            <Select value={target} onValueChange={chooseTarget}>
-                                <SelectTrigger id="adjust-branch">
-                                    <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value={HERE}>This branch</SelectItem>
-                                    {others.map((branch) => (
-                                        <SelectItem key={branch.id} value={branch.id}>
-                                            {branch.code} — {branch.name}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                            <InputError message={errors.branch_id} />
-                        </div>
-                    )}
-
-                    <p className="text-muted-foreground text-sm">
-                        {elsewhere
-                            ? 'This asks that branch to move the stock. Somebody there confirms it before anything changes, and can approve part of it or turn it down.'
-                            : 'This asks for the stock to move. Confirm it under Pending stock adjustments on Stock History to apply it.'}
-                    </p>
-
-                    <div className="grid gap-2">
-                        <Label>Mode</Label>
-                        <ToggleGroup
-                            type="single"
-                            variant="outline"
-                            value={data.mode}
-                            onValueChange={(value) => value && setData('mode', value as Mode)}
-                            className="justify-start"
-                        >
-                            <ToggleGroupItem value="add">Add</ToggleGroupItem>
-                            <ToggleGroupItem value="remove">Remove</ToggleGroupItem>
-                            {/* Hidden for another branch: deriving a delta would need
-                                that branch's on-hand, which this device only knows as
-                                a baseline missing its unsynced sales. */}
-                            {!elsewhere && <ToggleGroupItem value="set">Set to count</ToggleGroupItem>}
-                        </ToggleGroup>
-                    </div>
-
-                    <div className="grid gap-2">
-                        <Label htmlFor="adjust-value">
-                            {mode === 'set' ? 'Counted quantity' : mode === 'remove' ? 'How many are leaving' : 'How many are arriving'}
-                        </Label>
-                        <Input
-                            id="adjust-value"
-                            type="number"
-                            inputMode="numeric"
-                            step={1}
-                            min={mode === 'set' ? 0 : 1}
-                            value={data.value}
-                            onChange={(e) => setData('value', e.target.value)}
-                            required
-                            autoFocus
-                            placeholder={mode === 'set' ? 'e.g. 37' : 'e.g. 10'}
-                        />
-                        {quantityInvalid ? (
-                            <p className="text-destructive text-sm">
-                                {mode === 'set' ? 'A counted quantity cannot be negative.' : 'Enter how many are being added or removed.'}
-                            </p>
-                        ) : (
-                            resulting !== null && (
-                                <p className="text-muted-foreground text-sm">
-                                    New on-hand: <span className="text-foreground font-medium tabular-nums">{resulting}</span>
-                                    {/* Shown rather than blocked: asking for more than
-                                        is on the shelf is allowed, and whether it fits
-                                        is a question for whoever confirms it — by which
-                                        time a delivery may have arrived. */}
-                                    {resulting < 0 ? ' — more than there is, so this can only be partly approved.' : ''}
-                                </p>
-                            )
+        <FormDialog
+            open={open}
+            onOpenChange={onOpenChange}
+            title="Adjust stock"
+            description={
+                variant ? (
+                    <>
+                        {itemName ? `${itemName} — ` : ''}
+                        {variant.name}
+                        {elsewhere ? null : (
+                            <>
+                                {' '}
+                                · current on-hand <span className="text-foreground font-medium tabular-nums">{current}</span>
+                            </>
                         )}
-                        <InputError message={errors.value ?? errors.quantity} />
-                    </div>
+                    </>
+                ) : null
+            }
+            submitLabel="Request adjustment"
+            processing={processing}
+            submitDisabled={!canSubmit}
+            onSubmit={submit}
+        >
+            {others.length > 0 && (
+                <Field label="Branch" htmlFor="adjust-branch" error={errors.branch_id}>
+                    <Select value={target} onValueChange={chooseTarget}>
+                        <SelectTrigger id="adjust-branch">
+                            <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value={HERE}>This branch</SelectItem>
+                            {others.map((branch) => (
+                                <SelectItem key={branch.id} value={branch.id}>
+                                    {branch.code} — {branch.name}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                </Field>
+            )}
 
-                    <div className="grid gap-2">
-                        <Label htmlFor="adjust-notes">
-                            Notes{' '}
-                            {notesRequired ? (
-                                <span className="text-muted-foreground">(required)</span>
-                            ) : (
-                                <span className="text-muted-foreground">(optional)</span>
-                            )}
-                        </Label>
-                        <Textarea
-                            id="adjust-notes"
-                            value={data.notes}
-                            onChange={(e) => setData('notes', e.target.value)}
-                            required={notesRequired}
-                            rows={2}
-                            placeholder="e.g. Physical recount, damaged goods…"
-                        />
-                        <InputError message={errors.notes} />
-                    </div>
+            <p className="text-muted-foreground text-sm">
+                {elsewhere
+                    ? 'This asks that branch to move the stock. Somebody there confirms it before anything changes, and can approve part of it or turn it down.'
+                    : 'This asks for the stock to move. Confirm it under Pending stock adjustments on Stock History to apply it.'}
+            </p>
 
-                    <DialogFooter>
-                        <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-                            Cancel
-                        </Button>
-                        <Button disabled={processing || !canSubmit}>
-                            {processing && <LoaderCircle className="h-4 w-4 animate-spin" />}
-                            Request adjustment
-                        </Button>
-                    </DialogFooter>
-                </form>
-            </DialogContent>
-        </Dialog>
+            {/* Not a <Field>: that names ONE control, and a `<label for>` cannot
+                name a group of them. The group carries its own aria-label. */}
+            <div className="grid gap-2">
+                <Label>Mode</Label>
+                <ToggleGroup
+                    type="single"
+                    variant="outline"
+                    value={data.mode}
+                    onValueChange={(value) => value && setData('mode', value as Mode)}
+                    aria-label="Mode"
+                    className="justify-start"
+                >
+                    <ToggleGroupItem value="add">Add</ToggleGroupItem>
+                    <ToggleGroupItem value="remove">Remove</ToggleGroupItem>
+                    {/* Hidden for another branch: deriving a delta would need
+                        that branch's on-hand, which this device only knows as
+                        a baseline missing its unsynced sales. */}
+                    {!elsewhere && <ToggleGroupItem value="set">Set to count</ToggleGroupItem>}
+                </ToggleGroup>
+            </div>
+
+            <Field
+                label={mode === 'set' ? 'Counted quantity' : mode === 'remove' ? 'How many are leaving' : 'How many are arriving'}
+                htmlFor="adjust-value"
+                error={errors.value ?? errors.quantity}
+            >
+                <Input
+                    id="adjust-value"
+                    type="number"
+                    inputMode="numeric"
+                    step={1}
+                    min={mode === 'set' ? 0 : 1}
+                    value={data.value}
+                    onChange={(e) => setData('value', e.target.value)}
+                    required
+                    autoFocus
+                    placeholder={mode === 'set' ? 'e.g. 37' : 'e.g. 10'}
+                />
+                {quantityInvalid ? (
+                    <p className="text-destructive text-sm">
+                        {mode === 'set' ? 'A counted quantity cannot be negative.' : 'Enter how many are being added or removed.'}
+                    </p>
+                ) : (
+                    resulting !== null && (
+                        <p className="text-muted-foreground text-sm">
+                            New on-hand: <span className="text-foreground font-medium tabular-nums">{resulting}</span>
+                            {/* Shown rather than blocked: asking for more than
+                                is on the shelf is allowed, and whether it fits
+                                is a question for whoever confirms it — by which
+                                time a delivery may have arrived. */}
+                            {resulting < 0 ? ' — more than there is, so this can only be partly approved.' : ''}
+                        </p>
+                    )
+                )}
+            </Field>
+
+            <Field
+                label={
+                    <>
+                        Notes <span className="text-muted-foreground">({notesRequired ? 'required' : 'optional'})</span>
+                    </>
+                }
+                htmlFor="adjust-notes"
+                error={errors.notes}
+            >
+                <Textarea
+                    id="adjust-notes"
+                    value={data.notes}
+                    onChange={(e) => setData('notes', e.target.value)}
+                    required={notesRequired}
+                    rows={2}
+                    placeholder="e.g. Physical recount, damaged goods…"
+                />
+            </Field>
+        </FormDialog>
     );
 }

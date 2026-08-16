@@ -1,5 +1,6 @@
-import EmptyState from '@/components/empty-state';
-import Pagination from '@/components/pagination';
+import EmptyState from '@/components/data/empty-state';
+import Pagination from '@/components/data/pagination';
+import PageShell from '@/components/page/page-shell';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -10,6 +11,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { useCurrency } from '@/hooks/use-currency';
 import AppLayout from '@/layouts/app-layout';
+import { PAYMENT, paymentLabel } from '@/lib/payment';
 import { cn } from '@/lib/utils';
 import type { BreadcrumbItem, CartLine, DiscountType, Paginated, PaymentType, PosProduct } from '@/types';
 import { Head, router } from '@inertiajs/react';
@@ -22,12 +24,6 @@ const breadcrumbs: BreadcrumbItem[] = [{ title: 'Point of Sale', href: '/pos' }]
 interface Filters {
     search: string | null;
 }
-
-const PAYMENT_LABELS: Record<PaymentType, string> = {
-    cash: 'Cash',
-    cashless: 'Cashless',
-    others: 'Others',
-};
 
 export default function Pos({ products, filters }: { products: Paginated<PosProduct>; filters: Filters }) {
     const { symbol: currencySymbol, format: money } = useCurrency();
@@ -195,7 +191,7 @@ export default function Pos({ products, filters }: { products: Paginated<PosProd
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="Point of Sale" />
-            <div className="flex min-h-full flex-1 flex-col gap-4 p-4 lg:flex-row lg:items-start">
+            <PageShell className="lg:flex-row lg:items-start">
                 {/* Left: product search + grid */}
                 <div className="flex flex-1 flex-col gap-4">
                     <div className="flex items-center gap-2">
@@ -379,9 +375,9 @@ export default function Pos({ products, filters }: { products: Paginated<PosProd
                             onValueChange={(value) => value && setPaymentType(value as PaymentType)}
                             className="justify-start"
                         >
-                            {(Object.keys(PAYMENT_LABELS) as PaymentType[]).map((type) => (
+                            {(Object.keys(PAYMENT) as PaymentType[]).map((type) => (
                                 <ToggleGroupItem key={type} value={type} className="flex-1">
-                                    {PAYMENT_LABELS[type]}
+                                    {paymentLabel(type)}
                                 </ToggleGroupItem>
                             ))}
                         </ToggleGroup>
@@ -443,7 +439,7 @@ export default function Pos({ products, filters }: { products: Paginated<PosProd
                         )}
                     </Button>
                 </Card>
-            </div>
+            </PageShell>
         </AppLayout>
     );
 }

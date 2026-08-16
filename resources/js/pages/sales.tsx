@@ -1,22 +1,26 @@
-import { BranchScopeSelect } from '@/components/branch-scope-select';
-import EmptyState from '@/components/empty-state';
-import Pagination from '@/components/pagination';
+import EmptyState from '@/components/data/empty-state';
+import Pagination from '@/components/data/pagination';
+import TableCard, { NumericCell } from '@/components/data/table-card';
+import { BranchScopeSelect } from '@/components/filters/branch-scope-select';
+import DateRangeFilter from '@/components/filters/date-range-filter';
+import FilterBar from '@/components/filters/filter-bar';
+import SearchInput from '@/components/filters/search-input';
+import PageShell from '@/components/page/page-shell';
+import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useCurrency } from '@/hooks/use-currency';
+import { useListFilters } from '@/hooks/use-list-filters';
 import AppLayout from '@/layouts/app-layout';
+import { ALL } from '@/lib/filters';
+import { formatWhen } from '@/lib/format';
+import { paymentLabel, paymentVariant } from '@/lib/payment';
 import type { BranchScope, BreadcrumbItem, Paginated, PaymentType, RosterBranch, TransactionListRow, User } from '@/types';
 import { Head, Link, router } from '@inertiajs/react';
 import { ReceiptText, WifiOff } from 'lucide-react';
 
 const breadcrumbs: BreadcrumbItem[] = [{ title: 'Sales', href: '/sales' }];
-
-// The "no filter" sentinel for the payment/cashier dropdowns. It collides in
-// spelling with the branch scope's `all` and in nothing else — that one means
-// "every branch", and it lives on its own control.
-const ALL = 'all';
 
 const LOCAL = 'local';
 
@@ -30,26 +34,14 @@ const LOCAL = 'local';
  */
 function OfflineSalesNotice() {
     return (
-        <div role="alert" className="flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
-            <WifiOff className="mt-0.5 size-4 shrink-0" />
+        <Alert variant="warning">
+            <WifiOff />
             <p>
                 <span className="font-medium">These are this branch's sales only.</span> Other branches' sales live in the business database and this
                 device could not reach it, so they could not be included. Reconnect to see sales across branches.
             </p>
-        </div>
+        </Alert>
     );
-}
-
-// Human labels + badge tone per payment type.
-const PAYMENT: Record<PaymentType, { label: string; variant: 'default' | 'secondary' | 'outline' }> = {
-    cash: { label: 'Cash', variant: 'default' },
-    cashless: { label: 'Cashless', variant: 'secondary' },
-    others: { label: 'Others', variant: 'outline' },
-};
-
-function formatWhen(value: string): string {
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
 }
 
 function discountLabel(row: TransactionListRow, money: (value: number | string) => string): string {
@@ -89,31 +81,14 @@ export default function Sales({
 }) {
     const { format: money } = useCurrency();
 
-    const applyFilters = (next: Partial<Filters> & { scope?: string }) => {
-        const merged = { ...filters, ...next };
-        router.get(
-            route('sales'),
-            {
-                search: merged.search || undefined,
-                payment_type: merged.payment_type && merged.payment_type !== ALL ? merged.payment_type : undefined,
-                user: merged.user && merged.user !== ALL ? merged.user : undefined,
-                date_from: merged.date_from || undefined,
-                date_to: merged.date_to || undefined,
-                // Carried through EVERY change, not just a scope change: the
-                // search box calls this on each keystroke, and dropping the
-                // scope there would silently walk the reader back to this branch.
-                scope: (next.scope ?? scope) === LOCAL ? undefined : (next.scope ?? scope),
-            },
-            {
-                preserveState: true,
-                preserveScroll: true,
-                replace: true,
-                // `branches` is deliberately out of this list: the roster costs an
-                // online read, and typing in the search box must not pay for it.
-                only: ['transactions', 'filters', 'scope', 'consolidatedOnline'],
-            },
-        );
-    };
+    const { apply } = useListFilters<Filters & { scope: string }>({
+        url: route('sales'),
+        values: { ...filters, scope },
+        defaults: { payment_type: ALL, user: ALL, scope: LOCAL },
+        // `branches` is deliberately out of this list: the roster costs an online
+        // read, and typing in the search box must not pay for it.
+        only: ['transactions', 'filters', 'scope', 'consolidatedOnline'],
+    });
 
     // A wider scope names the branch on every row; in the local scope every row
     // is this device's by construction, and the receipt number already carries
@@ -127,30 +102,34 @@ export default function Sales({
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="Sales" />
-            <div className="flex min-h-full flex-1 flex-col gap-4 p-4">
-                <div className="flex flex-wrap items-center gap-2">
-                    <Input
-                        type="search"
+            <PageShell>
+                <FilterBar>
+                    {/* Not debounced, unlike the other search boxes: a receipt
+                        number is pasted or scanned rather than typed a letter at
+                        a time, and the list is short enough that the round trip
+                        is the feedback. */}
+                    <SearchInput
+                        value={filters.search ?? ''}
+                        onChange={(value) => apply({ search: value || null })}
                         placeholder="Search receipt no."
-                        defaultValue={filters.search ?? ''}
-                        onChange={(e) => applyFilters({ search: e.target.value || null })}
+                        label="Search sales"
                         className="w-52"
                     />
-                    <Select value={filters.payment_type ?? ALL} onValueChange={(value) => applyFilters({ payment_type: value })}>
-                        <SelectTrigger className="w-40">
+                    <Select value={filters.payment_type ?? ALL} onValueChange={(value) => apply({ payment_type: value })}>
+                        <SelectTrigger className="w-40" aria-label="Payment type">
                             <SelectValue placeholder="All payments" />
                         </SelectTrigger>
                         <SelectContent>
                             <SelectItem value={ALL}>All payments</SelectItem>
                             {paymentTypes.map((type) => (
                                 <SelectItem key={type} value={type}>
-                                    {PAYMENT[type]?.label ?? type}
+                                    {paymentLabel(type)}
                                 </SelectItem>
                             ))}
                         </SelectContent>
                     </Select>
-                    <Select value={filters.user ?? ALL} onValueChange={(value) => applyFilters({ user: value })}>
-                        <SelectTrigger className="w-56">
+                    <Select value={filters.user ?? ALL} onValueChange={(value) => apply({ user: value })}>
+                        <SelectTrigger className="w-56" aria-label="Cashier">
                             <SelectValue placeholder="All cashiers" />
                         </SelectTrigger>
                         <SelectContent>
@@ -162,84 +141,65 @@ export default function Sales({
                             ))}
                         </SelectContent>
                     </Select>
-                    <div className="flex items-center gap-2">
-                        <span className="text-muted-foreground text-sm">From</span>
-                        <Input
-                            type="date"
-                            value={filters.date_from ?? ''}
-                            max={filters.date_to ?? undefined}
-                            onChange={(e) => applyFilters({ date_from: e.target.value || null })}
-                            className="w-40"
-                        />
-                        <span className="text-muted-foreground text-sm">To</span>
-                        <Input
-                            type="date"
-                            value={filters.date_to ?? ''}
-                            min={filters.date_from ?? undefined}
-                            onChange={(e) => applyFilters({ date_to: e.target.value || null })}
-                            className="w-40"
-                        />
-                    </div>
+                    <DateRangeFilter from={filters.date_from} to={filters.date_to} onChange={apply} label="Sale date" />
                     {canViewAll && (
-                        <BranchScopeSelect
-                            scope={scope}
-                            branches={branches}
-                            onChange={(next) => applyFilters({ scope: next })}
-                            label="Branches shown"
-                        />
+                        <BranchScopeSelect scope={scope} branches={branches} onChange={(next) => apply({ scope: next })} label="Branches shown" />
                     )}
-                </div>
+                </FilterBar>
 
                 {consolidatedOnline === false && <OfflineSalesNotice />}
 
-                {transactions.data.length === 0 ? (
-                    <EmptyState icon={ReceiptText} title="No sales" description="Completed transactions will appear here once you ring up a sale." />
-                ) : (
-                    <div className="rounded-xl border">
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead>Receipt No.</TableHead>
-                                    {showBranch && <TableHead>Branch</TableHead>}
-                                    <TableHead>When</TableHead>
-                                    <TableHead>Cashier</TableHead>
-                                    <TableHead>Payment</TableHead>
-                                    <TableHead className="text-right">Items</TableHead>
-                                    <TableHead className="text-right">Discount</TableHead>
-                                    <TableHead className="text-right">Total</TableHead>
+                <TableCard
+                    isEmpty={transactions.data.length === 0}
+                    empty={
+                        <EmptyState
+                            icon={ReceiptText}
+                            title="No sales"
+                            description="Completed transactions will appear here once you ring up a sale."
+                        />
+                    }
+                >
+                    <Table>
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead>Receipt No.</TableHead>
+                                {showBranch && <TableHead>Branch</TableHead>}
+                                <TableHead>When</TableHead>
+                                <TableHead>Cashier</TableHead>
+                                <TableHead>Payment</TableHead>
+                                <TableHead className="text-right">Items</TableHead>
+                                <TableHead className="text-right">Discount</TableHead>
+                                <TableHead className="text-right">Total</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {transactions.data.map((row) => (
+                                // The row onClick is a redundant mouse affordance; the receipt-number
+                                // Link below is the keyboard-accessible path (a focusable row would
+                                // double every tab stop for keyboard users).
+                                <TableRow key={row.id} className="cursor-pointer" onClick={() => router.visit(detailHref(row.id))}>
+                                    <TableCell className="font-medium tabular-nums">
+                                        <Link href={detailHref(row.id)} onClick={(e) => e.stopPropagation()} className="hover:underline">
+                                            {row.transaction_number}
+                                        </Link>
+                                    </TableCell>
+                                    {showBranch && <TableCell className="text-muted-foreground">{row.branch ?? '—'}</TableCell>}
+                                    <TableCell className="tabular-nums">{formatWhen(row.created_at)}</TableCell>
+                                    <TableCell>{row.user?.name ?? row.user?.username ?? '—'}</TableCell>
+                                    <TableCell>
+                                        <Badge variant={paymentVariant(row.payment_type)}>{paymentLabel(row.payment_type)}</Badge>
+                                    </TableCell>
+                                    <NumericCell>{row.items_count}</NumericCell>
+                                    <NumericCell className="text-muted-foreground">{discountLabel(row, money)}</NumericCell>
+                                    <NumericCell className="font-medium">{money(row.total)}</NumericCell>
                                 </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {transactions.data.map((row) => (
-                                    // The row onClick is a redundant mouse affordance; the receipt-number
-                                    // Link below is the keyboard-accessible path (a focusable row would
-                                    // double every tab stop for keyboard users).
-                                    <TableRow key={row.id} className="cursor-pointer" onClick={() => router.visit(detailHref(row.id))}>
-                                        <TableCell className="font-medium tabular-nums">
-                                            <Link href={detailHref(row.id)} onClick={(e) => e.stopPropagation()} className="hover:underline">
-                                                {row.transaction_number}
-                                            </Link>
-                                        </TableCell>
-                                        {showBranch && <TableCell className="text-muted-foreground">{row.branch ?? '—'}</TableCell>}
-                                        <TableCell className="tabular-nums">{formatWhen(row.created_at)}</TableCell>
-                                        <TableCell>{row.user?.name ?? row.user?.username ?? '—'}</TableCell>
-                                        <TableCell>
-                                            <Badge variant={PAYMENT[row.payment_type]?.variant ?? 'outline'}>
-                                                {PAYMENT[row.payment_type]?.label ?? row.payment_type}
-                                            </Badge>
-                                        </TableCell>
-                                        <TableCell className="text-right tabular-nums">{row.items_count}</TableCell>
-                                        <TableCell className="text-muted-foreground text-right tabular-nums">{discountLabel(row, money)}</TableCell>
-                                        <TableCell className="text-right font-medium tabular-nums">{money(row.total)}</TableCell>
-                                    </TableRow>
-                                ))}
-                            </TableBody>
-                        </Table>
-                    </div>
-                )}
+                            ))}
+                        </TableBody>
+                    </Table>
+                </TableCard>
 
                 <Pagination links={transactions.links} />
-            </div>
+            </PageShell>
         </AppLayout>
     );
 }

@@ -1,29 +1,20 @@
-import InputError from '@/components/input-error';
+import Field from '@/components/forms/field';
+import { DetailDialog, FormDialog } from '@/components/forms/form-dialog';
+import InputError from '@/components/forms/input-error';
 import type { ReportEmailProp } from '@/components/reports/email-report-dialog';
-import { Button } from '@/components/ui/button';
+import { EmailNotConfigured, RecipientPicker, useRecipients } from '@/components/reports/recipient-picker';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { closeOnSuccess } from '@/hooks/use-dialog-form';
+import { MONTHS } from '@/lib/calendar';
 import type { EmployeeOption } from '@/types';
-import { Link, useForm } from '@inertiajs/react';
-import { LoaderCircle, Plus, X } from 'lucide-react';
+import { useForm } from '@inertiajs/react';
 import { FormEventHandler, useEffect, useState } from 'react';
-
-/** One recipient row: an address and whether it goes on this send. */
-interface Row {
-    address: string;
-    checked: boolean;
-}
-
-const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // Mirrors EmailEmployeePerformanceRequest::MAX_USERS. The server is the
 // authority; this only stops the button before a round trip that would fail.
 const MAX_EMPLOYEES = 20;
-
-const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
 /**
  * Email one month of employee performance, as one PDF per employee.
@@ -36,7 +27,8 @@ const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 
  *
  * The recipients default to the configured list, ticked, and can be unticked,
  * removed or added to — all for THIS send only. Nothing here writes back to the
- * saved list, which is the Owner's to manage in Business Settings.
+ * saved list, which is the Owner's to manage in Business Settings. That half is
+ * {@see RecipientPicker}, shared with the sales report dialog.
  *
  * There is no branch to choose. The report always covers the whole business, and
  * the server reads it from the business database or refuses — the same document
@@ -61,9 +53,7 @@ export default function EmployeeReportDialog({
     defaultYear: number;
     years: number[];
 }) {
-    const [rows, setRows] = useState<Row[]>([]);
-    const [draft, setDraft] = useState('');
-    const [draftError, setDraftError] = useState<string | null>(null);
+    const recipients = useRecipients(open, email.recipients);
     const [selected, setSelected] = useState<string[]>([]);
     const [month, setMonth] = useState(defaultMonth);
     const [year, setYear] = useState(defaultYear);
@@ -73,40 +63,21 @@ export default function EmployeeReportDialog({
     const form = useForm<{ recipients: string[]; users: string[] }>({ recipients: [], users: [] });
     const { errors, processing, clearErrors } = form;
 
-    // Reset on open, so a previous send's edits and errors never leak into the
-    // next one. The dialog stays mounted between opens.
+    // Reset on open, so a previous send's selection never leaks into the next
+    // one. The dialog stays mounted between opens.
     useEffect(() => {
         if (!open) return;
-        setRows(email.recipients.map((address) => ({ address, checked: true })));
-        setDraft('');
-        setDraftError(null);
         // Seeded with the employee on screen: the common send is "this one".
         setSelected(defaultEmployeeId ? [defaultEmployeeId] : []);
         setMonth(defaultMonth);
         setYear(defaultYear);
         clearErrors();
-    }, [open, email.recipients, defaultEmployeeId, defaultMonth, defaultYear, clearErrors]);
+    }, [open, defaultEmployeeId, defaultMonth, defaultYear, clearErrors]);
 
-    const checked = rows.filter((row) => row.checked).map((row) => row.address);
+    const checked = recipients.checked;
 
     const toggleEmployee = (id: string, on: boolean) => {
         setSelected(on ? [...selected, id] : selected.filter((value) => value !== id));
-    };
-
-    const addDraft = () => {
-        const address = draft.trim();
-        if (address === '') return;
-        if (!EMAIL_SHAPE.test(address)) {
-            setDraftError('Enter a valid email address.');
-            return;
-        }
-        if (rows.some((row) => row.address.toLowerCase() === address.toLowerCase())) {
-            setDraftError('That address is already on the list.');
-            return;
-        }
-        setRows([...rows, { address, checked: true }]);
-        setDraft('');
-        setDraftError(null);
     };
 
     const submit: FormEventHandler = (e) => {
@@ -118,178 +89,100 @@ export default function EmployeeReportDialog({
             year,
         }));
 
-        form.post(route('employee-performance.email'), {
-            preserveScroll: true,
-            onSuccess: () => onOpenChange(false),
-        });
+        form.post(route('employee-performance.email'), closeOnSuccess(onOpenChange));
     };
 
     const tooMany = selected.length > MAX_EMPLOYEES;
+    const description = `All branches · ${MONTHS[month - 1]} ${year}. Each employee you pick gets their own PDF, all on one email.`;
+
+    // Nothing to submit when there is nowhere to send, so it is not a form at
+    // all — it opens to explain, and closes with Escape or the X.
+    if (!email.configured) {
+        return (
+            <DetailDialog open={open} onOpenChange={onOpenChange} title="Email employee reports" description={description}>
+                <EmailNotConfigured canConfigure={email.canConfigure} />
+            </DetailDialog>
+        );
+    }
 
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="max-h-[90vh] overflow-y-auto">
-                <DialogHeader>
-                    <DialogTitle>Email employee reports</DialogTitle>
-                    <DialogDescription>
-                        All branches · {MONTHS[month - 1]} {year}. Each employee you pick gets their own PDF, all on one email.
-                    </DialogDescription>
-                </DialogHeader>
-
-                {!email.configured ? (
-                    <div className="space-y-3 text-sm">
-                        <p>Report email is not set up yet, so there is nowhere to send this.</p>
-                        {email.canConfigure ? (
-                            <p>
-                                <Link href="/business-settings/report-email" className="font-medium underline underline-offset-4">
-                                    Set up report email
-                                </Link>{' '}
-                                — you will need the sending account's server address and password.
-                            </p>
-                        ) : (
-                            <p className="text-muted-foreground">Ask the owner to set it up in Business Settings.</p>
-                        )}
-                    </div>
-                ) : (
-                    <form onSubmit={submit} className="space-y-4">
-                        <div className="grid gap-3 sm:grid-cols-2">
-                            <div className="grid gap-1.5">
-                                <Label htmlFor="email-employee-month">Month</Label>
-                                <Select value={String(month)} onValueChange={(value) => setMonth(Number(value))}>
-                                    <SelectTrigger id="email-employee-month">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {MONTHS.map((label, index) => (
-                                            <SelectItem key={label} value={String(index + 1)}>
-                                                {label}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                            <div className="grid gap-1.5">
-                                <Label htmlFor="email-employee-year">Year</Label>
-                                <Select value={String(year)} onValueChange={(value) => setYear(Number(value))}>
-                                    <SelectTrigger id="email-employee-year">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {years.map((value) => (
-                                            <SelectItem key={value} value={String(value)}>
-                                                {value}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                        </div>
-
-                        <div className="space-y-2">
-                            <Label>Employees</Label>
-                            <div className="max-h-48 space-y-2 overflow-y-auto rounded-md border p-3">
-                                {employees.map((employee) => (
-                                    <div key={employee.id} className="flex items-center gap-2">
-                                        <Checkbox
-                                            id={`employee-${employee.id}`}
-                                            checked={selected.includes(employee.id)}
-                                            onCheckedChange={(value) => toggleEmployee(employee.id, value === true)}
-                                        />
-                                        <label htmlFor={`employee-${employee.id}`} className="flex-1 truncate text-sm">
-                                            {employee.name}
-                                            <span className="text-muted-foreground"> · {employee.role}</span>
-                                            {employee.archived && <span className="text-muted-foreground"> · archived</span>}
-                                        </label>
-                                    </div>
-                                ))}
-                            </div>
-                            <InputError message={errors.users} />
-                            {tooMany && <InputError message={`Pick at most ${MAX_EMPLOYEES} employees for one send.`} />}
-                        </div>
-
-                        <div className="space-y-2">
-                            {rows.length === 0 && (
-                                <p className="text-muted-foreground text-sm">
-                                    There are no default recipients yet. Add an address below to send this report.
-                                </p>
-                            )}
-                            {rows.map((row, index) => (
-                                <div key={row.address} className="grid gap-1">
-                                    <div className="flex items-center gap-2">
-                                        <Checkbox
-                                            id={`report-recipient-${index}`}
-                                            checked={row.checked}
-                                            onCheckedChange={(value) =>
-                                                setRows(rows.map((r, i) => (i === index ? { ...r, checked: value === true } : r)))
-                                            }
-                                        />
-                                        <label htmlFor={`report-recipient-${index}`} className="flex-1 truncate text-sm">
-                                            {row.address}
-                                        </label>
-                                        <Button
-                                            type="button"
-                                            variant="ghost"
-                                            size="icon"
-                                            aria-label={`Remove ${row.address}`}
-                                            onClick={() => setRows(rows.filter((_, i) => i !== index))}
-                                        >
-                                            <X className="size-4" />
-                                        </Button>
-                                    </div>
-                                    {/* The server keys errors by position in the list it was
-                                        sent, which is the checked rows only. */}
-                                    <InputError message={errors[`recipients.${checked.indexOf(row.address)}` as keyof typeof errors] as string} />
-                                </div>
+        <FormDialog
+            open={open}
+            onOpenChange={onOpenChange}
+            title="Email employee reports"
+            description={description}
+            submitLabel={
+                selected.length === 0
+                    ? 'Pick at least one employee'
+                    : checked.length === 0
+                      ? 'Pick at least one recipient'
+                      : `Send ${selected.length} to ${checked.length}`
+            }
+            processing={processing}
+            submitDisabled={checked.length === 0 || selected.length === 0 || tooMany}
+            onSubmit={submit}
+            className="max-h-[90vh] overflow-y-auto"
+        >
+            {/* Not the shared <MonthYearPicker>: that one steps through months with
+                arrows because it drives a calendar grid. This picks a month to
+                report on, has no adjacent month to step to, and its year list is
+                the years there is anything to report. */}
+            <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Month" htmlFor="email-employee-month">
+                    <Select value={String(month)} onValueChange={(value) => setMonth(Number(value))}>
+                        <SelectTrigger id="email-employee-month">
+                            <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {MONTHS.map((label, index) => (
+                                <SelectItem key={label} value={String(index + 1)}>
+                                    {label}
+                                </SelectItem>
                             ))}
+                        </SelectContent>
+                    </Select>
+                </Field>
+                <Field label="Year" htmlFor="email-employee-year">
+                    <Select value={String(year)} onValueChange={(value) => setYear(Number(value))}>
+                        <SelectTrigger id="email-employee-year">
+                            <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {years.map((value) => (
+                                <SelectItem key={value} value={String(value)}>
+                                    {value}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                </Field>
+            </div>
+
+            {/* Not a <Field>: that names ONE control, and a `<label for>` cannot
+                name a list of checkboxes. The list carries its own aria-label. */}
+            <div className="space-y-2">
+                <Label>Employees</Label>
+                <div className="max-h-48 space-y-2 overflow-y-auto rounded-md border p-3" role="group" aria-label="Employees">
+                    {employees.map((employee) => (
+                        <div key={employee.id} className="flex items-center gap-2">
+                            <Checkbox
+                                id={`employee-${employee.id}`}
+                                checked={selected.includes(employee.id)}
+                                onCheckedChange={(value) => toggleEmployee(employee.id, value === true)}
+                            />
+                            <label htmlFor={`employee-${employee.id}`} className="flex-1 truncate text-sm">
+                                {employee.name}
+                                <span className="text-muted-foreground"> · {employee.role}</span>
+                                {employee.archived && <span className="text-muted-foreground"> · archived</span>}
+                            </label>
                         </div>
+                    ))}
+                </div>
+                <InputError message={errors.users} />
+                {tooMany && <InputError message={`Pick at most ${MAX_EMPLOYEES} employees for one send.`} />}
+            </div>
 
-                        <div className="flex items-start gap-2">
-                            <div className="grid flex-1 gap-1">
-                                <Input
-                                    type="email"
-                                    value={draft}
-                                    onChange={(e) => {
-                                        setDraft(e.target.value);
-                                        setDraftError(null);
-                                    }}
-                                    onKeyDown={(e) => {
-                                        if (e.key === 'Enter') {
-                                            e.preventDefault();
-                                            addDraft();
-                                        }
-                                    }}
-                                    placeholder="Add another address"
-                                    aria-label="Add another address"
-                                />
-                                <InputError message={draftError ?? undefined} />
-                            </div>
-                            <Button type="button" variant="outline" onClick={addDraft}>
-                                <Plus className="size-3.5" />
-                                Add
-                            </Button>
-                        </div>
-
-                        <InputError message={errors.recipients} />
-                        <p className="text-muted-foreground text-xs">
-                            Everyone listed will see the other recipients. Changes here apply to this send only — the saved list is unchanged.
-                        </p>
-
-                        <DialogFooter>
-                            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-                                Cancel
-                            </Button>
-                            <Button type="submit" disabled={processing || checked.length === 0 || selected.length === 0 || tooMany}>
-                                {processing && <LoaderCircle className="h-4 w-4 animate-spin" />}
-                                {selected.length === 0
-                                    ? 'Pick at least one employee'
-                                    : checked.length === 0
-                                      ? 'Pick at least one recipient'
-                                      : `Send ${selected.length} to ${checked.length}`}
-                            </Button>
-                        </DialogFooter>
-                    </form>
-                )}
-            </DialogContent>
-        </Dialog>
+            <RecipientPicker recipients={recipients} errors={errors as Record<string, string | undefined>} idPrefix="report-recipient" />
+        </FormDialog>
     );
 }

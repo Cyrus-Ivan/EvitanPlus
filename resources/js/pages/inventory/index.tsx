@@ -1,27 +1,32 @@
-import { BranchScopeSelect } from '@/components/branch-scope-select';
-import EmptyState from '@/components/empty-state';
+import EmptyState from '@/components/data/empty-state';
+import Pagination from '@/components/data/pagination';
+import { ArchivedBadge } from '@/components/data/status-badge';
+import TableCard, { NumericCell } from '@/components/data/table-card';
+import { BranchScopeSelect } from '@/components/filters/branch-scope-select';
+import CategoryFilter from '@/components/filters/category-filter';
+import FilterBar from '@/components/filters/filter-bar';
+import SearchInput from '@/components/filters/search-input';
+import StatusFilter from '@/components/filters/status-filter';
 import BatchAdjustDialog from '@/components/inventory/batch-adjust-dialog';
 import BatchTransferDialog from '@/components/inventory/batch-transfer-dialog';
 import ImportOpeningStockDialog from '@/components/inventory/import-opening-stock-dialog';
 import StockAdjustDialog from '@/components/inventory/stock-adjust-dialog';
 import StockTransferDialog from '@/components/inventory/stock-transfer-dialog';
-import { OfflineNotice } from '@/components/offline-notice';
-import Pagination from '@/components/pagination';
+import PageShell from '@/components/page/page-shell';
+import { OfflineNotice } from '@/components/sync/offline-notice';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { useDebouncedFilter, useListFilters } from '@/hooks/use-list-filters';
 import { usePermissions } from '@/hooks/use-permissions';
 import AppLayout from '@/layouts/app-layout';
+import { ALL } from '@/lib/filters';
 import type { BranchScope, BreadcrumbItem, Category, Paginated, RosterBranch, Variant } from '@/types';
-import { Head, Link, router } from '@inertiajs/react';
+import { Head, Link } from '@inertiajs/react';
 import { ArrowLeftRight, History, Info, Package, SlidersHorizontal, Upload, WifiOff } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 
 const breadcrumbs: BreadcrumbItem[] = [{ title: 'Inventory', href: '/inventory' }];
-
-const ALL_CATEGORIES = 'all';
 
 const LOCAL = 'local';
 
@@ -62,6 +67,8 @@ function BaselineNotice() {
  * one adds is narrow: the scope you chose is not the scope you are looking at.
  */
 function OfflineStockNotice() {
+    // Deliberately a compact LINE rather than an `Alert variant="warning"` box —
+    // see the note above.
     return (
         <p role="alert" className="flex items-center gap-1.5 text-sm text-amber-700 dark:text-amber-500">
             <WifiOff className="size-3.5 shrink-0" />
@@ -135,7 +142,6 @@ export default function InventoryIndex({
     const [adjustBatching, setAdjustBatching] = useState(false);
     const [transferBatching, setTransferBatching] = useState(false);
     const [importing, setImporting] = useState(false);
-    const isFirstRender = useRef(true);
 
     // Only ever true on a branch that has never sold anything, and only for an
     // Admin or the Owner. The import is scoped to this device's shelf, so it is
@@ -143,114 +149,70 @@ export default function InventoryIndex({
     // button would look like it set that branch's stock, and it does not.
     const canImportOpeningStock = canManage && openingWindow && scope === LOCAL;
 
-    const applyFilters = (next: Partial<Filters> & { scope?: string }) => {
-        const merged = { search, category: filters.category, status: filters.status, ...next };
-        router.get(
-            route('inventory'),
-            {
-                search: merged.search || undefined,
-                category: merged.category && merged.category !== ALL_CATEGORIES ? merged.category : undefined,
-                status: merged.status && merged.status !== 'active' ? merged.status : undefined,
-                // Carried through EVERY change. The search box is debounced onto
-                // this function, so dropping the scope here would silently walk
-                // the reader back to this branch on the next keystroke.
-                scope: (next.scope ?? scope) === LOCAL ? undefined : (next.scope ?? scope),
-            },
-            {
-                preserveState: true,
-                preserveScroll: true,
-                replace: true,
-                // `branches` is deliberately out of this list: the roster costs an
-                // online read, and typing in the search box must not pay for it.
-                // The scoped figures ride along inside `variants`.
-                only: ['variants', 'filters', 'scope', 'consolidatedOnline'],
-            },
-        );
-    };
+    const { apply } = useListFilters<Filters & { scope: string }>({
+        url: route('inventory'),
+        values: { ...filters, search, scope },
+        defaults: { category: ALL, status: 'active', scope: LOCAL },
+        // `branches` is deliberately out of this list: the roster costs an online
+        // read, and typing in the search box must not pay for it. The scoped
+        // figures ride along inside `variants`.
+        only: ['variants', 'filters', 'scope', 'consolidatedOnline'],
+    });
 
-    // Debounce the search box so we don't fire a request per keystroke.
-    useEffect(() => {
-        if (isFirstRender.current) {
-            isFirstRender.current = false;
-            return;
-        }
-        const timeout = setTimeout(() => applyFilters({ search }), 300);
-        return () => clearTimeout(timeout);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [search]);
+    useDebouncedFilter(search, (value) => apply({ search: value }));
 
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="Inventory" />
-            <div className="flex min-h-full flex-1 flex-col gap-4 p-4">
+            <PageShell>
                 {/* Stock is shared with the business: a recount that reached only
                     this device would be reverted by the next cycle's baseline, so
                     asking for one is an online write like every other. */}
                 {!online && <OfflineNotice what="Stock updates" />}
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                        <Input
-                            value={search}
-                            onChange={(e) => setSearch(e.target.value)}
-                            placeholder="Search product, variant, SKU, barcode"
-                            className="w-72"
+                <FilterBar
+                    actions={
+                        <>
+                            {canImportOpeningStock && (
+                                <Button variant="outline" onClick={() => setImporting(true)}>
+                                    <Upload className="size-4" /> Import opening stock
+                                </Button>
+                            )}
+                            {/* The same pair as the per-row actions below, asked
+                                for many products at once. */}
+                            {canManage && (
+                                <>
+                                    <Button variant="outline" onClick={() => setTransferBatching(true)}>
+                                        <ArrowLeftRight className="size-4" /> Batch transfer
+                                    </Button>
+                                    <Button onClick={() => setAdjustBatching(true)}>
+                                        <SlidersHorizontal className="size-4" /> Batch adjustment
+                                    </Button>
+                                </>
+                            )}
+                        </>
+                    }
+                >
+                    <SearchInput
+                        value={search}
+                        onChange={setSearch}
+                        placeholder="Search product, variant, SKU, barcode"
+                        label="Search stock"
+                        className="w-72"
+                    />
+                    <CategoryFilter value={filters.category} categories={categories} onChange={(value) => apply({ category: value })} />
+                    <StatusFilter value={filters.status} onChange={(value) => apply({ status: value })} />
+                    {canViewAll && (
+                        <BranchScopeSelect
+                            scope={scope}
+                            branches={branches}
+                            onChange={(next) => apply({ scope: next })}
+                            label="Stock shown for"
+                            // One branch at a time here: see the component's
+                            // docblock and `InventoryController`'s.
+                            allowAll={false}
                         />
-                        <Select value={filters.category ?? ALL_CATEGORIES} onValueChange={(value) => applyFilters({ category: value })}>
-                            <SelectTrigger className="w-44">
-                                <SelectValue placeholder="All categories" />
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value={ALL_CATEGORIES}>All categories</SelectItem>
-                                {categories.map((category) => (
-                                    <SelectItem key={category.id} value={category.id}>
-                                        {category.name}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                        <Select value={filters.status} onValueChange={(value) => applyFilters({ status: value })}>
-                            <SelectTrigger className="w-36">
-                                <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value="active">Active</SelectItem>
-                                <SelectItem value="archived">Archived</SelectItem>
-                                <SelectItem value="all">All</SelectItem>
-                            </SelectContent>
-                        </Select>
-                        {canViewAll && (
-                            <BranchScopeSelect
-                                scope={scope}
-                                branches={branches}
-                                onChange={(next) => applyFilters({ scope: next })}
-                                label="Stock shown for"
-                                // One branch at a time here: see the component's
-                                // docblock and `InventoryController`'s.
-                                allowAll={false}
-                            />
-                        )}
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2">
-                        {canImportOpeningStock && (
-                            <Button variant="outline" onClick={() => setImporting(true)}>
-                                <Upload className="size-4" /> Import opening stock
-                            </Button>
-                        )}
-                        {/* The same pair as the per-row actions below, asked for
-                            many products at once. */}
-                        {canManage && (
-                            <>
-                                <Button variant="outline" onClick={() => setTransferBatching(true)}>
-                                    <ArrowLeftRight className="size-4" /> Batch transfer
-                                </Button>
-                                <Button onClick={() => setAdjustBatching(true)}>
-                                    <SlidersHorizontal className="size-4" /> Batch adjustment
-                                </Button>
-                            </>
-                        )}
-                    </div>
-                </div>
+                    )}
+                </FilterBar>
 
                 {/* Said once, where the button is, because it is the whole reason
                     the button is there and the whole reason it will go away. */}
@@ -264,99 +226,100 @@ export default function InventoryIndex({
                 {consolidatedOnline === false && <OfflineStockNotice />}
                 {consolidatedOnline === true && <BaselineNotice />}
 
-                {variants.data.length === 0 ? (
-                    <EmptyState
-                        icon={Package}
-                        title="No products found"
-                        description={
-                            filters.search || filters.category
-                                ? 'Try adjusting your search or filters.'
-                                : 'Add products under Items, then set their opening stock here.'
-                        }
-                    />
-                ) : (
-                    <div className="rounded-xl border">
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead>Product</TableHead>
-                                    <TableHead>Variant</TableHead>
-                                    <TableHead>SKU</TableHead>
-                                    <TableHead>Barcode</TableHead>
-                                    <TableHead>Category</TableHead>
-                                    <TableHead className="text-right">Stock</TableHead>
-                                    <TableHead>Status</TableHead>
-                                    <TableHead className="text-right">Low-stock alert</TableHead>
-                                    {canManage && <TableHead className="text-right">Actions</TableHead>}
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {variants.data.map((variant) => {
-                                    // `scoped_stock` is the figure for the branch scope on
-                                    // screen; `current_stock` is this device's own, and is
-                                    // what remains when the scope is local or the read fell
-                                    // back.
-                                    const stock = variant.scoped_stock ?? variant.current_stock ?? 0;
-                                    // The ITEM's flag, not the variant's: the query only
-                                    // returns active variants, so a row is here because its
-                                    // product is, and archiving a product is what takes it
-                                    // off sale at every branch.
-                                    const archived = variant.item?.archived_at != null;
-                                    const isLow = isLowStock(variant);
+                <TableCard
+                    isEmpty={variants.data.length === 0}
+                    empty={
+                        <EmptyState
+                            icon={Package}
+                            title="No products found"
+                            description={
+                                filters.search || filters.category
+                                    ? 'Try adjusting your search or filters.'
+                                    : 'Add products under Items, then set their opening stock here.'
+                            }
+                        />
+                    }
+                >
+                    <Table>
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead>Product</TableHead>
+                                <TableHead>Variant</TableHead>
+                                <TableHead>SKU</TableHead>
+                                <TableHead>Barcode</TableHead>
+                                <TableHead>Category</TableHead>
+                                <TableHead className="text-right">Stock</TableHead>
+                                <TableHead>Status</TableHead>
+                                <TableHead className="text-right">Low-stock alert</TableHead>
+                                {canManage && <TableHead className="text-right">Actions</TableHead>}
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {variants.data.map((variant) => {
+                                // `scoped_stock` is the figure for the branch scope on
+                                // screen; `current_stock` is this device's own, and is
+                                // what remains when the scope is local or the read fell
+                                // back.
+                                const stock = variant.scoped_stock ?? variant.current_stock ?? 0;
+                                // The ITEM's flag, not the variant's: the query only
+                                // returns active variants, so a row is here because its
+                                // product is, and archiving a product is what takes it
+                                // off sale at every branch.
+                                const archived = variant.item?.archived_at != null;
+                                const isLow = isLowStock(variant);
 
-                                    return (
-                                        <TableRow
-                                            key={variant.id}
-                                            className={isLow ? 'bg-red-200 hover:bg-red-300 dark:bg-red-900/60 dark:hover:bg-red-800/60' : undefined}
-                                        >
-                                            <TableCell className="font-medium">{variant.item?.name ?? '—'}</TableCell>
-                                            {/* An unnamed variant is the "no variant" case:
+                                return (
+                                    <TableRow
+                                        key={variant.id}
+                                        className={isLow ? 'bg-red-200 hover:bg-red-300 dark:bg-red-900/60 dark:hover:bg-red-800/60' : undefined}
+                                    >
+                                        <TableCell className="font-medium">{variant.item?.name ?? '—'}</TableCell>
+                                        {/* An unnamed variant is the "no variant" case:
                                                 one product, one price, nothing to
                                                 distinguish. Dashed rather than repeating
                                                 the product name back. */}
-                                            <TableCell>{variant.name || '—'}</TableCell>
-                                            <TableCell className="tabular-nums">{variant.sku ?? '—'}</TableCell>
-                                            <TableCell className="tabular-nums">{variant.barcode ?? '—'}</TableCell>
-                                            <TableCell>{variant.item?.category?.name ?? '—'}</TableCell>
-                                            <TableCell className="text-right tabular-nums">{stock}</TableCell>
-                                            <TableCell>
-                                                {archived ? <Badge variant="secondary">Archived</Badge> : <Badge>Active</Badge>}
-                                                {/* Text companion to the row tint, so low
+                                        <TableCell>{variant.name || '—'}</TableCell>
+                                        <TableCell className="tabular-nums">{variant.sku ?? '—'}</TableCell>
+                                        <TableCell className="tabular-nums">{variant.barcode ?? '—'}</TableCell>
+                                        <TableCell>{variant.item?.category?.name ?? '—'}</TableCell>
+                                        <NumericCell>{stock}</NumericCell>
+                                        <TableCell>
+                                            <ArchivedBadge archived={archived} />
+                                            {/* Text companion to the row tint, so low
                                                     stock is never colour-only. */}
-                                                {isLow && (
-                                                    <Badge variant="destructive" className="ml-1 font-normal">
-                                                        Low stock
-                                                    </Badge>
-                                                )}
-                                            </TableCell>
-                                            <TableCell className="text-right tabular-nums">{variant.low_stock_threshold}</TableCell>
-                                            {canManage && (
-                                                <TableCell className="text-right">
-                                                    <div className="flex justify-end gap-1">
-                                                        <Button variant="ghost" size="sm" onClick={() => setAdjustTarget(variant)}>
-                                                            <SlidersHorizontal className="size-4" /> Adjust stocks
-                                                        </Button>
-                                                        <Button variant="ghost" size="sm" onClick={() => setTransferTarget(variant)}>
-                                                            <ArrowLeftRight className="size-4" /> Transfer
-                                                        </Button>
-                                                        <Button variant="ghost" size="sm" asChild>
-                                                            <Link href={route('stock-history.index', { variant: variant.id })}>
-                                                                <History className="size-4" /> History
-                                                            </Link>
-                                                        </Button>
-                                                    </div>
-                                                </TableCell>
+                                            {isLow && (
+                                                <Badge variant="destructive" className="ml-1 font-normal">
+                                                    Low stock
+                                                </Badge>
                                             )}
-                                        </TableRow>
-                                    );
-                                })}
-                            </TableBody>
-                        </Table>
-                    </div>
-                )}
+                                        </TableCell>
+                                        <NumericCell>{variant.low_stock_threshold}</NumericCell>
+                                        {canManage && (
+                                            <TableCell className="text-right">
+                                                <div className="flex justify-end gap-1">
+                                                    <Button variant="ghost" size="sm" onClick={() => setAdjustTarget(variant)}>
+                                                        <SlidersHorizontal className="size-4" /> Adjust stocks
+                                                    </Button>
+                                                    <Button variant="ghost" size="sm" onClick={() => setTransferTarget(variant)}>
+                                                        <ArrowLeftRight className="size-4" /> Transfer
+                                                    </Button>
+                                                    <Button variant="ghost" size="sm" asChild>
+                                                        <Link href={route('stock-history.index', { variant: variant.id })}>
+                                                            <History className="size-4" /> History
+                                                        </Link>
+                                                    </Button>
+                                                </div>
+                                            </TableCell>
+                                        )}
+                                    </TableRow>
+                                );
+                            })}
+                        </TableBody>
+                    </Table>
+                </TableCard>
 
                 <Pagination links={variants.links} />
-            </div>
+            </PageShell>
 
             {canManage && (
                 <>

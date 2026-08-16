@@ -1,5 +1,5 @@
 import ItemForm from '@/components/inventory/item-form';
-import { OfflineNotice } from '@/components/offline-notice';
+import { OfflineNotice } from '@/components/sync/offline-notice';
 import AppLayout from '@/layouts/app-layout';
 import type { BreadcrumbItem, Category, Item } from '@/types';
 import { Head } from '@inertiajs/react';

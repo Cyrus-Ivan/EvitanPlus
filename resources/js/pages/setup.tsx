@@ -1,6 +1,7 @@
-import AppLogoIcon from '@/components/app-logo-icon';
-import InputError from '@/components/input-error';
-import PrinterSettingsFields, { type PrinterSettingsData } from '@/components/printer-settings-fields';
+import InputError from '@/components/forms/input-error';
+import SubmitButton from '@/components/forms/submit-button';
+import AppLogoIcon from '@/components/layout/app-logo-icon';
+import PrinterSettingsFields, { type PrinterSettingsData } from '@/components/settings/printer-settings-fields';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
@@ -8,7 +9,7 @@ import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 import { type SharedData } from '@/types';
 import { Head, router, useForm, usePage } from '@inertiajs/react';
-import { FolderOpen, LoaderCircle } from 'lucide-react';
+import { FolderOpen } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 // The setup wizard for a device that is not yet a branch (M5). The Owner, the
@@ -225,10 +226,7 @@ export default function Setup({
                                         Skip for now
                                     </Button>
                                 )}
-                                <Button type="submit" disabled={processing}>
-                                    {processing && <LoaderCircle className="h-4 w-4 animate-spin" />}
-                                    {step < STEPS.length - 1 ? 'Next' : 'Connect and set up'}
-                                </Button>
+                                <SubmitButton processing={processing}>{step < STEPS.length - 1 ? 'Next' : 'Connect and set up'}</SubmitButton>
                             </div>
                         </div>
                     </form>

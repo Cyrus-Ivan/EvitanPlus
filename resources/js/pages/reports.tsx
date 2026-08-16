@@ -1,7 +1,12 @@
-import { BranchScopeSelect } from '@/components/branch-scope-select';
-import EmptyState from '@/components/empty-state';
+import EmptyState from '@/components/data/empty-state';
+import StatCard from '@/components/data/stat-card';
+import TableCard, { NumericCell } from '@/components/data/table-card';
+import { BranchScopeSelect } from '@/components/filters/branch-scope-select';
+import FilterBar from '@/components/filters/filter-bar';
+import PageShell from '@/components/page/page-shell';
 import EmailReportDialog, { type ReportEmailProp } from '@/components/reports/email-report-dialog';
 import SalesBarChart from '@/components/reports/sales-bar-chart';
+import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -84,31 +89,13 @@ const SUB_NOUN: Record<ReportPeriod, string> = {
  */
 function OfflineReportNotice() {
     return (
-        <div role="alert" className="flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
-            <WifiOff className="mt-0.5 size-4 shrink-0" />
+        <Alert variant="warning">
+            <WifiOff />
             <p>
                 <span className="font-medium">These are this branch's figures only.</span> Other branches' sales live in the business database and
                 this device is offline, so they could not be included. Selling is unaffected — reconnect to report across branches.
             </p>
-        </div>
-    );
-}
-
-function StatCard({ label, value, tone }: { label: string; value: string; tone?: 'net' | 'negative' }) {
-    return (
-        <Card>
-            <CardContent className="p-4">
-                <div className="text-muted-foreground text-xs font-medium tracking-wide uppercase">{label}</div>
-                <div
-                    className={
-                        'mt-1 text-2xl font-semibold tabular-nums ' +
-                        (tone === 'net' ? 'text-foreground' : tone === 'negative' ? 'text-muted-foreground' : 'text-foreground')
-                    }
-                >
-                    {value}
-                </div>
-            </CardContent>
-        </Card>
+        </Alert>
     );
 }
 
@@ -196,9 +183,19 @@ export default function Reports({
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="Reports" />
-            <div className="flex min-h-full flex-1 flex-col gap-4 p-4">
-                {/* Controls: granularity toggle + single-period selector + PDF export. */}
-                <div className="flex flex-wrap items-center gap-3">
+            <PageShell>
+                {/* Controls: granularity toggle + single-period selector + email. */}
+                <FilterBar
+                    actions={
+                        /* Enabled even when email is not set up yet: a disabled
+                           button with no explanation is the worse failure, and the
+                           dialog is where the explanation lives. */
+                        <Button variant="outline" onClick={() => setEmailOpen(true)}>
+                            <Mail className="size-4" />
+                            Email report
+                        </Button>
+                    }
+                >
                     <ToggleGroup type="single" variant="outline" value={period} onValueChange={switchPeriod}>
                         <ToggleGroupItem value="daily" aria-label="Daily sales">
                             Daily
@@ -235,15 +232,7 @@ export default function Reports({
                     {/* Which branches (M11). Owner-only, and online-only — the
                         server refuses anything but 'local' for anyone else. */}
                     {canConsolidate && <BranchScopeSelect scope={scope} branches={branches} onChange={switchScope} label="Branches reported on" />}
-
-                    {/* Enabled even when email is not set up yet: a disabled
-                        button with no explanation is the worse failure, and the
-                        dialog is where the explanation lives. */}
-                    <Button variant="outline" className="ml-auto" onClick={() => setEmailOpen(true)}>
-                        <Mail className="size-4" />
-                        Email report
-                    </Button>
-                </div>
+                </FilterBar>
 
                 <EmailReportDialog
                     open={emailOpen}
@@ -264,11 +253,11 @@ export default function Reports({
                 {/* Summary cards — recomputed net = gross − returns − defects. */}
                 <div className={'grid gap-3 sm:grid-cols-2 ' + (canViewCost ? 'lg:grid-cols-6' : 'lg:grid-cols-4')}>
                     <StatCard label="Gross sales" value={money(totals.gross_sales)} />
-                    <StatCard label="Returns" value={money(totals.returns)} tone="negative" />
-                    <StatCard label="Defects" value={money(totals.defects)} tone="negative" />
-                    <StatCard label="Net sales" value={money(totals.net_sales)} tone="net" />
-                    {canViewCost && <StatCard label="Gross profit" value={money(totals.profit ?? '0')} tone="net" />}
-                    {canViewCost && <StatCard label="Uncosted sales" value={money(totals.uncosted_sales ?? '0')} tone="negative" />}
+                    <StatCard label="Returns" value={money(totals.returns)} muted />
+                    <StatCard label="Defects" value={money(totals.defects)} muted />
+                    <StatCard label="Net sales" value={money(totals.net_sales)} />
+                    {canViewCost && <StatCard label="Gross profit" value={money(totals.profit ?? '0')} />}
+                    {canViewCost && <StatCard label="Uncosted sales" value={money(totals.uncosted_sales ?? '0')} muted />}
                 </div>
 
                 {/* Consolidated figures are correct for what reached the business
@@ -318,7 +307,7 @@ export default function Reports({
                         </Card>
 
                         {/* Breakdown table. */}
-                        <div className="rounded-xl border">
+                        <TableCard>
                             <Table>
                                 <TableHeader>
                                     <TableRow>
@@ -336,54 +325,50 @@ export default function Reports({
                                     {rows.map((row) => (
                                         <TableRow key={row.bucket}>
                                             <TableCell className="font-medium">{formatBucket(row.bucket, period)}</TableCell>
-                                            <TableCell className="text-right tabular-nums">{row.transactions}</TableCell>
-                                            <TableCell className="text-right tabular-nums">{money(row.gross_sales)}</TableCell>
-                                            <TableCell className="text-muted-foreground text-right tabular-nums">
+                                            <NumericCell>{row.transactions}</NumericCell>
+                                            <NumericCell>{money(row.gross_sales)}</NumericCell>
+                                            <NumericCell className="text-muted-foreground">
                                                 {Number(row.returns) > 0 ? `−${money(row.returns)}` : money(row.returns)}
-                                            </TableCell>
-                                            <TableCell className="text-muted-foreground text-right tabular-nums">
+                                            </NumericCell>
+                                            <NumericCell className="text-muted-foreground">
                                                 {Number(row.defects) > 0 ? `−${money(row.defects)}` : money(row.defects)}
-                                            </TableCell>
-                                            <TableCell className="text-right font-medium tabular-nums">{money(row.net_sales)}</TableCell>
+                                            </NumericCell>
+                                            <NumericCell className="font-medium">{money(row.net_sales)}</NumericCell>
                                             {canViewCost && (
-                                                <TableCell className="text-muted-foreground text-right tabular-nums">
-                                                    {money(row.uncosted_sales ?? '0')}
-                                                </TableCell>
+                                                <NumericCell className="text-muted-foreground">{money(row.uncosted_sales ?? '0')}</NumericCell>
                                             )}
-                                            {canViewCost && <TableCell className="text-right tabular-nums">{money(row.profit ?? '0')}</TableCell>}
+                                            {canViewCost && <NumericCell>{money(row.profit ?? '0')}</NumericCell>}
                                         </TableRow>
                                     ))}
                                 </TableBody>
                                 <TableFooter>
                                     <TableRow>
                                         <TableCell className="font-medium">Total</TableCell>
-                                        <TableCell className="text-right tabular-nums">{totals.transactions}</TableCell>
-                                        <TableCell className="text-right tabular-nums">{money(totals.gross_sales)}</TableCell>
-                                        <TableCell className="text-muted-foreground text-right tabular-nums">
+                                        <NumericCell>{totals.transactions}</NumericCell>
+                                        <NumericCell>{money(totals.gross_sales)}</NumericCell>
+                                        <NumericCell className="text-muted-foreground">
                                             {Number(totals.returns) > 0 ? `−${money(totals.returns)}` : money(totals.returns)}
-                                        </TableCell>
-                                        <TableCell className="text-muted-foreground text-right tabular-nums">
+                                        </NumericCell>
+                                        <NumericCell className="text-muted-foreground">
                                             {Number(totals.defects) > 0 ? `−${money(totals.defects)}` : money(totals.defects)}
-                                        </TableCell>
-                                        <TableCell className="text-right font-semibold tabular-nums">{money(totals.net_sales)}</TableCell>
+                                        </NumericCell>
+                                        <NumericCell className="font-semibold">{money(totals.net_sales)}</NumericCell>
                                         {canViewCost && (
-                                            <TableCell className="text-muted-foreground text-right font-semibold tabular-nums">
+                                            <NumericCell className="text-muted-foreground font-semibold">
                                                 {money(totals.uncosted_sales ?? '0')}
-                                            </TableCell>
+                                            </NumericCell>
                                         )}
-                                        {canViewCost && (
-                                            <TableCell className="text-right font-semibold tabular-nums">{money(totals.profit ?? '0')}</TableCell>
-                                        )}
+                                        {canViewCost && <NumericCell className="font-semibold">{money(totals.profit ?? '0')}</NumericCell>}
                                     </TableRow>
                                 </TableFooter>
                             </Table>
-                        </div>
+                        </TableCard>
 
                         {/* The same period, cut by branch instead of by time (M11).
                             Same recompute, different GROUP BY, so it foots to the
                             table above. A branch with no sales shows zeros. */}
                         {branchRows !== null && branchRows.length > 0 && (
-                            <div className="rounded-xl border">
+                            <TableCard>
                                 <Table>
                                     <TableHeader>
                                         <TableRow>
@@ -403,30 +388,30 @@ export default function Reports({
                                                 <TableCell className="font-medium">
                                                     {row.code} <span className="text-muted-foreground font-normal">{row.name}</span>
                                                 </TableCell>
-                                                <TableCell className="text-right tabular-nums">{row.transactions}</TableCell>
-                                                <TableCell className="text-right tabular-nums">{money(row.gross_sales)}</TableCell>
-                                                <TableCell className="text-muted-foreground text-right tabular-nums">
+                                                <NumericCell>{row.transactions}</NumericCell>
+                                                <NumericCell>{money(row.gross_sales)}</NumericCell>
+                                                <NumericCell className="text-muted-foreground">
                                                     {Number(row.returns) > 0 ? `−${money(row.returns)}` : money(row.returns)}
-                                                </TableCell>
-                                                <TableCell className="text-muted-foreground text-right tabular-nums">
+                                                </NumericCell>
+                                                <NumericCell className="text-muted-foreground">
                                                     {Number(row.defects) > 0 ? `−${money(row.defects)}` : money(row.defects)}
-                                                </TableCell>
-                                                <TableCell className="text-right font-medium tabular-nums">{money(row.net_sales)}</TableCell>
+                                                </NumericCell>
+                                                <NumericCell className="font-medium">{money(row.net_sales)}</NumericCell>
                                                 {canViewCost && (
                                                     <TableCell className="text-muted-foreground text-right tabular-nums">
                                                         {money(row.uncosted_sales ?? '0')}
                                                     </TableCell>
                                                 )}
-                                                {canViewCost && <TableCell className="text-right tabular-nums">{money(row.profit ?? '0')}</TableCell>}
+                                                {canViewCost && <NumericCell>{money(row.profit ?? '0')}</NumericCell>}
                                             </TableRow>
                                         ))}
                                     </TableBody>
                                 </Table>
-                            </div>
+                            </TableCard>
                         )}
                     </>
                 )}
-            </div>
+            </PageShell>
         </AppLayout>
     );
 }

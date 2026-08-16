@@ -1,14 +1,14 @@
-import InputError from '@/components/input-error';
+import InputError from '@/components/forms/input-error';
+import SubmitButton from '@/components/forms/submit-button';
 import AppLayout from '@/layouts/app-layout';
 import SettingsLayout from '@/layouts/settings/layout';
 import { type BreadcrumbItem, type SharedData } from '@/types';
 import { Transition } from '@headlessui/react';
 import { Head, useForm, usePage } from '@inertiajs/react';
-import { LoaderCircle } from 'lucide-react';
+
 import { FormEventHandler, useRef } from 'react';
 
-import HeadingSmall from '@/components/heading-small';
-import { Button } from '@/components/ui/button';
+import HeadingSmall from '@/components/page/heading-small';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 
@@ -116,10 +116,7 @@ export default function Password() {
                         </div>
 
                         <div className="flex items-center gap-4">
-                            <Button disabled={processing}>
-                                {processing && <LoaderCircle className="h-4 w-4 animate-spin" />}
-                                Save password
-                            </Button>
+                            <SubmitButton processing={processing}>Save password</SubmitButton>
 
                             <Transition
                                 show={recentlySuccessful}

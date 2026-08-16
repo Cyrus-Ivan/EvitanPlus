@@ -1,3 +1,4 @@
+import PageShell from '@/components/page/page-shell';
 import ReturnDialog from '@/components/sales/return-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -6,16 +7,12 @@ import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, Table
 import { useCurrency } from '@/hooks/use-currency';
 import { usePermissions } from '@/hooks/use-permissions';
 import AppLayout from '@/layouts/app-layout';
-import type { BreadcrumbItem, PaymentType, SaleReturnEvent, SaleReturnType, TransactionDetail } from '@/types';
+import { formatWhen } from '@/lib/format';
+import { paymentLabel, paymentVariant } from '@/lib/payment';
+import type { BreadcrumbItem, SaleReturnEvent, SaleReturnType, TransactionDetail } from '@/types';
 import { Head, Link, router } from '@inertiajs/react';
 import { ArrowLeft, Printer, RotateCcw, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
-
-const PAYMENT_LABEL: Record<PaymentType, string> = {
-    cash: 'Cash',
-    cashless: 'Cashless',
-    others: 'Others',
-};
 
 const RETURN_TYPE_LABEL: Record<SaleReturnType, string> = {
     return: 'Return',
@@ -34,11 +31,6 @@ function pesoOrDash(value: string | null, money: MoneyFormatter): string {
     return value === null ? '—' : money(value);
 }
 
-function formatWhen(value: string): string {
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
-}
-
 // Sum of line totals before the transaction-level discount.
 function subtotalOf(transaction: TransactionDetail): number {
     return transaction.items.reduce((sum, line) => sum + Number(line.total), 0);
@@ -52,7 +44,9 @@ function discountLabel(transaction: TransactionDetail, money: MoneyFormatter): s
     return transaction.discount_type === 'percentage' ? `${amount}%` : money(transaction.discount);
 }
 
-function Field({ label, value }: { label: string; value: string }) {
+// A read-only label over its value. NOT `components/field.tsx`, which wraps a
+// form control — this one has nothing to type into, hence the different name.
+function Detail({ label, value }: { label: string; value: string }) {
     return (
         <div className="flex flex-col gap-0.5">
             <span className="text-muted-foreground text-xs uppercase">{label}</span>
@@ -95,7 +89,7 @@ export default function SalesShow({
     return (
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title={`Receipt ${transaction.transaction_number}`} />
-            <div className="mx-auto flex min-h-full w-full max-w-3xl flex-1 flex-col gap-4 p-4">
+            <PageShell className="mx-auto w-full max-w-3xl">
                 <Link
                     href={readOnly ? route('sales', { scope: 'all' }) : route('sales')}
                     className="text-muted-foreground hover:text-foreground inline-flex w-fit items-center gap-1.5 text-sm"
@@ -117,14 +111,18 @@ export default function SalesShow({
                         </div>
                         <div className="flex items-center gap-2">
                             {readOnly && <Badge variant="outline">{branch ?? 'Another branch'}</Badge>}
-                            <Badge variant="secondary">{PAYMENT_LABEL[transaction.payment_type] ?? transaction.payment_type}</Badge>
+                            {/* Toned by payment type, matching the sales list —
+                                this had been hardcoded `secondary`, so one sale
+                                wore two different badges depending on which screen
+                                you opened it from. */}
+                            <Badge variant={paymentVariant(transaction.payment_type)}>{paymentLabel(transaction.payment_type)}</Badge>
                         </div>
                     </CardHeader>
                     <CardContent className="flex flex-col gap-6">
                         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-                            <Field label="Cashier" value={transaction.user?.name ?? transaction.user?.username ?? '—'} />
-                            <Field label="Payment" value={PAYMENT_LABEL[transaction.payment_type] ?? transaction.payment_type} />
-                            {transaction.comment && <Field label="Comment" value={transaction.comment} />}
+                            <Detail label="Cashier" value={transaction.user?.name ?? transaction.user?.username ?? '—'} />
+                            <Detail label="Payment" value={paymentLabel(transaction.payment_type)} />
+                            {transaction.comment && <Detail label="Comment" value={transaction.comment} />}
                         </div>
 
                         <div className="rounded-lg border">
@@ -245,7 +243,7 @@ export default function SalesShow({
                         </CardContent>
                     </Card>
                 )}
-            </div>
+            </PageShell>
 
             {dialogType && (
                 <ReturnDialog
@@ -306,7 +304,7 @@ function ReturnEventCard({ event, canViewCost }: { event: SaleReturnEvent; canVi
                 </Table>
                 <div className="text-muted-foreground mt-1 flex flex-wrap justify-between gap-2 text-xs">
                     <span>By {event.performed_by?.name ?? event.performed_by?.username ?? '—'}</span>
-                    {event.refund_payment_type && <span>via {PAYMENT_LABEL[event.refund_payment_type]}</span>}
+                    {event.refund_payment_type && <span>via {paymentLabel(event.refund_payment_type)}</span>}
                 </div>
                 {event.reason && <p className="text-muted-foreground mt-1 text-xs">Reason: {event.reason}</p>}
             </div>

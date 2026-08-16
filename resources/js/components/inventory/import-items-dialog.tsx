@@ -1,15 +1,16 @@
-import InputError from '@/components/input-error';
+import InputError from '@/components/forms/input-error';
+import SubmitButton from '@/components/forms/submit-button';
 import ImportGuide from '@/components/inventory/import-guide';
-import { OfflineNotice } from '@/components/offline-notice';
+import { OfflineNotice } from '@/components/sync/offline-notice';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { useDialogForm } from '@/hooks/use-dialog-form';
 import type { ImportHistoryRow, ImportPreview, Paginated } from '@/types';
-import { useForm } from '@inertiajs/react';
-import { AlertTriangle, ChevronRight, Download, LoaderCircle } from 'lucide-react';
-import { FormEventHandler, useEffect, useRef, useState } from 'react';
+import { AlertTriangle, ChevronRight, Download } from 'lucide-react';
+import { FormEventHandler, Fragment, useEffect, useRef, useState } from 'react';
 
 type Tab = 'upload' | 'history';
 
@@ -56,9 +57,18 @@ function StatusBadge({ status }: { status: ImportHistoryRow['status'] }) {
  * the file it is actually applying, and there is no temp file to expire. And the
  * confirmation is enforced by the importer, not by this component — a request
  * built by hand without it is refused exactly the same way.
+ *
+ * ## Why this one is not a {@see FormDialog}
+ *
+ * Its chrome is genuinely its own: a tab bar inside the header, a scrolling body
+ * with the padding moved onto it, a footer that appears on one tab and not the
+ * other, and a submit that is a button rather than the form's own — the `<form>`
+ * in here belongs to "Check file", which writes nothing. Wrapping it would mean
+ * a prop per difference. It shares the pieces that ARE shared: `SubmitButton`,
+ * and `useDialogForm` for the reset-on-open.
  */
 export default function ImportItemsDialog({ open, onOpenChange, online }: { open: boolean; onOpenChange: (open: boolean) => void; online: boolean }) {
-    const form = useForm<{ file: File | null; confirm_updates: boolean }>({ file: null, confirm_updates: false });
+    const form = useDialogForm<{ file: File | null; confirm_updates: boolean }>(open, () => ({ file: null, confirm_updates: false }));
     const { data, setData, errors, processing, reset, clearErrors } = form;
 
     const [tab, setTab] = useState<Tab>('upload');
@@ -68,14 +78,13 @@ export default function ImportItemsDialog({ open, onOpenChange, online }: { open
     const [expanded, setExpanded] = useState<string | null>(null);
     const fileInput = useRef<HTMLInputElement>(null);
 
+    // The tab and the preview are local state, so they clear on open of their own
+    // accord; `useDialogForm` only knows about the form.
     useEffect(() => {
         if (open) {
             setTab('upload');
             setPreview(null);
-            reset();
-            clearErrors();
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open]);
 
     // Past imports, fetched when the tab is first opened rather than shipped with
@@ -200,10 +209,9 @@ export default function ImportItemsDialog({ open, onOpenChange, online }: { open
                                             aria-label="CSV file"
                                         />
                                     </div>
-                                    <Button type="submit" variant="outline" disabled={!data.file || checking || processing}>
-                                        {checking && <LoaderCircle className="h-4 w-4 animate-spin" />}
+                                    <SubmitButton variant="outline" processing={checking} disabled={!data.file || processing}>
                                         Check file
-                                    </Button>
+                                    </SubmitButton>
                                     {/* A plain anchor: the template is a streamed
                                         download and must not go through Inertia. */}
                                     <Button variant="ghost" asChild>
@@ -295,8 +303,12 @@ export default function ImportItemsDialog({ open, onOpenChange, online }: { open
                                         const isExpanded = expanded === entry.id;
 
                                         return (
-                                            <>
-                                                <TableRow key={entry.id}>
+                                            // Keyed on the Fragment, not on the rows
+                                            // inside it: a fragment returned from a
+                                            // map is the element React reconciles,
+                                            // and keys on its children do not count.
+                                            <Fragment key={entry.id}>
+                                                <TableRow>
                                                     <TableCell className="w-10">
                                                         {rowErrors.length > 0 && (
                                                             <Button
@@ -325,7 +337,7 @@ export default function ImportItemsDialog({ open, onOpenChange, online }: { open
                                                     <TableCell className="whitespace-nowrap">{entry.created_at}</TableCell>
                                                 </TableRow>
                                                 {isExpanded && (
-                                                    <TableRow key={`${entry.id}-errors`} className="hover:bg-transparent">
+                                                    <TableRow className="hover:bg-transparent">
                                                         <TableCell colSpan={7} className="bg-muted/30">
                                                             <ul className="space-y-1 text-sm">
                                                                 {rowErrors.map((error, index) => (
@@ -340,7 +352,7 @@ export default function ImportItemsDialog({ open, onOpenChange, online }: { open
                                                         </TableCell>
                                                     </TableRow>
                                                 )}
-                                            </>
+                                            </Fragment>
                                         );
                                     })}
                                 </TableBody>
@@ -354,10 +366,12 @@ export default function ImportItemsDialog({ open, onOpenChange, online }: { open
                         <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
                             Cancel
                         </Button>
-                        <Button disabled={!preview || blocked || processing || !online} onClick={apply}>
-                            {processing && <LoaderCircle className="h-4 w-4 animate-spin" />}
+                        {/* type="button": it sits outside the "Check file" form,
+                            but a bare <button> in a dialog still defaults to
+                            submit if one is ever wrapped around it. */}
+                        <SubmitButton type="button" processing={processing} disabled={!preview || blocked || !online} onClick={apply}>
                             {preview ? `Import ${preview.total} row${preview.total === 1 ? '' : 's'}` : 'Import'}
-                        </Button>
+                        </SubmitButton>
                     </DialogFooter>
                 )}
             </DialogContent>

@@ -1,3 +1,4 @@
+import { Alert } from '@/components/ui/alert';
 import { WifiOff } from 'lucide-react';
 
 /**
@@ -11,15 +12,21 @@ import { WifiOff } from 'lucide-react';
  *
  * Advisory only. The refusal itself is server-side (App\Support\Sync\OnlineWrite),
  * so a connection that drops between this render and a submit is still caught.
+ *
+ * Distinct from the scope-fallback notices on the read-only screens, which say
+ * the opposite thing: nothing there is being changed, and the risk is a
+ * correct-looking table covering fewer branches than its heading claims. Those
+ * share this component's CHROME (`Alert variant="warning"`) and deliberately not
+ * its wording.
  */
 export function OfflineNotice({ what }: { what: string }) {
     return (
-        <div role="alert" className="flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
-            <WifiOff className="mt-0.5 size-4 shrink-0" />
+        <Alert variant="warning">
+            <WifiOff />
             <p>
                 <span className="font-medium">Selling is unaffected — this device is just offline.</span> {what} is shared across all your branches,
                 so changes have to be saved to the business database. Viewing works as normal; reconnect to make changes.
             </p>
-        </div>
+        </Alert>
     );
 }

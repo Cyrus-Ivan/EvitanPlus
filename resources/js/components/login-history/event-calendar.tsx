@@ -1,5 +1,6 @@
+import MonthGrid from '@/components/data/month-grid';
 import LoginDayDialog from '@/components/login-history/day-dialog';
-import { WEEKDAYS, timeOfDay, weeksOf } from '@/lib/calendar';
+import { timeOfDay } from '@/lib/calendar';
 import { EVENT_DOT, eventLabel } from '@/lib/login-events';
 import type { LoginDay, LoginHistoryEntry } from '@/types';
 import { useState } from 'react';
@@ -76,7 +77,6 @@ function cellLabel(day: LoginDay): string {
 export default function LoginEventCalendar({ days, canViewAll }: { days: LoginDay[]; canViewAll: boolean }) {
     const [selected, setSelected] = useState<LoginDay | null>(null);
     const [open, setOpen] = useState(false);
-    const weeks = weeksOf(days);
 
     const openDay = (day: LoginDay) => {
         setSelected(day);
@@ -84,44 +84,24 @@ export default function LoginEventCalendar({ days, canViewAll }: { days: LoginDa
     };
 
     return (
-        <div className="overflow-x-auto">
-            <div className="min-w-[44rem]">
-                <div className="text-muted-foreground grid grid-cols-7 gap-px text-xs font-medium tracking-wide uppercase">
-                    {WEEKDAYS.map((weekday) => (
-                        <div key={weekday} className="px-2 py-1.5">
-                            {weekday}
-                        </div>
-                    ))}
-                </div>
-                <div className="bg-border grid grid-cols-7 gap-px overflow-hidden rounded-xl border">
-                    {weeks.map((week, index) =>
-                        week.map((day, cell) =>
-                            day === null ? (
-                                <div key={`${index}-${cell}`} className="bg-muted/40 min-h-24" />
-                            ) : (
-                                <button
-                                    key={day.date}
-                                    type="button"
-                                    aria-label={cellLabel(day)}
-                                    onClick={() => openDay(day)}
-                                    className="bg-background hover:bg-muted/50 focus-visible:ring-ring flex min-h-24 flex-col gap-0.5 p-2 text-left text-xs focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset"
-                                >
-                                    <div className="font-semibold tabular-nums">{day.day}</div>
-                                    {day.entries.slice(0, CELL_LIMIT).map((entry) => (
-                                        <EventLine key={entry.id} entry={entry} showUser={canViewAll} />
-                                    ))}
-                                    {/* The cut is stated, never implied: a cell
-                                        that silently stopped at three would read
-                                        as a quiet day. */}
-                                    {day.entries.length > CELL_LIMIT && (
-                                        <div className="text-muted-foreground mt-auto pt-1">+{day.entries.length - CELL_LIMIT} more</div>
-                                    )}
-                                </button>
-                            ),
-                        ),
-                    )}
-                </div>
-            </div>
+        <div>
+            <MonthGrid
+                days={days}
+                onSelect={openDay}
+                cellLabel={cellLabel}
+                renderCell={(day) => (
+                    <>
+                        {day.entries.slice(0, CELL_LIMIT).map((entry) => (
+                            <EventLine key={entry.id} entry={entry} showUser={canViewAll} />
+                        ))}
+                        {/* The cut is stated, never implied: a cell that silently
+                            stopped at three would read as a quiet day. */}
+                        {day.entries.length > CELL_LIMIT && (
+                            <div className="text-muted-foreground mt-auto pt-1">+{day.entries.length - CELL_LIMIT} more</div>
+                        )}
+                    </>
+                )}
+            />
 
             {/* The chosen day deliberately outlives the close: clearing it with
                 the same click would empty the panel while it is still animating

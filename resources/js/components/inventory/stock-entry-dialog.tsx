@@ -1,5 +1,8 @@
+import { DetailDialog } from '@/components/forms/form-dialog';
 import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { formatWhen } from '@/lib/format';
+import { roleLabel } from '@/lib/roles';
 import { movementLabel, movementVariant } from '@/lib/stock-movement';
 import { cn } from '@/lib/utils';
 import type { BranchRef, MovementRequest, RequestActor, StockLedgerEntry } from '@/types';
@@ -17,21 +20,6 @@ const REFERENCE_LABEL: Record<string, string> = {
     transfer: 'Branch transfer',
 };
 
-const ROLE: Record<string, string> = {
-    owner: 'Owner',
-    admin: 'Admin',
-    cashier: 'Cashier',
-};
-
-function formatWhen(value: string | null): string {
-    if (value === null) {
-        return '—';
-    }
-
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
-}
-
 function signed(quantity: number): string {
     return quantity > 0 ? `+${quantity}` : String(quantity);
 }
@@ -42,7 +30,7 @@ function actor(person: { name: string; role: string | null } | null): string {
         return '—';
     }
 
-    return person.role ? `${person.name} (${ROLE[person.role] ?? person.role})` : person.name;
+    return person.role ? `${person.name} (${roleLabel(person.role)})` : person.name;
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -82,23 +70,13 @@ export function StockEntryDialog({
     onFilterBatch: (reference: string) => void;
 }) {
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            {/* Focus the panel rather than what is inside it. This dialog is a
-                read-only record with exactly one control — the batch link — and
-                Radix would hand it the opening focus, drawing a ring around a
-                data value nobody asked to interact with. Focus stays inside the
-                dialog, so the trap, Escape and tabbing are unaffected; the panel
-                itself draws no outline, being a container with no affordance. */}
-            <DialogContent
-                className="focus:outline-hidden"
-                onOpenAutoFocus={(event) => {
-                    event.preventDefault();
-                    (event.currentTarget as HTMLElement | null)?.focus();
-                }}
-            >
-                {entry && <EntryBody entry={entry} onFilterBatch={onFilterBatch} />}
-            </DialogContent>
-        </Dialog>
+        // The header is inside EntryBody, not passed as a prop: `entry` is null
+        // while the dialog animates out, and the title is made of it. The panel
+        // takes the opening focus rather than the one control in here (the batch
+        // link) — see DetailDialog.
+        <DetailDialog open={open} onOpenChange={onOpenChange}>
+            {entry && <EntryBody entry={entry} onFilterBatch={onFilterBatch} />}
+        </DetailDialog>
     );
 }
 

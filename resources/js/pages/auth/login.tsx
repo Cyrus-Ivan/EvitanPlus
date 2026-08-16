@@ -1,9 +1,9 @@
+import SubmitButton from '@/components/forms/submit-button';
 import { Head, router, useForm } from '@inertiajs/react';
-import { LoaderCircle } from 'lucide-react';
+
 import { FormEventHandler, useEffect } from 'react';
 
-import InputError from '@/components/input-error';
-import { Button } from '@/components/ui/button';
+import InputError from '@/components/forms/input-error';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import AuthLayout from '@/layouts/auth-layout';
@@ -76,10 +76,9 @@ export default function Login({ status }: LoginProps) {
                         <InputError message={errors.password} />
                     </div>
 
-                    <Button type="submit" className="mt-4 w-full" tabIndex={3} disabled={processing}>
-                        {processing && <LoaderCircle className="h-4 w-4 animate-spin" />}
+                    <SubmitButton className="mt-4 w-full" tabIndex={3} processing={processing}>
                         Log in
-                    </Button>
+                    </SubmitButton>
                 </div>
             </form>
 

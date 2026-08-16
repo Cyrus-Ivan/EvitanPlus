@@ -1,5 +1,6 @@
+import { DetailDialog } from '@/components/forms/form-dialog';
 import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { fullDate, timeOfDay } from '@/lib/calendar';
 import { EVENT, eventLabel } from '@/lib/login-events';
@@ -50,21 +51,11 @@ export default function LoginDayDialog({
     onOpenChange: (open: boolean) => void;
 }) {
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            {/* Focus the panel rather than what is inside it: this is a read-only
-                record with no controls, and Radix would otherwise draw a focus
-                ring around the first thing it finds. Focus stays inside the
-                dialog, so the trap, Escape and tabbing are unaffected. */}
-            <DialogContent
-                className="focus:outline-hidden sm:max-w-3xl"
-                onOpenAutoFocus={(event) => {
-                    event.preventDefault();
-                    (event.currentTarget as HTMLElement | null)?.focus();
-                }}
-            >
-                {day && <DayBody day={day} canViewAll={canViewAll} />}
-            </DialogContent>
-        </Dialog>
+        // The header is inside DayBody, not passed as a prop: `day` is null while
+        // the dialog animates out, and the title is made of it.
+        <DetailDialog open={open} onOpenChange={onOpenChange} className="sm:max-w-3xl">
+            {day && <DayBody day={day} canViewAll={canViewAll} />}
+        </DetailDialog>
     );
 }
 

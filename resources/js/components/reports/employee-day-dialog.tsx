@@ -1,36 +1,12 @@
+import { DetailDialog } from '@/components/forms/form-dialog';
 import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useCurrency } from '@/hooks/use-currency';
+import { fullDate, timeOfDay } from '@/lib/calendar';
+import { paymentLabel } from '@/lib/payment';
+import { roleLabel } from '@/lib/roles';
 import type { EmployeeDay, EmployeeDaySale, EmployeeOption, EmployeeShift } from '@/types';
 import { useEffect, useState } from 'react';
-
-// Human labels per payment type, matching /sales.
-const PAYMENT: Record<string, string> = {
-    cash: 'Cash',
-    cashless: 'Cashless',
-    others: 'Others',
-};
-
-const ROLE: Record<string, string> = {
-    owner: 'Owner',
-    admin: 'Admin',
-    cashier: 'Cashier',
-};
-
-function time(iso: string): string {
-    const date = new Date(iso);
-    return Number.isNaN(date.getTime()) ? '—' : date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-}
-
-/** "Monday, 3 August 2026", from the day's own `YYYY-MM-DD`. */
-function fullDate(date: string): string {
-    // Parsed as local midnight rather than through `new Date(date)`, which reads
-    // a bare date as UTC and lands the label on the previous day west of it.
-    const [year, month, day] = date.split('-').map(Number);
-    const parsed = new Date(year, month - 1, day);
-
-    return Number.isNaN(parsed.getTime()) ? date : parsed.toLocaleDateString(undefined, { dateStyle: 'full' });
-}
 
 function Figure({ label, value, hint }: { label: string; value: string; hint?: string }) {
     return (
@@ -67,8 +43,8 @@ function ShiftBlock({ shift, index }: { shift: EmployeeShift; index: number }) {
             </div>
 
             <dl className="mt-2 grid grid-cols-3 gap-3">
-                <Figure label="Time in" value={time(shift.start)} />
-                <Figure label="Time out" value={shift.open ? '—' : time(shift.end!)} hint={shift.crosses_midnight ? 'Next day' : undefined} />
+                <Figure label="Time in" value={timeOfDay(shift.start)} />
+                <Figure label="Time out" value={shift.open ? '—' : timeOfDay(shift.end!)} hint={shift.crosses_midnight ? 'Next day' : undefined} />
                 <Figure label="Hours" value={shift.open ? '—' : `${shift.hours?.toFixed(2) ?? '—'}h`} />
             </dl>
 
@@ -109,21 +85,11 @@ export default function EmployeeDayDialog({
     onOpenChange: (open: boolean) => void;
 }) {
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            {/* Focus the panel rather than what is inside it: this is a read-only
-                record with no controls, and Radix would otherwise draw a focus
-                ring around the first thing it finds. Focus stays inside the
-                dialog, so the trap, Escape and tabbing are unaffected. */}
-            <DialogContent
-                className="focus:outline-hidden sm:max-w-2xl"
-                onOpenAutoFocus={(event) => {
-                    event.preventDefault();
-                    (event.currentTarget as HTMLElement | null)?.focus();
-                }}
-            >
-                {day && <DayBody day={day} employee={employee} />}
-            </DialogContent>
-        </Dialog>
+        // The header is inside DayBody, not passed as a prop: `day` is null while
+        // the dialog animates out, and the title is made of it.
+        <DetailDialog open={open} onOpenChange={onOpenChange} className="sm:max-w-2xl">
+            {day && <DayBody day={day} employee={employee} />}
+        </DetailDialog>
     );
 }
 
@@ -141,7 +107,7 @@ function DayBody({ day, employee }: { day: EmployeeDay; employee: EmployeeOption
             <DialogHeader>
                 <DialogTitle>{fullDate(day.date)}</DialogTitle>
                 <DialogDescription>
-                    {employee.name} · {ROLE[employee.role] ?? employee.role}
+                    {employee.name} · {roleLabel(employee.role) ?? employee.role}
                     {branches.length > 0 && ` · ${branches.join(', ')}`}
                 </DialogDescription>
             </DialogHeader>
@@ -224,10 +190,10 @@ function DaySales({ sales, failed, expected }: { sales: EmployeeDaySale[] | null
                 {sales.map((sale) => (
                     <li key={sale.id} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 p-2 text-sm">
                         <span className="flex flex-wrap items-baseline gap-x-2">
-                            <span className="text-muted-foreground tabular-nums">{time(sale.at)}</span>
+                            <span className="text-muted-foreground tabular-nums">{timeOfDay(sale.at)}</span>
                             <span className="font-medium tabular-nums">{sale.transaction_number}</span>
                             <span className="text-muted-foreground text-xs">
-                                {PAYMENT[sale.payment_type] ?? sale.payment_type}
+                                {paymentLabel(sale.payment_type) ?? sale.payment_type}
                                 {sale.branch && ` · ${sale.branch}`}
                             </span>
                         </span>

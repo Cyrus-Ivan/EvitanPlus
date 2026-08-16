@@ -1,15 +1,14 @@
-import { BranchScopeSelect } from '@/components/branch-scope-select';
-import InputError from '@/components/input-error';
-import { Button } from '@/components/ui/button';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { BranchScopeSelect } from '@/components/filters/branch-scope-select';
+import Field from '@/components/forms/field';
+import { DetailDialog, FormDialog } from '@/components/forms/form-dialog';
+import { EmailNotConfigured, RecipientPicker, useRecipients } from '@/components/reports/recipient-picker';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { closeOnSuccess } from '@/hooks/use-dialog-form';
 import { periodWindowLabel } from '@/lib/report-period';
 import { BranchScope, ReportPeriod, RosterBranch } from '@/types';
-import { Link, useForm } from '@inertiajs/react';
-import { LoaderCircle, Plus, X } from 'lucide-react';
+import { useForm } from '@inertiajs/react';
 import { FormEventHandler, useEffect, useState } from 'react';
 
 export interface ReportEmailProp {
@@ -20,14 +19,6 @@ export interface ReportEmailProp {
     /** Whether this viewer may go and set it up (Owner). */
     canConfigure: boolean;
 }
-
-/** One row: an address and whether it goes on this send. */
-interface Row {
-    address: string;
-    checked: boolean;
-}
-
-const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** The same four the page's toggle group offers, spelled for a narrow select. */
 const PERIOD_LABELS: [ReportPeriod, string][] = [
@@ -42,7 +33,8 @@ const PERIOD_LABELS: [ReportPeriod, string][] = [
  *
  * The defaults are ticked on open and can be unticked or removed, and an extra
  * address can be added — all for THIS send only. Nothing here writes back to the
- * configured list, which is the Owner's to manage in Business Settings.
+ * configured list, which is the Owner's to manage in Business Settings. That
+ * half is {@see RecipientPicker}, shared with the employee report dialog.
  *
  * The period, the date and the branch scope are the page's when the dialog opens
  * and are then this dialog's own: emailing last week, or another branch, must not
@@ -79,9 +71,7 @@ export default function EmailReportDialog({
     branches: RosterBranch[];
     canConsolidate: boolean;
 }) {
-    const [rows, setRows] = useState<Row[]>([]);
-    const [draft, setDraft] = useState('');
-    const [draftError, setDraftError] = useState<string | null>(null);
+    const recipients = useRecipients(open, email.recipients);
     const [period, setPeriod] = useState<ReportPeriod>(defaultPeriod);
     const [date, setDate] = useState(defaultDate);
     const [scope, setScope] = useState<BranchScope>(defaultScope);
@@ -89,21 +79,18 @@ export default function EmailReportDialog({
     const form = useForm<{ recipients: string[] }>({ recipients: [] });
     const { errors, processing, clearErrors } = form;
 
-    // Reset on open, so a previous send's edits and errors never leak into the
-    // next one — the overridden period, date and scope included. This page sets
-    // no persistent layout, but the dialog itself stays mounted between opens.
+    // Reset on open, so a previous send's overridden period, date and scope never
+    // leak into the next one. This page sets no persistent layout, but the dialog
+    // itself stays mounted between opens.
     useEffect(() => {
         if (!open) return;
-        setRows(email.recipients.map((address) => ({ address, checked: true })));
-        setDraft('');
-        setDraftError(null);
         setPeriod(defaultPeriod);
         setDate(defaultDate);
         setScope(defaultScope);
         clearErrors();
-    }, [open, email.recipients, defaultPeriod, defaultDate, defaultScope, clearErrors]);
+    }, [open, defaultPeriod, defaultDate, defaultScope, clearErrors]);
 
-    const checked = rows.filter((row) => row.checked).map((row) => row.address);
+    const checked = recipients.checked;
 
     // What this send covers, named the way the page names it. The server
     // computes its own for the document and the subject line; this one only has
@@ -118,21 +105,7 @@ export default function EmailReportDialog({
                     return branch ? `${branch.code} — ${branch.name}` : 'One branch';
                 })();
 
-    const addDraft = () => {
-        const address = draft.trim();
-        if (address === '') return;
-        if (!EMAIL_SHAPE.test(address)) {
-            setDraftError('Enter a valid email address.');
-            return;
-        }
-        if (rows.some((row) => row.address.toLowerCase() === address.toLowerCase())) {
-            setDraftError('That address is already on the list.');
-            return;
-        }
-        setRows([...rows, { address, checked: true }]);
-        setDraft('');
-        setDraftError(null);
-    };
+    const description = `${scopeLabel} · ${periodWindowLabel(period, date)}. The full report goes out as a PDF attachment.`;
 
     const submit: FormEventHandler = (e) => {
         e.preventDefault();
@@ -143,163 +116,72 @@ export default function EmailReportDialog({
             ...(scope !== 'local' ? { scope, by: chartBy } : {}),
         }));
 
-        form.post(route('reports.email'), {
-            preserveScroll: true,
-            onSuccess: () => onOpenChange(false),
-        });
+        form.post(route('reports.email'), closeOnSuccess(onOpenChange));
     };
 
+    // Nothing to submit when there is nowhere to send, so it is not a form at
+    // all — it opens to explain, and closes with Escape or the X.
+    if (!email.configured) {
+        return (
+            <DetailDialog open={open} onOpenChange={onOpenChange} title="Email a report" description={description}>
+                <EmailNotConfigured canConfigure={email.canConfigure} />
+            </DetailDialog>
+        );
+    }
+
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent>
-                <DialogHeader>
-                    <DialogTitle>Email a report</DialogTitle>
-                    <DialogDescription>
-                        {scopeLabel} · {periodWindowLabel(period, date)}. The full report goes out as a PDF attachment.
-                    </DialogDescription>
-                </DialogHeader>
-
-                {!email.configured ? (
-                    <div className="space-y-3 text-sm">
-                        <p>Report email is not set up yet, so there is nowhere to send this.</p>
-                        {email.canConfigure ? (
-                            <p>
-                                <Link href="/business-settings/report-email" className="font-medium underline underline-offset-4">
-                                    Set up report email
-                                </Link>{' '}
-                                — you will need the sending account's server address and password.
-                            </p>
-                        ) : (
-                            <p className="text-muted-foreground">Ask the owner to set it up in Business Settings.</p>
-                        )}
-                    </div>
-                ) : (
-                    <form onSubmit={submit} className="space-y-4">
-                        <div className="grid gap-3 sm:grid-cols-[9rem_1fr]">
-                            <div className="grid gap-1.5">
-                                <Label htmlFor="email-report-period">Period</Label>
-                                <Select value={period} onValueChange={(value) => setPeriod(value as ReportPeriod)}>
-                                    <SelectTrigger id="email-report-period">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {PERIOD_LABELS.map(([value, label]) => (
-                                            <SelectItem key={value} value={value}>
-                                                {label}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                            <div className="grid gap-1.5">
-                                <Label htmlFor="email-report-date">Date in that period</Label>
-                                <Input
-                                    id="email-report-date"
-                                    type="date"
-                                    value={date}
-                                    onChange={(e) => setDate(e.target.value)}
-                                    max={new Date().toLocaleDateString('en-CA')}
-                                />
-                            </div>
-                        </div>
-                        <p className="text-muted-foreground -mt-2 text-xs">
-                            Any date inside the period you want; it snaps to the whole day, week, month or year. The page behind this dialog does not
-                            move.
-                        </p>
-
-                        {/* Which branches this send covers. Owner-only, and
-                            online-only — the server refuses anything but
-                            'local' for anyone else, and falls back to this
-                            branch's figures if it cannot reach the business
-                            database. */}
-                        {canConsolidate && (
-                            <div className="grid gap-1.5">
-                                {/* No htmlFor: the control labels its own
-                                    trigger with the same words. */}
-                                <Label>Branches</Label>
-                                <BranchScopeSelect scope={scope} branches={branches} onChange={setScope} label="Branches reported on" />
-                            </div>
-                        )}
-
-                        <div className="space-y-2">
-                            {rows.length === 0 && (
-                                <p className="text-muted-foreground text-sm">
-                                    There are no default recipients yet. Add an address below to send this report.
-                                </p>
-                            )}
-                            {rows.map((row, index) => (
-                                <div key={row.address} className="grid gap-1">
-                                    <div className="flex items-center gap-2">
-                                        <Checkbox
-                                            id={`recipient-${index}`}
-                                            checked={row.checked}
-                                            onCheckedChange={(value) =>
-                                                setRows(rows.map((r, i) => (i === index ? { ...r, checked: value === true } : r)))
-                                            }
-                                        />
-                                        <label htmlFor={`recipient-${index}`} className="flex-1 truncate text-sm">
-                                            {row.address}
-                                        </label>
-                                        <Button
-                                            type="button"
-                                            variant="ghost"
-                                            size="icon"
-                                            aria-label={`Remove ${row.address}`}
-                                            onClick={() => setRows(rows.filter((_, i) => i !== index))}
-                                        >
-                                            <X className="size-4" />
-                                        </Button>
-                                    </div>
-                                    {/* The server keys errors by position in the list it was
-                                        sent, which is the checked rows only. */}
-                                    <InputError message={errors[`recipients.${checked.indexOf(row.address)}` as keyof typeof errors] as string} />
-                                </div>
+        <FormDialog
+            open={open}
+            onOpenChange={onOpenChange}
+            title="Email a report"
+            description={description}
+            submitLabel={checked.length === 0 ? 'Pick at least one recipient' : `Send to ${checked.length}`}
+            processing={processing}
+            submitDisabled={checked.length === 0}
+            onSubmit={submit}
+        >
+            <div className="grid gap-3 sm:grid-cols-[9rem_1fr]">
+                <Field label="Period" htmlFor="email-report-period">
+                    <Select value={period} onValueChange={(value) => setPeriod(value as ReportPeriod)}>
+                        <SelectTrigger id="email-report-period">
+                            <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {PERIOD_LABELS.map(([value, label]) => (
+                                <SelectItem key={value} value={value}>
+                                    {label}
+                                </SelectItem>
                             ))}
-                        </div>
+                        </SelectContent>
+                    </Select>
+                </Field>
+                <Field label="Date in that period" htmlFor="email-report-date">
+                    <Input
+                        id="email-report-date"
+                        type="date"
+                        value={date}
+                        onChange={(e) => setDate(e.target.value)}
+                        max={new Date().toLocaleDateString('en-CA')}
+                    />
+                </Field>
+            </div>
+            <p className="text-muted-foreground -mt-2 text-xs">
+                Any date inside the period you want; it snaps to the whole day, week, month or year. The page behind this dialog does not move.
+            </p>
 
-                        <div className="flex items-start gap-2">
-                            <div className="grid flex-1 gap-1">
-                                <Input
-                                    type="email"
-                                    value={draft}
-                                    onChange={(e) => {
-                                        setDraft(e.target.value);
-                                        setDraftError(null);
-                                    }}
-                                    onKeyDown={(e) => {
-                                        if (e.key === 'Enter') {
-                                            e.preventDefault();
-                                            addDraft();
-                                        }
-                                    }}
-                                    placeholder="Add another address"
-                                    aria-label="Add another address"
-                                />
-                                <InputError message={draftError ?? undefined} />
-                            </div>
-                            <Button type="button" variant="outline" onClick={addDraft}>
-                                <Plus className="size-3.5" />
-                                Add
-                            </Button>
-                        </div>
+            {/* Which branches this send covers. Owner-only, and online-only — the
+                server refuses anything but 'local' for anyone else, and falls back
+                to this branch's figures if it cannot reach the business database. */}
+            {canConsolidate && (
+                <div className="grid gap-1.5">
+                    {/* Not a <Field>: no htmlFor, because the control labels its
+                        own trigger with the same words. */}
+                    <Label>Branches</Label>
+                    <BranchScopeSelect scope={scope} branches={branches} onChange={setScope} label="Branches reported on" />
+                </div>
+            )}
 
-                        <InputError message={errors.recipients} />
-                        <p className="text-muted-foreground text-xs">
-                            Everyone listed will see the other recipients. Changes here apply to this send only — the saved list is unchanged.
-                        </p>
-
-                        <DialogFooter>
-                            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-                                Cancel
-                            </Button>
-                            <Button type="submit" disabled={processing || checked.length === 0}>
-                                {processing && <LoaderCircle className="h-4 w-4 animate-spin" />}
-                                {checked.length === 0 ? 'Pick at least one recipient' : `Send to ${checked.length}`}
-                            </Button>
-                        </DialogFooter>
-                    </form>
-                )}
-            </DialogContent>
-        </Dialog>
+            <RecipientPicker recipients={recipients} errors={errors as Record<string, string | undefined>} idPrefix="recipient" />
+        </FormDialog>
     );
 }

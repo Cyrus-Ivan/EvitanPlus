@@ -1,5 +1,5 @@
-import { Breadcrumbs } from '@/components/breadcrumbs';
-import { SyncIndicator } from '@/components/sync-indicator';
+import { Breadcrumbs } from '@/components/layout/breadcrumbs';
+import { SyncIndicator } from '@/components/sync/sync-indicator';
 import { SidebarTrigger } from '@/components/ui/sidebar';
 import { type BreadcrumbItem as BreadcrumbItemType } from '@/types';
 

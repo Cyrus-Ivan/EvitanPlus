@@ -1,8 +1,8 @@
-import HeadingSmall from '@/components/heading-small';
-import InputError from '@/components/input-error';
-import { OfflineNotice } from '@/components/offline-notice';
-import TimezoneSelect from '@/components/timezone-select';
-import { Button } from '@/components/ui/button';
+import InputError from '@/components/forms/input-error';
+import SubmitButton from '@/components/forms/submit-button';
+import HeadingSmall from '@/components/page/heading-small';
+import TimezoneSelect from '@/components/settings/timezone-select';
+import { OfflineNotice } from '@/components/sync/offline-notice';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -11,7 +11,7 @@ import BusinessSettingsLayout from '@/layouts/business-settings/layout';
 import { type BreadcrumbItem } from '@/types';
 import { Transition } from '@headlessui/react';
 import { Head, useForm } from '@inertiajs/react';
-import { LoaderCircle } from 'lucide-react';
+
 import { FormEventHandler } from 'react';
 
 const breadcrumbs: BreadcrumbItem[] = [{ title: 'Business Settings', href: '/business-settings' }];
@@ -124,10 +124,7 @@ export default function Business({ settings, online }: { settings: BusinessSetti
                         </div>
 
                         <div className="flex items-center gap-4">
-                            <Button disabled={processing}>
-                                {processing && <LoaderCircle className="h-4 w-4 animate-spin" />}
-                                Save
-                            </Button>
+                            <SubmitButton processing={processing}>Save</SubmitButton>
 
                             <Transition
                                 show={recentlySuccessful}

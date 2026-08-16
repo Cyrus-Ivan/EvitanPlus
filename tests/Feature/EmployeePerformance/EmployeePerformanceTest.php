@@ -453,6 +453,134 @@ class EmployeePerformanceTest extends TestCase
         $this->assertStringNotContainsString('Uncosted', $html);
     }
 
+    /** The receipts behind one cell of the calendar. */
+    private function day(User $viewer, User $employee, string $date)
+    {
+        return $this->actingAs($viewer)->getJson(route('employee-performance.day', [
+            'user' => $employee->id,
+            'date' => $date,
+        ]));
+    }
+
+    public function test_a_days_receipts_come_back_in_order_and_foot_to_that_days_gross()
+    {
+        $variant = $this->sellable(price: 100, cost: 40, stock: 50);
+        $employee = User::factory()->cashier()->create();
+
+        $this->travelTo(Carbon::parse('2026-08-03 15:00'));
+        $this->sell($employee, $variant, 1); // 100
+        $this->travelTo(Carbon::parse('2026-08-03 10:00'));
+        $this->sell($employee, $variant, 2); // 200
+        $this->travelBack();
+
+        $response = $this->day(User::factory()->admin()->create(), $employee, '2026-08-03')
+            ->assertOk();
+
+        $sales = $response->json('sales');
+
+        $this->assertCount(2, $sales);
+        // Oldest first, whatever order they were written in.
+        $this->assertSame('200.00', $sales[0]['total']);
+        $this->assertSame('100.00', $sales[1]['total']);
+        $this->assertNotSame($sales[0]['transaction_number'], $sales[1]['transaction_number']);
+        // Nothing has been refunded against either.
+        $this->assertSame('0.00', $sales[0]['returned']);
+        $this->assertSame('0.00', $sales[0]['defected']);
+
+        // The list is the day's gross, receipt by receipt.
+        $this->month(User::factory()->admin()->create(), $employee)
+            ->assertInertia(fn ($page) => $page->where('days.2.gross_sales', '300.00'));
+    }
+
+    public function test_a_days_receipts_are_this_employees_and_this_days_only()
+    {
+        $variant = $this->sellable(price: 100, cost: 40, stock: 50);
+        $employee = User::factory()->cashier()->create();
+        $other = User::factory()->cashier()->create();
+
+        $this->travelTo(Carbon::parse('2026-08-03 10:00'));
+        $this->sell($employee, $variant, 1);
+        $this->sell($other, $variant, 5);
+        // Either side of midnight, both ways.
+        $this->travelTo(Carbon::parse('2026-08-02 23:59'));
+        $this->sell($employee, $variant, 2);
+        $this->travelTo(Carbon::parse('2026-08-04 00:01'));
+        $this->sell($employee, $variant, 3);
+        $this->travelBack();
+
+        $sales = $this->day(User::factory()->admin()->create(), $employee, '2026-08-03')
+            ->assertOk()
+            ->json('sales');
+
+        $this->assertCount(1, $sales);
+        $this->assertSame('100.00', $sales[0]['total']);
+    }
+
+    public function test_a_refund_shows_against_the_sale_it_was_taken_off_whatever_day_it_happened()
+    {
+        $variant = $this->sellable(price: 100, cost: 40, stock: 50);
+        $employee = User::factory()->cashier()->create();
+
+        $this->travelTo(Carbon::parse('2026-08-10 10:00'));
+        $sale = $this->sell($employee, $variant, 3); // 300
+
+        // Two days later, which is the day the FIGURES count it on.
+        $this->travelTo(Carbon::parse('2026-08-12 11:00'));
+        app(ProcessSaleReturn::class)->process(
+            $sale,
+            'return',
+            [['transaction_item_id' => $sale->items()->first()->id, 'quantity' => 1]],
+            'Changed mind',
+            'cash',
+            User::factory()->admin()->create(),
+        );
+        $this->travelBack();
+
+        $sales = $this->day(User::factory()->admin()->create(), $employee, '2026-08-10')
+            ->assertOk()
+            ->json('sales');
+
+        // The sale is still what it was rung for; the refund is a fact about it.
+        $this->assertSame('300.00', $sales[0]['total']);
+        $this->assertSame('100.00', $sales[0]['returned']);
+        $this->assertSame('0.00', $sales[0]['defected']);
+
+        // And the day it happened on lists nothing of its own: a return is not
+        // a sale.
+        $this->assertSame([], $this->day(User::factory()->admin()->create(), $employee, '2026-08-12')->json('sales'));
+    }
+
+    public function test_a_day_with_no_sales_is_an_empty_list_rather_than_an_error()
+    {
+        $employee = User::factory()->cashier()->create();
+
+        $this->day(User::factory()->admin()->create(), $employee, '2026-08-03')
+            ->assertOk()
+            ->assertExactJson(['sales' => []]);
+    }
+
+    public function test_the_day_lookup_refuses_an_unknown_employee_a_bad_date_and_a_cashier()
+    {
+        $employee = User::factory()->cashier()->create();
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->getJson(route('employee-performance.day', [
+                'user' => '01936b3e-0000-7000-8000-000000000000',
+                'date' => '2026-08-03',
+            ]))
+            ->assertNotFound();
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->getJson(route('employee-performance.day', ['user' => $employee->id, 'date' => 'August']))
+            ->assertStatus(422);
+
+        // Admin+ like the screen it opens from: a Cashier cannot reach the
+        // month, so they may not reach a day of it either.
+        $this->actingAs(User::factory()->cashier()->create())
+            ->getJson(route('employee-performance.day', ['user' => $employee->id, 'date' => '2026-08-03']))
+            ->assertForbidden();
+    }
+
     public function test_the_report_carries_no_branch_scope_and_a_scope_parameter_changes_nothing()
     {
         $employee = User::factory()->cashier()->create();

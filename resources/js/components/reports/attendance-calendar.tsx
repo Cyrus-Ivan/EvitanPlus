@@ -1,39 +1,12 @@
+import EmployeeDayDialog from '@/components/reports/employee-day-dialog';
 import { useCurrency } from '@/hooks/use-currency';
-import type { EmployeeDay, EmployeeShift } from '@/types';
-
-// Monday first, matching the ISO weekday the server sends and the day picker in
-// the scheduled-report settings.
-const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+import { WEEKDAYS, weeksOf } from '@/lib/calendar';
+import type { EmployeeDay, EmployeeOption, EmployeeShift } from '@/types';
+import { useState } from 'react';
 
 function time(iso: string): string {
     const date = new Date(iso);
     return Number.isNaN(date.getTime()) ? '—' : date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-}
-
-/**
- * The month's days cut into calendar weeks, with the leading and trailing cells
- * of a partial week left null so the grid keeps its shape.
- */
-function weeksOf(days: EmployeeDay[]): (EmployeeDay | null)[][] {
-    if (days.length === 0) return [];
-
-    const weeks: (EmployeeDay | null)[][] = [];
-    // A month starting on a Thursday opens with three empty cells.
-    let week: (EmployeeDay | null)[] = Array.from({ length: days[0].weekday - 1 }, () => null);
-
-    for (const day of days) {
-        week.push(day);
-        if (week.length === 7) {
-            weeks.push(week);
-            week = [];
-        }
-    }
-
-    if (week.length > 0) {
-        weeks.push([...week, ...Array.from({ length: 7 - week.length }, () => null)]);
-    }
-
-    return weeks;
 }
 
 /**
@@ -68,16 +41,36 @@ function ShiftLine({ shift }: { shift: EmployeeShift }) {
     );
 }
 
+/** What a cell announces to a screen reader, since its contents are a glance. */
+function cellLabel(day: EmployeeDay): string {
+    const shifts = `${day.shifts.length} ${day.shifts.length === 1 ? 'shift' : 'shifts'}`;
+    const sales = `${day.transactions} ${day.transactions === 1 ? 'sale' : 'sales'}`;
+
+    return `${day.date}: ${shifts}, ${sales}`;
+}
+
 /**
  * A month of one employee's shifts and sales, as a calendar.
  *
  * Each cell carries the shifts that STARTED that day and the sales rung ON that
  * day. The two clocks do not agree for a night shift and are not made to — see
  * the note the page renders above this grid.
+ *
+ * Every cell is a button, EVERY day of the month included: a day with no shift
+ * and no sale is still an answer ("did not come in, sold nothing"), and a grid
+ * where some cells respond and others do not is a grid nobody can predict. What
+ * opens is one day in full — see {@see EmployeeDayDialog}.
  */
-export default function AttendanceCalendar({ days }: { days: EmployeeDay[] }) {
+export default function AttendanceCalendar({ days, employee }: { days: EmployeeDay[]; employee: EmployeeOption }) {
     const { format: money } = useCurrency();
+    const [selected, setSelected] = useState<EmployeeDay | null>(null);
+    const [open, setOpen] = useState(false);
     const weeks = weeksOf(days);
+
+    const openDay = (day: EmployeeDay) => {
+        setSelected(day);
+        setOpen(true);
+    };
 
     return (
         <div className="overflow-x-auto">
@@ -95,7 +88,13 @@ export default function AttendanceCalendar({ days }: { days: EmployeeDay[] }) {
                             day === null ? (
                                 <div key={`${index}-${cell}`} className="bg-muted/40 min-h-24" />
                             ) : (
-                                <div key={day.date} className="bg-background flex min-h-24 flex-col gap-0.5 p-2 text-xs">
+                                <button
+                                    key={day.date}
+                                    type="button"
+                                    aria-label={cellLabel(day)}
+                                    onClick={() => openDay(day)}
+                                    className="bg-background hover:bg-muted/50 focus-visible:ring-ring flex min-h-24 flex-col gap-0.5 p-2 text-left text-xs focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset"
+                                >
                                     <div className="font-semibold tabular-nums">{day.day}</div>
                                     {day.shifts.map((shift, i) => (
                                         <ShiftLine key={i} shift={shift} />
@@ -106,12 +105,17 @@ export default function AttendanceCalendar({ days }: { days: EmployeeDay[] }) {
                                             <span className="text-muted-foreground">{day.transactions} ·</span> {money(day.net_sales)}
                                         </div>
                                     )}
-                                </div>
+                                </button>
                             ),
                         ),
                     )}
                 </div>
             </div>
+
+            {/* The chosen day deliberately outlives the close: clearing it with
+                the same click would empty the panel while it is still animating
+                out. The next click replaces it. */}
+            <EmployeeDayDialog day={selected} employee={employee} open={open} onOpenChange={setOpen} />
         </div>
     );
 }

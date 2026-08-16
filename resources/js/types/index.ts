@@ -628,6 +628,25 @@ export interface EmployeeDay {
     net_sales: string;
 }
 
+// One receipt behind a day of the calendar, fetched when that day's dialog opens
+// rather than carried in the page props. `returned` and `defected` are what has
+// since been refunded against this sale — a fact about the SALE, not a
+// subtraction from the day it was rung on: an after-sales event reduces the day
+// it happened on, which is rarely this one.
+export interface EmployeeDaySale {
+    id: string;
+    transaction_number: string;
+    payment_type: string;
+    total: string;
+    // ISO 8601, business-local.
+    at: string;
+    // The code of the branch it was rung at. Null for a row that carries no
+    // branch upstream.
+    branch: string | null;
+    returned: string;
+    defected: string;
+}
+
 // The month's headline figures. `sales_per_hour` is null when no hours were
 // recorded — there is no rate to state, rather than a rate of zero.
 export interface EmployeeSummary {

@@ -140,6 +140,13 @@ Route::middleware(['auth'])->group(function () {
             ->name('employee-performance');
         Route::post('employee-performance/email', [EmployeePerformanceController::class, 'email'])
             ->name('employee-performance.email');
+        // The receipts behind one day of the calendar, fetched when that day's
+        // dialog opens — the same lazy shape as stock-history.request, and for
+        // the same reason: a month has thirty-one days and nobody opens more
+        // than a few, so the list rides a request of its own rather than
+        // thirty-one lists riding every render.
+        Route::get('employee-performance/day', [EmployeePerformanceController::class, 'day'])
+            ->name('employee-performance.day');
 
         Route::get('audit-logs', [AuditLogController::class, 'index'])->name('audit-logs'); // Phase 15
 

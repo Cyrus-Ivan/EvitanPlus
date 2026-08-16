@@ -71,6 +71,19 @@ class EmployeePerformanceOfflineTest extends TestCase
                 ->has('filters.prev_month'));
     }
 
+    public function test_a_days_receipts_come_back_null_rather_than_empty()
+    {
+        $employee = User::factory()->cashier()->create();
+
+        // Null, not `[]`. An empty list is a day this employee sold nothing on,
+        // which is a claim this device is in no position to make — and the
+        // dialog tells the two apart on exactly this value.
+        $this->actingAs(User::factory()->admin()->create())
+            ->getJson(route('employee-performance.day', ['user' => $employee->id, 'date' => '2026-08-03']))
+            ->assertOk()
+            ->assertExactJson(['sales' => null]);
+    }
+
     public function test_a_send_is_refused_and_nothing_leaves_the_device()
     {
         Mail::fake();

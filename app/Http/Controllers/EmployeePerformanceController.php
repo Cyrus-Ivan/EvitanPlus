@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Concerns\NormalizesMonthFilter;
 use App\Http\Requests\Reports\EmailEmployeePerformanceRequest;
 use App\Mail\EmployeePerformanceMail;
 use App\Models\Instance;
@@ -10,6 +11,7 @@ use App\Support\Audit\AuditRecorder;
 use App\Support\Email\ReportEmailException;
 use App\Support\Email\ReportEmailSettings;
 use App\Support\Email\ReportMailer;
+use App\Support\Reports\EmployeeDaySales;
 use App\Support\Reports\EmployeePerformanceBuilder;
 use App\Support\Reports\EmployeePerformancePdf;
 use App\Support\Reports\ReportPeriods;
@@ -19,6 +21,7 @@ use App\Support\Sync\OnlineRead;
 use Carbon\Carbon;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -78,8 +81,7 @@ use Inertia\Response;
  */
 class EmployeePerformanceController extends Controller
 {
-    /** How many years back the year picker offers. */
-    private const YEARS_OFFERED = 6;
+    use NormalizesMonthFilter;
 
     public function __construct(
         private readonly OnlineRead $read,
@@ -113,8 +115,8 @@ class EmployeePerformanceController extends Controller
             'employees' => $employees->map(fn (User $user) => $this->describe($user))->all(),
             'days' => $report['days'] ?? [],
             'summary' => $report['summary'] ?? null,
-            'filters' => $this->filters($from),
-            'years' => $this->years(),
+            'filters' => $this->monthFilters($from),
+            'years' => $this->yearsOffered(),
             // False means the figures could not be read at all — there is no
             // local month to fall back to and deliberately so.
             'online' => $reports !== null,
@@ -228,6 +230,62 @@ class EmployeePerformanceController extends Controller
             'type' => 'success',
             'message' => 'Report sent to '.count($recipients).' recipient(s).',
         ]);
+    }
+
+    /**
+     * The receipts behind one day of the calendar, fetched when its dialog opens.
+     *
+     * A separate read rather than a prop, for the reason `stock-history.request`
+     * is: the month has thirty-one days and nobody opens more than a few of them,
+     * so carrying every day's sales into every render would multiply the page
+     * payload for rows that are mostly never looked at. The figures the calendar
+     * itself prints come with the month; this is the list underneath them.
+     *
+     * Online-only like everything else on this screen, and with no local
+     * fallback: the day belongs to a person, not to this branch. When the read
+     * cannot happen `sales` is null and the dialog says so, rather than showing
+     * an empty list that would read as "sold nothing".
+     */
+    public function day(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'user' => ['required', 'string'],
+            'date' => ['required', 'date_format:Y-m-d'],
+        ]);
+
+        // Archived users included, for the same reason the picker lists them: a
+        // day worked before somebody left is still readable. An id that is not a
+        // user 404s rather than reporting an empty day for nobody.
+        abort_if(
+            User::withTrashed()->whereKey($validated['user'])->doesntExist(),
+            404,
+        );
+
+        $day = Carbon::createFromFormat('Y-m-d', $validated['date'])->startOfDay();
+
+        return response()->json([
+            'sales' => $this->sales($validated['user'], $day),
+        ]);
+    }
+
+    /**
+     * One day's sales for one employee, from the business database.
+     *
+     * Null when it could not be read at all — the same two cases as
+     * {@see self::reports()}, and deliberately nothing behind either.
+     *
+     * @return ?list<array<string, mixed>>
+     */
+    private function sales(string $userId, Carbon $day): ?array
+    {
+        if (! Instance::isHydrated()) {
+            return null;
+        }
+
+        return rescue(fn (): array => $this->read->run(
+            fn (Connection $remote): array => (new EmployeeDaySales($remote))->forDay($userId, $day),
+            'Employee day sales',
+        ), null, report: false);
     }
 
     /**
@@ -346,62 +404,16 @@ class EmployeePerformanceController extends Controller
      * The reported month, as a [from, to] window.
      *
      * Monthly and nothing else: there is no daily or weekly employee report, so
-     * the picker is a month and a year rather than an anchor date and a period.
-     * The window itself still comes from {@see ReportPeriods} — one copy of what
-     * a month is, shared with the sales report and the scheduled send.
-     *
-     * An out-of-range month or year falls back to today's rather than 500ing on
-     * a hand-typed URL; the email path validates both properly first.
+     * the picker is a month and a year rather than an anchor date and a period —
+     * which is exactly the shape {@see NormalizesMonthFilter} owns, shared with
+     * login history's calendar. Kept as a named method rather than calling the
+     * trait directly from both call sites, so the two of them cannot drift and
+     * this docblock has somewhere to live.
      *
      * @return array{0: Carbon, 1: Carbon}
      */
     private function window(mixed $month, mixed $year): array
     {
-        $now = Carbon::now();
-        $m = (int) $month;
-        $y = (int) $year;
-
-        $anchor = ($m >= 1 && $m <= 12 && $y >= 2000 && $y <= 2100)
-            ? Carbon::create($y, $m, 1)
-            : $now->copy()->startOfMonth();
-
-        return ReportPeriods::resolveWindow(EmployeePerformanceBuilder::PERIOD, $anchor);
-    }
-
-    /**
-     * What the month/year controls and the ‹ › steppers need.
-     *
-     * @return array<string, int|string>
-     */
-    private function filters(Carbon $from): array
-    {
-        $prev = $from->copy()->subMonthNoOverflow();
-        $next = $from->copy()->addMonthNoOverflow();
-
-        return [
-            'month' => $from->month,
-            'year' => $from->year,
-            'label' => ReportPeriods::label(EmployeePerformanceBuilder::PERIOD, $from),
-            'prev_month' => $prev->month,
-            'prev_year' => $prev->year,
-            'next_month' => $next->month,
-            'next_year' => $next->year,
-        ];
-    }
-
-    /**
-     * The years the picker offers: this one and the five before it.
-     *
-     * A fixed window rather than a query over the data — the earliest year this
-     * DEVICE holds is not the earliest year the business holds, and a list built
-     * from the local mirror would quietly hide a branch's older months.
-     *
-     * @return list<int>
-     */
-    private function years(): array
-    {
-        $current = (int) Carbon::now()->year;
-
-        return range($current, $current - (self::YEARS_OFFERED - 1));
+        return $this->monthWindow($month, $year);
     }
 }

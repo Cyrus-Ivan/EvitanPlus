@@ -7,6 +7,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useCurrency } from '@/hooks/use-currency';
 import AppLayout from '@/layouts/app-layout';
+import { MONTHS } from '@/lib/calendar';
 import type { BreadcrumbItem, EmployeeDay, EmployeeOption, EmployeeSummary } from '@/types';
 import { Head, router } from '@inertiajs/react';
 import { ChevronLeft, ChevronRight, Mail, UsersRound, WifiOff } from 'lucide-react';
@@ -18,8 +19,6 @@ const breadcrumbs: BreadcrumbItem[] = [{ title: 'Employee Performance', href: '/
 // deliberately NOT in it: they do not change with the month or the employee, and
 // re-sending them on every step of the month is pure weight.
 const RELOAD_PROPS = ['employee', 'days', 'summary', 'filters', 'online'];
-
-const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
 interface Filters {
     month: number;
@@ -246,10 +245,14 @@ export default function EmployeePerformance({
                         <p className="text-muted-foreground text-sm">
                             A shift appears on the day it started, so a night shift crossing midnight is one entry marked{' '}
                             <span className="font-medium">+1d</span>. Sales are counted on the day they were rung, so that shift's after-midnight
-                            sales appear on the next day. Net sales are gross minus returns and defects on this employee's own sales.
+                            sales appear on the next day. Net sales are gross minus returns and defects on this employee's own sales. Select a day for
+                            its shifts, hours and individual receipts.
                         </p>
 
-                        <AttendanceCalendar days={days} />
+                        {/* The employee travels with the grid because a cell
+                            opens into one day of THEIR month, and the day's
+                            receipts are fetched under their id. */}
+                        <AttendanceCalendar days={days} employee={employee} />
 
                         <div className="text-muted-foreground grid gap-1 text-sm sm:grid-cols-3">
                             <div>Gross sales: {money(summary.gross_sales)}</div>

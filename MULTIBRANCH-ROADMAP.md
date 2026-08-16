@@ -10,10 +10,16 @@ validation → permissions/grants → audit → tests) and keep the system runna
 Don't open several of these at once.
 
 These phases follow the shipped `v1.0.0` (`ROADMAP.md` phases 0–19). They are numbered
-**M0–M13.5** to keep them distinct from the original phases. The numbering is not dense: work
-that arrived between planned phases took a decimal (M6.5, M11.5–M11.8, M13.5), and **M12 means
-the branch-scope phase** — the hardening tasks that once held that number are the un-numbered
-**Ongoing** section near the end of this file.
+**M0–M18** to keep them distinct from the original phases. The numbering is not dense: work
+that arrived between planned phases took a decimal (M6.5, M11.5–M11.8, M13.5, M14.5), and **M12
+means the branch-scope phase** — the hardening tasks that once held that number are the un-numbered
+**Ongoing** section near the end of this file. **M15 on take plain integers**: the decimals mean
+"arrived between two planned phases", and nothing after M14.5 was planned in advance.
+
+**Adding a phase means editing the range above and everywhere else that quotes it.** It has drifted
+twice — `docs/glossary.md` §1 records both — so finish with `grep -rn "M0–M1"` and expect hits in
+this file, `CLAUDE.md`, `README.md`, `ROADMAP.md`, `BRAINSTORM.md`, `docs/glossary.md`,
+`docs/sync-architecture.md` and `docs/ui-conventions.md`.
 
 **Read `docs/glossary.md` before starting a phase.** It is **normative** for the vocabulary
 these phases are written in, and it outranks both this file and `MULTIBRANCH-BRAINSTORM.md`
@@ -1920,6 +1926,260 @@ for something it never looks at — enough of it, at this test count, to exhaust
 
 ---
 
+# Phase M15 — A batch gets a name a person can say ✅
+
+Schema 23 gave a [stock batch] an identity and it does everything an identity has to: `batch_id`
+groups a Pending Stocks card and pairs a transfer's two legs. What a uuid cannot do is **appear**
+anywhere. Nothing in the product printed the batch at all, so the person who issued twelve products
+as one act and the person at the other branch answering for them had no shared word — nothing to
+write on a delivery note, nothing to repeat down a phone, and no way to ask "what else moved with
+this?".
+
+- **`batch_reference` is that word** — the issuing branch's code, `-B-`, then a zero-padded running
+  serial: `MNL-B-000001`. The uuid stays the identity and nothing keys off the name.
+  `App\Support\Inventory\StockBatch` holds both, because they are two halves of one fact known at
+  two different moments: the uuid the instant the batch is assembled, the reference only once a
+  Postgres connection is open, since the serial is read from `inventory_update_queue`. The mint
+  happens inside `AdjustmentQueue::enqueue()`, once for the whole enqueue rather than per row, and
+  the caller reads the name back off the object after the online write has committed.
+- **The shape is the receipt number's, for the receipt number's reason.** Branches mint
+  independently, so the branch prefix is the only thing keeping two branches' serials apart. `-B-`
+  is what stops it being read as a receipt, since `MNL-B-000001` and `MNL-0000000001` appear in the
+  same app to the same people. It is **stored**, not composed at print time, so the card, the ledger
+  row, the audit log and the URL all carry one string with one spelling. The prefix names the branch
+  that **asked**, which for a transfer arranged from head office is neither end of it.
+- **Two things borrowed from `TransactionNumberGenerator`, one deliberately not.** It continues from
+  a `MAX` rather than a count (a count collides forever if a row is ever lost; a MAX self-heals) and
+  it strips the prefix **by length, never by casting** — `(int) "MNL-B-000009"` is `0`, and a mint
+  that cast the prefixed max would hand out serial 1 for the rest of the branch's life. What it does
+  **not** borrow is gaplessness: a receipt serial is gapless because a tax authority requires it, and
+  a rolled-back batch simply never claims its name. Uniqueness is not a column constraint either —
+  every row of one batch carries the same value — so what keeps it unique per batch is a
+  `pg_advisory_xact_lock` on the prefix, transaction-level so it releases at commit under Supavisor's
+  transaction pooling, and skipped on anything but Postgres.
+- **The name travels exactly as the uuid does** — onto the receiving legs in
+  `AdjustmentResolver::secondLeg()`, onto the ledger through `StockLedger::record()` — and it is on
+  the ledger for `batch_id`'s reason and `counterparty_branch_code`'s before it: the surfaces that
+  print it must render with no connection.
+- **Three surfaces.** The Pending Stocks card prints the name beside the line count. The Stock
+  History entry dialog prints it as a **Batch** field that is a link, since a batch name is only
+  worth printing if it answers what else moved with it. And the page grew a search box matching a
+  **substring** of the reference, because the part somebody reads off a delivery note is the serial.
+  The dialect trap is the one M12 already paid for on `/sales`: the local path is `like` and the
+  consolidated one is **`ilike`**, because SQLite's LIKE ignores ASCII case and Postgres's does not,
+  so one word's difference is an empty table upstream rather than an error. The leading wildcard
+  forgoes the new index knowingly.
+- **Schema 24, additive on schema 23's terms and one step weaker still.** The column is read by
+  nothing that decides anything, so a 1.1.0 build against a 24 schema writes no reference and its
+  cards and ledger rows print what they printed before, while the new filter finds nothing rather
+  than the wrong thing. **`MIN_APP_VERSION` stays 1.1.0. No grant change** — INSERT and SELECT on
+  both tables are table-level, and only `UPDATE_COLUMNS` is enumerated per column, which this one
+  never touches, being written once at insert. The local SQLite migration is the mirrored half of
+  the ledger column, which the parity guard requires; the device holds no copy of the queue.
+
+## Verified
+`docs/glossary.md` gained a normative "Batch reference" entry and `docs/sync-architecture.md` §6.1
+the as-built account. The advisory lock and the `ilike` are both out of a stand-in's reach, so
+`tests/Integration/InventoryQueueTest.php` proves them against two really provisioned branches: the
+minted name matches the issuing branch's prefix, both sending legs and both receiving legs and both
+ledger rows carry it, and a lowercase four-character fragment finds them under `scope=all`.
+
+---
+
+# Phase M16 — Employee Performance ✅
+
+The business could already answer "what did this branch sell?" and "who signed in?" — nothing tied
+the two to a **person**. `/employee-performance` is one employee, one month, the shifts they worked
+and the sales they rang on the same calendar. Every figure is recomputed from the append-only
+sources, and there is no cost, COGS or profit on it for anybody, which is what lets an Admin and the
+Owner read the identical document.
+
+- **It is the one reporting screen with NO [branch scope], and the one read screen with no offline
+  path at all.** That is the whole design, not a gap in it. Every other scoped screen asks about a
+  **branch** — what did this till sell, who signed in here, what is on this shelf — so `local` is an
+  honest default there because the branch's own rows are on the device. This asks about a **person**,
+  and somebody signs in at Manila on Monday and Cebu on Tuesday. The mirror's answer is not narrower,
+  it is **wrong**: a calendar that renders perfectly and says an employee posted elsewhere never came
+  in all month. So there is nothing to fall back to, and offline the screen renders and says it
+  cannot report (`online: false`) rather than degrading the way `consolidatedOnline` does elsewhere.
+- **What the parameter would have given, every row carries instead.** Each shift prints the branch it
+  was worked at and the summary splits the hours by branch, always footing to the total since an open
+  shift is in neither. The code comes from a LEFT JOIN onto `branches` in
+  `AttendanceFigures::events()` that runs **only on `pgsql`** — the local `login_history` has no
+  `branch_id` and deliberately never will.
+- **A shift is a `login` paired with whatever ended it, anchored to the day it started**, so a 20:00
+  → 04:03 night is one shift on the earlier day. The pairing walk is in PHP over one ordered read
+  rather than in SQL: pairing needs the events in order, and walking them here removes the whole
+  `strftime`/`to_char` dialect class. An `application_crash` row is written on the *next launch*, so
+  its timestamp is not believed at all — that shift is **open**, with no hours, and the month reports
+  the count of them beside the total.
+- **Admin+ and nothing narrower.** The whole route is in the `role:admin` group, and with no cost or
+  profit there is nothing here the Owner alone may see — the rule `/sales` and `/login-history`
+  already follow. `SalesFigures` gained a `$userId` that reaches `sale_returns` through
+  `transactions`, so a refund reduces the **selling** cashier's net rather than the processor's; its
+  existing callers pass null and are unaffected.
+- **The email path is online-only for the same reason as the screen.** It reads first, so an offline
+  device is refused before any PDF is built rather than after, and a refusal writes no audit row
+  because nothing was attempted. Every employee on a multi-employee send is built inside **one**
+  closure, since a `BranchCycle` holds a Supavisor client slot for its length. It reuses M14's mail
+  block wholesale — same sender credentials, same default recipients — and is deliberately **not**
+  schedulable: a scheduled send has no actor to authorize it, and this document names a person
+  rather than a period.
+- **A cell opens the day behind it.** A glance cannot tell one large sale from fourteen small ones,
+  so `employee-performance.day` is a lazy JSON read in the shape `stock-history.request`
+  established: a month has thirty-one days, nobody opens more than a few, and thirty-one lists on
+  every render would be paid for by everybody who opens none. A day that rang nothing skips the
+  fetch entirely. Every day opens, worked or not — a grid where some cells respond and others do not
+  is one nobody can predict. The list foots to the day's **gross**, not its net (an after-sales event
+  counts on the day it happened, rarely the day of the sale it refunds), so each receipt carries what
+  has since been refunded against it, recomputed from `sale_return_items` and never the stored
+  `sale_returns.total_refund`. Offline the endpoint answers **`null`, never `[]`** — an empty list is
+  the claim that this employee sold nothing, which is exactly the claim a disconnected device is in
+  no position to make.
+- **No migration, no `SCHEMA_VERSION` bump, no `BranchGrants` change, no console edit.** SELECT on
+  `branches`, `login_history` and all four sales tables has been in the matrix since M2; nothing had
+  ever asked this question of them.
+
+## Verified
+`composer verify` (838 tests, 20 e2e specs) and `composer verify:hydrate` (74 tests against real
+Supabase) both green. Testing splits three ways: the recompute — what a shift is, which day a sale
+lands on, whose net a refund reduces — runs offline by pointing `OnlineRead` at the local connection
+(`ReadsTheBusinessLocally`, the technique `FakesThePendingQueue` uses), because the arithmetic is the
+same code whichever database answers; the offline contract is a suite of its own, since that trait is
+precisely what takes it away; and what fails **silently** needs two real provisioned branches —
+`timestamptz` bounds in two independently-derived windows, the refund join, `numeric` arriving as
+exact strings, the branch join, and that the local read is really gone, proved by a device whose own
+SQLite is empty throughout. The rig grew the shift data behind all of it (`tests/manual/attendance.php`).
+
+---
+
+# Phase M17 — Login History: one month, one session ✅
+
+Login History was a paginated table, and a table answers "show me the events" and never the question
+people actually bring to it: reading one day meant paging until the dates changed, and a sparse month
+and a busy one looked identical. Fixing that surfaced a second thing — the rig was showing a
+cashier's sign-in followed by another sign-in with nothing between them, a shape a branch cannot
+produce — which turned out to have one invented cause and one real one that ships to devices.
+
+- **The screen is a calendar over a [month window].** The date *range* is gone with the table: the
+  window is one month, picked by month and year, because a free range is a control the grid cannot
+  honour. Branch scope and the event filter are untouched. A cell is three events then "+n more",
+  and a day reads **forward**, unlike every other index in the app — a paginated list is newest-first
+  because its far end is unbounded, and a day is bounded, so a truncated cell should hide the end of
+  the day rather than its beginning.
+- **The whole month ships in one payload and the day dialog opens from it** — the opposite of M16's
+  call, for the opposite reason. There the receipts were the one thing *not* already on the page;
+  here the events **are** the page, so a second request would re-fetch what the client holds, and
+  holding them is also the only thing that makes the dialog work offline in the `local` scope.
+- **Notes are a disclosure, not a column.** Only an unclean exit and a forced logout ever carry one,
+  so as a column it was a dash on most rows and a paragraph on a few, widening the table past the
+  dialog on every row to serve a minority of them. It follows the shape `/audit-logs` established and
+  keys off the note being **present** rather than off the event type, because a consolidated read
+  renders whatever another branch's build wrote.
+- **The user filter is gone entirely.** This screen is the per-**branch** view — who signed in at
+  this till, and when — and the per-person question is `/employee-performance`, which asks it of the
+  same `login_history` and answers it far better than a filtered event list can. The Cashier's
+  own-only pin stays, because that is authorization rather than a filter; what is gone is any reading
+  of a `user` parameter at all, so a crafted one is now never consulted rather than merely overridden.
+- **A branch has one till, so it cannot be signed in twice** (`SessionManager`). `handleLogin` relied
+  on "single window, one session cookie", which covers a window close (the boot guard writes the row
+  on the next launch) but **not an idle session**: `session.lifetime` is 120 minutes, so a cashier who
+  steps away past it is returned to the login screen with nothing written at all, and their next
+  sign-in stacked a second `login` on the first. It now closes what the branch left open first —
+  attributed to **whoever opened it**, not to whoever is signing in — as the same `application_crash`
+  every other unclean exit is recorded as. The causes are indistinguishable after the fact, the label
+  already reads "Unexpected exit", and `AttendanceFigures` already declines to believe that row's
+  timestamp.
+- **That row is stamped a second before the sign-in that noticed it, but never before the sign-in it
+  closes.** Both halves are load-bearing: without the second back it shares the new sign-in's whole
+  second (`timestamp(0)` is all the precision there is upstream), and with only the second back two
+  sign-ins inside one second put it ahead of the session it is closing — so the guard against
+  `login, login` would have written `crash, login, login` itself. There is a test for exactly that,
+  and it fails without the clamp.
+- **One trap, and it is the silent kind.** `ReportPeriods::resolveWindow()` returns `Carbon\Carbon`;
+  this controller hinted `Illuminate\Support\Carbon`, correct while its bounds came from
+  `NormalizesDateFilter`. The resulting `TypeError` is caught by the `rescue()` around the online
+  read, so every `scope=all` request fell back to branch-local and displayed the amber offline notice
+   — no stack trace, no 500, a correct-looking screen in a designed state. Every local-scope test
+  passed throughout; only the Supabase suite caught it. **Hint the wider type downstream of
+  `ReportPeriods`, never the subclass.**
+- **The rig's half.** `attendance.php` drew the cashier per *receipt* at random, so a day's sales
+  alternated between the branch's two people and the shift derived for each covered the whole day.
+  Who is on is now decided **before** who sold: the trading day is one run, or two either side of a
+  handover, and every sale goes to whoever holds the run its hour falls in. Each shift is bounded by
+  the **handover** either side of it — the midpoint of the gap between the work each covers — since a
+  sign-in lands up to 75 minutes before the first sale and a sign-out up to 90 after the last, which
+  always overlapped an evening into that night's 20:00 start. `assertOneSessionPerBranch` is the
+  standing statement of the rule, checked before the seed commits: 603 occurrences against the
+  pre-change rig, none against the new one.
+- **No migration, no `SCHEMA_VERSION` bump, no `BranchGrants` change, no console edit**, nothing
+  mirrored — `application_crash` has been in the vocabulary since Phase 2 and this only writes one
+  more of them; the calendar only rearranges rows readable since M11.5.
+
+## Verified
+`composer verify` green (850 tests, 20 e2e specs) and `ConsolidatedLoginHistoryTest` green against
+two real provisioned branches. Tests reshaped rather than rewritten: the four date-range cases became
+month-window ones, and every one pins the clock, because the default window is the **current** month
+and the factory's `occurred_at` spans thirty days across two of them. Driven headlessly as owner and
+cashier — stepping the month, opening a day, expanding a note — and against the live MNL till, where
+a second sign-in from a lost session wrote the closing row for the earlier user, ordered ahead of
+itself, and pushed upward with the invariant still holding at zero.
+
+---
+
+# Phase M18 — The shared frontend vocabulary ✅
+
+Twenty roadmap phases and this initiative each added screens, and each copied the markup forward.
+Copying is survivable right up to the point where the copies stop agreeing, and they had: the payment
+badge was toned per type on `/sales` and hardcoded `secondary` on the sale detail, so one sale wore
+two appearances depending on which screen opened it; `formatWhen` existed in six files and five had
+lost the null guard the sixth had; the employee report dialog declared its own `MONTHS` array rather
+than importing `lib/calendar`'s, one import apart. None of that was ever decided.
+
+- **What exists instead.** `FormDialog` + `useDialogForm` for the twelve modal forms that had each
+  written the same header/fields/Cancel/submit and the same reset-on-open effect; `DetailDialog` for
+  the three read-only drill-downs; `Field`, which **requires `htmlFor`**, because wiring a label to
+  its control is the step that gets skipped and a required prop makes the type checker ask;
+  `useListFilters` + `useDebouncedFilter` for seven hand-written `applyFilters` and three copies of
+  the 300ms debounce; `FilterBar` and the six controls that sit in it; `TableCard`; `MonthGrid`,
+  lifted verbatim from two byte-identical calendars; `PageShell`, `StatCard`, `ArchivedBadge`,
+  `SubmitButton`, `RecipientPicker`; an `Alert` primitive with the warning variant every amber banner
+  had spelled out; and `lib/{format,payment,filters,request-status}` for the label maps, which live
+  in `lib/` precisely because every map left in a component ended up copied.
+- **Two things the hook could not be allowed to guess.** `only` is per-page and load-bearing in both
+  directions — too few keys and a prop goes stale, too many and every keystroke pays for one it did
+  not need, which is why `/sales` and stock-history leave `branches` out: the roster costs an
+  **online read**. And several pages' `filters` prop carries the server's *answers* as well as the
+  reader's questions, so `values` names the filters explicitly rather than spreading the prop.
+- **Deliberately not abstracted**, each for a reason now written down: tables stay bespoke JSX; the
+  single/batch dialog pairs stay separate, having been one dialog with a toggle for exactly one
+  milestone; the two import dialogs keep their own chrome; `pos.tsx` is the till and was left alone;
+  and approve/reject on `pending-request-card` still bypass `useConfirm`, since routing them through
+  it would add a confirmation step to a stock approval — a decision about the product, not about
+  duplication.
+- **The filing.** Thirty-six loose files in `components/` answer neither question a component
+  directory exists to answer. Everything is now under `layout/`, `page/`, `forms/`, `data/`,
+  `filters/`, `sync/` or `settings/`, with the feature folders untouched: a shared component is filed
+  by *what it is*, a feature component by *what it belongs to*. No barrels. One trap worth recording
+  — `@/components/heading` is a prefix of `heading-small` and `app-logo` of `app-logo-icon`, so the
+  162 rewrites matched the **closing quote**, not the bare name.
+- **Two defects fell out of the reading.** The batch adjust and transfer dialogs lost their default
+  branch on every reopen (the roster effect keys on `here?.id`, and a refetch mints a new object
+  holding the same string, so it never fired again after the first open); and the import history
+  table keyed its `TableRow` inside an unkeyed fragment returned from a map, which is not a key React
+  counts.
+- **`docs/ui-conventions.md` is the record of all of it**, in the glossary's shape: what to reach
+  for, what is deliberately not shared and why, the house rules, and the asymmetries left standing.
+  `components.json` also stopped naming a `tailwind.config.js` that has not existed since the v4
+  move. Backend untouched: no migration, no schema, no grant, no console edit.
+
+## Verified
+`composer verify` (850 backend tests, 20 e2e specs), a build, and a headless CDP drive of every
+touched screen — 32 checks, no console errors, and green again unchanged **after** the folder move,
+which is the only evidence that filing changed nothing.
+
+---
+
 ## Deferred (post-M12, tracked in `MULTIBRANCH-BRAINSTORM.md` §19)
 - Multiple tills per branch (shared-stock coordination).
 - Supabase Realtime channel (instant reconnect + live console↔branch monitor/command).
@@ -1962,6 +2222,55 @@ Prove the whole loop and lock the security boundary before shipping the custom b
   that one. Tracked in `docs/glossary.md` §9.
 - **Still open — E2E for rotation and disable/enable.** The two lifecycle cases in the E2E bullet
   above have no spec; `tests/e2e/` covers the wizard funnel only. Tracked in `docs/glossary.md` §9.
+
+### Landed here rather than as a phase (post-M14.5)
+
+Each of these is a standing obligation met once, not a milestone, which is why none took a number.
+
+- **The gate goes green again.** `composer audit` is step one of `composer verify` and was failing on
+  `league/commonmark` 2.8.2 (six advisories, four high). Nothing in the product could reach it — both
+  mailables render plain HTML views and say so — but a gate that cannot go green has stopped being a
+  gate. 2.8.2 → 2.10.0, and nothing else moved.
+- **The busy guard can see the console suite.** `rig:clean --all` refuses to sweep while a phpunit is
+  alive, but matched `vendor/phpunit/phpunit` only — so `composer verify:console`, eleven minutes and
+  the longest holder of disposable fixtures in the project, was the one run it could not see. The
+  pattern is now `vendor/(bin|phpunit)/phpunit`.
+- **Log rotation.** The packaged `.env` shipped `LOG_STACK=single` / `LOG_LEVEL=debug` and nothing
+  pruned the file, so a till on a counter for years grew one — fastest at the branch with the worst
+  network, since every rescued sync failure is `report()`ed. A full disk fails SQLite writes, and a
+  POS that cannot write cannot sell. Defaults are now **daily / warning / 14 days**, and `LOG_*`
+  joined `cleanup_env_keys` for the reason `CONSOLE_*` is already there: logging posture is a
+  property of the release, not of the machine that built it.
+- **A real password policy, and `zend.exception_ignore_args`.** Both were framework defaults standing
+  in for decisions nobody had made, and both live in `AppServiceProvider`.
+  `Password::defaults()` was unconfigured — `min(8)` and nothing else — against a threat that is not
+  remote brute force but someone in the shop guessing an Admin's password, which since M6.5 reaches a
+  branch role that can rewrite the whole business's catalog, prices, staff and settings. Now
+  `min(10)->letters()->numbers()`, binding new passwords only, and deliberately **no
+  `->uncompromised()`**: it calls out to HIBP, and a till must be able to create a user with no
+  network. The shipped static runtime loads no `php.ini`, so it ran on the compiled default of
+  `zend.exception_ignore_args=0` and Monolog wrote a trace carrying plaintext string arguments —
+  `ReportEmailSettings::seal()` takes exactly one, the SMTP password. Set at runtime rather than
+  shipped as an ini file, because NativePHP's unzipper writes every entry of the runtime zip to the
+  same destination filename.
+- **The Owner's password matches the app's rule.** `console/bootstrap/providers.php` is empty by
+  design — the console is CLI-only and has no service provider — so `Password::defaults()` in
+  `BusinessProvisionCommand` resolved to Laravel's `min(8)`, and the one account that can never be
+  archived was held to a weaker rule than every cashier it creates. The rule is now **spelled out**
+  there rather than configured, and duplicated by hand because §18 forbids either app referencing the
+  other's code — the same constraint that makes `CredentialVault` restate `BranchSecret`'s domain
+  separator.
+- **One lookup could reach a branch the page it opens from cannot.**
+  `/inventory/stock-history/{entry}/request` read `inventory_update_queue` with no `branch_id` filter
+  on a Cashier-level route, while `index()` on the very page the dialog opens from snaps a Cashier
+  back to `local`. Not a practical leak — the id is a uuid — but `BranchGrants` is the only boundary
+  of its kind now that row-level security is a settled non-goal (`docs/glossary.md` §9), so an
+  app-layer reach that outruns its own screen is precisely the erosion that matters.
+- **An e2e flake fixed at the assertion, not the timeout.** "a lagging navigation shows the loading
+  bar" failed one full-suite run in three on clean HEAD. `prefetch()` hides the one shared
+  `#nprogress` element and only the following visit un-hides it; the assertion read the element twice
+  — `toBeVisible()`, then a bare `boundingBox()` — and could lose it in the gap. A gate that fails one
+  run in three teaches people to re-run a red gate.
 
 ## Milestone
 A green test suite and a verified build in which a single provisioned branch runs offline,

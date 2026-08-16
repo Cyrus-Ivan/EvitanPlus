@@ -5,7 +5,7 @@
 > on what a **word** means, this one on what a **component** is for.
 >
 > **Why it exists.** The frontend grew screen by screen through twenty roadmap phases and the
-> `M0–M14.5` initiative, and the same markup got copied forward each time. That is survivable
+> `M0–M18` initiative, and the same markup got copied forward each time. That is survivable
 > right up until the copies start disagreeing, which they had: `MONTHS` was declared twice, one
 > import apart; the payment badge was toned per type on the sales list and hardcoded on the sale
 > detail, so one sale wore two different badges depending on where you opened it; `formatWhen`

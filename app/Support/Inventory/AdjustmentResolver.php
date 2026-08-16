@@ -22,10 +22,18 @@ use stdClass;
  *
  * A person at the affected branch says what actually happened: all of it arrived
  * (approve), some of it did (partial approve), or none of it did (reject, with a
- * reason). Only the first two move stock, and this class is the ONE place a
- * `type = 'stock_adjustment'` ledger row is now written — before this there were
- * three writers (the CSV import, the manual adjust screen, and the sync cycle's
- * step 2), which is exactly the shape single-writer-per-table exists to prevent.
+ * reason). Only the first two move stock, and this class is where every
+ * `type = 'stock_adjustment'` ledger row a PERSON confirmed is written — before
+ * schema 21 there were three writers (the CSV import, the manual adjust screen,
+ * and the sync cycle's step 2), which is exactly the shape
+ * single-writer-per-table exists to prevent.
+ *
+ * There is one other writer and it is deliberate: {@see OpeningStockImporter}
+ * (M13.5) writes straight to `StockLedger` for a branch that has never sold
+ * anything, bounded by {@see OpeningWindow}. The queue exists so a second voice
+ * can check a claim against a shelf with a past; a branch with no past has
+ * nothing to contradict. Two writers, and `docs/glossary.md` §4 is normative on
+ * the count — do not add a third.
  *
  * ## A rejection writes a ledger row of ZERO (M11.8)
  *

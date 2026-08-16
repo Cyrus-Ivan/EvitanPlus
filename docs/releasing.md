@@ -63,8 +63,10 @@ freezes the sync of every branch of every business until each device is physical
 > branch a request was issued *from*. A 1.1.0 build against a 22 schema writes null into it
 > and renders "Requested by" without a branch name — it tells no lie and misreads nothing, so
 > the floor stayed at 1.1.0. Recorded here because until the audit that added this paragraph,
-> that judgement existed only in `CLAUDE.md`'s status prose and one docblock; M11.8 had no
-> roadmap section, so there was no spec in which it had ever been decided.
+> that judgement existed only in `CLAUDE.md`'s status prose and one docblock — M11.8 had no
+> roadmap section at the time, so there was no spec in which it had ever been decided. (It has
+> one now; the same audit wrote it. The lesson stands: a version-pair call made in a commit
+> message is a call nobody can find.)
 
 > **The worked example — additive**, which is the call you will actually make most often.
 > Schema 23 (M13) added `batch_id` to `inventory_update_queue` and `inventory_ledger`, so

@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Models\Variant;
 use App\Support\Inventory\AdjustmentResolver;
 use App\Support\Inventory\MovementKind;
+use App\Support\Inventory\OpeningWindow;
 use App\Support\Search\LikeQuery;
 use App\Support\Sync\BranchRoster;
 use App\Support\Sync\OnlineRead;
@@ -148,7 +149,7 @@ class StockHistoryController extends Controller
     /**
      * What was ASKED for behind one ledger row (M11.8).
      *
-     * Every `type = 'stock_adjustment'` row on the ledger began as a pending
+     * A `type = 'stock_adjustment'` row that a person answered began as a pending
      * stock adjustment, and the two share an id — {@see AdjustmentResolver}
      * forces the ledger entry to take the queue row's own uuid. So finding the
      * row needs no join, no new column and no lookup table: the id in hand IS
@@ -167,9 +168,12 @@ class StockHistoryController extends Controller
      * Stock History renders offline and is Cashier-level, and an online read in
      * its render would hold a Supavisor client slot for every page view.
      *
-     * Null for a sale, a return or a defect, which never went through the queue,
-     * and null offline. Neither is an error: the row's own `notes` already carry
-     * the sentence version of this, precisely so it reads with no connection.
+     * Null for a sale, a return or a defect, which never went through the queue;
+     * null for an opening-stock row, which is a `stock_adjustment` that nobody
+     * confirmed because {@see OpeningWindow} says there was
+     * nothing yet to contradict (M13.5); and null offline. None of the three is an
+     * error: the row's own `notes` already carry the sentence version of this,
+     * precisely so it reads with no connection.
      */
     public function request(Request $request, string $entry): JsonResponse
     {

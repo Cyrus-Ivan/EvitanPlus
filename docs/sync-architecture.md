@@ -1,7 +1,7 @@
 # Evitan Plus — sync architecture, as built
 
 > **Scope.** How a branch device and the business database actually behave in the code
-> that exists today (M0–M13.5). `MULTIBRANCH-BRAINSTORM.md` is the spec of record and
+> that exists today (M0–M18). `MULTIBRANCH-BRAINSTORM.md` is the spec of record and
 > `MULTIBRANCH-ROADMAP.md` is the phase plan; where either describes an intention this
 > document describes the implementation. On what a *word* means,
 > [`glossary.md`](glossary.md) outranks both.
@@ -819,6 +819,6 @@ piece of the above possible.
 - [`developer-workflows.md`](developer-workflows.md) — how to run, verify and inspect all
   of this.
 - [`../MULTIBRANCH-BRAINSTORM.md`](../MULTIBRANCH-BRAINSTORM.md) — the spec of record.
-- [`../MULTIBRANCH-ROADMAP.md`](../MULTIBRANCH-ROADMAP.md) — phases M0–M13.5 and their "As
+- [`../MULTIBRANCH-ROADMAP.md`](../MULTIBRANCH-ROADMAP.md) — phases M0–M18 and their "As
   built" notes.
 - [`../console/README.md`](../console/README.md) — the operator runbook for the other side.

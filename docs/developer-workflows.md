@@ -25,7 +25,10 @@ Two ways to look at the *product* rather than the code:
 
 - **[`composer rig`](../README.md#two-branch-manual-rig)** — two branches of a real
   throwaway business, in two browsers. The only way to see cross-branch behaviour without
-  building an AppImage. Full documentation in the README.
+  building an AppImage. Full documentation in the README. It is a perception tool rather
+  than a gate, but its **seed** asserts two invariants before committing
+  (`assertOneSessionPerBranch`, `assertSalesFallInsideShifts` in `tests/manual/pg.php`), so a
+  rig that fails to start may be telling you the fixture is wrong rather than the network.
 - **the `verify` skill** (`.claude/skills/verify/`) — drives **one** device headlessly
   over raw CDP against a *copy* of the dev SQLite. Cheaper than the rig and safe for
   checkout (the transaction serial is gapless and permanent — never check out against the
@@ -259,6 +262,8 @@ Each of these has cost real time on this project.
 - [`releasing.md`](releasing.md) — shipping a version to branches, end to end.
 - [`sync-architecture.md`](sync-architecture.md) — how the sync machinery works, as built.
 - [`glossary.md`](glossary.md) — **normative** on terminology.
+- [`ui-conventions.md`](ui-conventions.md) — which shared component to reach for, what is
+  deliberately not abstracted, and the frontend house rules. Read before adding a screen.
 - [`../console/README.md`](../console/README.md) — the console operator runbook.
 - [`phase-18-findings.md`](phase-18-findings.md) — the v1.0.0 final-review audit.
 - [`receipt-printing-design.md`](receipt-printing-design.md),

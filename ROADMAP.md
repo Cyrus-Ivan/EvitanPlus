@@ -9,7 +9,7 @@ This roadmap prioritizes building a **working application as early as possible**
 > **Scope.** These are the phases that built **Evitan POS**, the single-install offline-only
 > product. They are finished; nothing here is forward-looking, and the document is kept as the
 > per-phase record. The work that turned it into **Evitan Plus** — branches, provisioning,
-> Postgres, sync — is phased separately in `MULTIBRANCH-ROADMAP.md` (`M0–M13.5`), which is the
+> Postgres, sync — is phased separately in `MULTIBRANCH-ROADMAP.md` (`M0–M18`), which is the
 > roadmap to read for current and remaining work. `docs/glossary.md` §1 is normative on the
 > two product names.
 
@@ -338,6 +338,11 @@ Transaction Items
 Generate
 
 Transaction Number (a continuous, gapless, zero-padded running serial — `0000000001`, never resets; it doubles as the receipt number, there is no separate receipt-number column)
+
+> **Amended in Evitan Plus (M6).** The serial carries the branch code and is **stored that
+> way** — `MNL-0000000001` — because one business's branches mint serials independently and
+> the number must be unique across all of them. Everything else above is unchanged. See
+> `BRAINSTORM.md` § Transaction Number, and watch the cast: `(int) "MNL-0000000009"` is `0`.
 
 Store
 

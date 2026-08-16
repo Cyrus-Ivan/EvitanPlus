@@ -4,18 +4,19 @@
 
 **Offline-first means offline-capable, not offline-only.** A till that loses its network keeps selling, queues its work, and catches up when the connection returns. Only shared writes — catalog, staff and settings, which every branch must agree on — require being online. UUID primary keys throughout are what make that reconciliation work.
 
-> **Naming.** **Evitan POS** is the single-install, offline-only product released as `v1.0.0`; **Evitan Plus** is the multi-branch, cloud-connected product it was evolved into by the `M0–M13.5` initiative. They are **different products**, with different application ids and data directories — not old and new spellings of one name. This README describes **Evitan Plus**; `RELEASE-NOTES.md` records v1.0.0 as it shipped, and `docs/glossary.md` §1 is normative on the split.
+> **Naming.** **Evitan POS** is the single-install, offline-only product released as `v1.0.0`; **Evitan Plus** is the multi-branch, cloud-connected product it was evolved into by the `M0–M18` initiative. They are **different products**, with different application ids and data directories — not old and new spellings of one name. This README describes **Evitan Plus**; `RELEASE-NOTES.md` records v1.0.0 as it shipped, and `docs/glossary.md` §1 is normative on the split.
 
 ## Highlights
 
 - **Point of sale** — product grid and search (name / SKU / barcode), barcode scanner support, cart with quantity editing, amount/percentage discounts, cash / cashless / others payment types, cash-received and automatic change, and an optional checkout comment. Out-of-stock products stay visible but disabled.
 - **Ledger-based inventory** — categories, items, and variants with an **append-only** inventory ledger as the single source of stock truth. Current stock is ledger-sum reconciled against a snapshot; **negative inventory is never allowed**. Low-stock thresholds highlight rows that need restocking.
 - **CSV import** — bulk catalog upsert by SKU as a modal on Items, with a preview pass that names every existing product the file would change and refuses to apply until somebody confirms, plus a downloadable template, validation messages, and upload history. Products only: a spreadsheet cannot assert what is on a shelf, so the `stock` and `mode` columns and the CSV export were removed at M13. Opening stock is a separate two-column file on `/inventory`, and only while the branch has never sold anything.
-- **Immutable sales history** — completed transactions and line items never change. Selling price and item cost are snapshotted at time of sale, so later price edits never rewrite past sales. The transaction number is a continuous, gapless, zero-padded running serial (`0000000001`, never resets — the BIR-compliant shape) that doubles as the receipt number.
+- **Immutable sales history** — completed transactions and line items never change. Selling price and item cost are snapshotted at time of sale, so later price edits never rewrite past sales. The transaction number is a continuous, gapless, zero-padded running serial carrying its branch code (`MNL-0000000001`, never resets — the BIR-compliant shape) that doubles as the receipt number; the prefix is what lets branches mint serials independently without colliding.
 - **Returns & defects** — partial and multiple returns (restore stock) and defect write-offs (do not restore stock), recorded in a dedicated `sale_returns` family that references the original sale without ever mutating it.
 - **Receipt printing** — driverless ESC/POS straight to the device (USB / Bluetooth / network socket), 58mm and 80mm, auto-print, cash-drawer kick, and reprint. A printing failure **never** rolls back a completed sale.
 - **Reports** — daily / weekly / monthly / yearly sales on one page with drill-down buckets and a stacked-by-item net-sales chart. Totals are always recomputed from sales minus returns minus defects; COGS and profit are Owner-only.
-- **Reports by email** — the report leaves the device as an emailed PDF and by no other route; the download is gone, and it was the last export in the product. Sending starts from a configured list of recipients, each tickable, with room to add one for that send only. The Owner manages the list, the sending account, and an optional schedule (daily / weekly / monthly / yearly) that emails this branch's last complete period on its own. All of it is configured per device in Business Settings, the sending password sealed under the per-install `APP_KEY`. Cost and profit follow the sender's own permission when a report is sent by hand, and are left out of the scheduled one unless the Owner opts in.
+- **Reports by email** — the report leaves the device as an emailed PDF and by no other route; the download is gone, and it was the last export in the product. Sending starts from a configured list of recipients, each tickable, with room to add one for that send only, and the dialog picks its own period and date rather than sending whatever the page happens to show. The Owner manages the list, the sending account, and **four independent schedules** — daily (with a Mon–Sun picker), weekly, monthly and yearly — each switched on separately and each with its own send time, emailing this branch's last complete period on its own. A device that was off sends late rather than skipping, and one off for three weeks sends one report rather than three. All of it is configured per device in Business Settings, the sending password sealed under the per-install `APP_KEY`. Cost and profit follow the sender's own permission when a report is sent by hand, and are left out of the scheduled one unless the Owner opts in.
+- **Employee performance** — one employee, one month: the shifts they worked and the sales they rang, on the same calendar, with a day opening to its shifts and its receipts. Hours come from the same append-only login history the ops screens read; a session that ended in an unclean exit counts as an open shift with no hours rather than a guess. It is the one report with no branch filter and no offline mode — a person is not a branch, so a month read from one branch's local copy would confidently say somebody posted elsewhere never came in. Admin and above; there is no cost or profit on it.
 - **Roles & permissions** — Owner > Admin > Cashier, enforced at routes, actions, and UI. **Item cost is Owner-only** everywhere, including reports and API responses.
 - **Admin & ops** — user management (create / archive / reset password / change role), login history (login, logout, crash, forced logout — a power loss is indistinguishable from a crash after the fact and is recorded as one), an immutable audit log of every significant action (Admin+ view, cost redacted for non-Owners).
 - **Multi-branch sync** — every local write is enqueued in an outbox and carried upward by a four-step sync cycle (version gate → push → pull → heartbeat), which also brings down catalog, staff and settings changes made at other branches. The header shows the unsynced count and a **Sync now** button on every screen; receipt serials are branch-prefixed (`MNL-0000000001`).
@@ -320,8 +321,9 @@ composer verify:hydrate
 
 The same flow, rehearsed on your own machine. `composer rig` provisions a **real
 throwaway business** with two branches on the live Supabase project, seeds a catalog
-with different stock per branch, four staff accounts and **a year of sales**, hydrates
-two local SQLite databases, and serves them as two tills:
+with different stock per branch, four staff accounts, **a year of sales** and the
+**sign-in/out history behind them**, hydrates two local SQLite databases, and serves
+them as two tills:
 
 | Branch | URL | Local database |
 |---|---|---|
@@ -344,8 +346,18 @@ one thing a seeded branch must get right or it can never sync (`RemoteStock::rec
 The trade-off is that a branch which has sold something has no opening window, so the
 opening-stock import is only reachable from `rig:wizard`.
 
-This is a **perception tool, not a gate** — CI never runs it and it asserts nothing.
-Correctness belongs to `composer verify`, `verify:hydrate` and `verify:console`; the rig
+Who is on the till is decided **before** who sold: the trading day is one run, or two
+either side of a handover, and every sale goes to whoever holds the run its hour falls
+in — so the year carries night shifts crossing midnight, handovers mid-afternoon and real
+days off, and `/employee-performance` has something to show. Two invariants are asserted
+before the seed commits (`assertOneSessionPerBranch`, `assertSalesFallInsideShifts` in
+[`tests/manual/pg.php`](tests/manual/pg.php)): a branch is never signed in twice, and
+nobody rings a sale while signed out. A rig that refuses to start may be telling you the
+fixture is wrong rather than the network.
+
+This is a **perception tool, not a gate** — CI never runs it, and beyond those two seed
+assertions it asserts nothing. Correctness belongs to `composer verify`, `verify:hydrate`
+and `verify:console`; the rig
 exists so two-branch behaviour — sync, cross-branch stock updates, the consolidated
 report, branch-prefixed receipt serials — can be *looked at* without building an
 AppImage for every look.
@@ -463,6 +475,8 @@ Deeper documentation lives in the repo:
 - [`docs/sync-architecture.md`](docs/sync-architecture.md) — the multi-branch machinery **as built**: hydration, the four-step sync cycle, online writes and reads, pending stock adjustments, the version gate, monitoring, the grant matrix and the risk it accepts
 - [`docs/developer-workflows.md`](docs/developer-workflows.md) — every command a developer runs, what each gate proves, how to inspect a device, and the traps that produce a wrong reading
 - [`docs/glossary.md`](docs/glossary.md) — **normative** on terminology; outranks every other document on what a word means
+- [`docs/ui-conventions.md`](docs/ui-conventions.md) — the frontend's counterpart: which shared component to reach for, what is deliberately **not** abstracted and why, and the house rules
+- [`docs/releasing.md`](docs/releasing.md) — shipping a version to branches end to end: the version-pair decision, migrate-then-install, delivering an AppImage to a till, confirming with `monitor`
 
 **Specs and plans:**
 
@@ -471,14 +485,14 @@ Deeper documentation lives in the repo:
 - [`CLAUDE.md`](CLAUDE.md) — invariants and working guidance
 - [`docs/`](docs/) — after-sales and receipt-printing designs of record, which outrank the specs where they disagree
 - [`MULTIBRANCH-BRAINSTORM.md`](MULTIBRANCH-BRAINSTORM.md) — Evitan Plus (multi-branch, provisioning, sync) spec of record
-- [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md) — Evitan Plus phased build plan (M0–M13.5)
+- [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md) — Evitan Plus phased build plan (M0–M18)
 - [`console/README.md`](console/README.md) — the Provisioning Console operator runbook
 
 ## Project status
 
 **Evitan POS shipped as `v1.0.0`** (see [`RELEASE-NOTES.md`](RELEASE-NOTES.md)) with all 20 [`ROADMAP.md`](ROADMAP.md) phases (0–19) complete: the full commerce chain (Setup, DB schema, Auth, Authorization, Settings, Inventory, Ledger, CSV Import/Export, POS, Transactions, Returns/Defects, Printing, Reports), the full admin/ops track (User Management, Login History, Audit Logs), UI polish, the Phase 18 final review (DB-level immutability triggers) and release preparation.
 
-**Evitan Plus** has since taken that through `M0–M13.5` of the [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md) initiative: the Provisioning Console, per-business Postgres schemas and least-privilege branch roles, the connect-and-hydrate setup wizard, the four-step sync cycle (version gate, push, pull, heartbeat), atomic online writes for shared data, the schema version gate, branch monitoring, consolidated cross-branch reports and login history, the removal of Database Backup in favour of rebuilding a device from its credential, human-confirmed stock adjustments with branch-to-branch transfers, the Items/Inventory split with stock batches, and spreadsheet opening stock for a branch that has not traded yet.
+**Evitan Plus** has since taken that through `M0–M18` of the [`MULTIBRANCH-ROADMAP.md`](MULTIBRANCH-ROADMAP.md) initiative: the Provisioning Console, per-business Postgres schemas and least-privilege branch roles, the connect-and-hydrate setup wizard, the four-step sync cycle (version gate, push, pull, heartbeat), atomic online writes for shared data, the schema version gate, branch monitoring, consolidated cross-branch reports and login history, the removal of Database Backup in favour of rebuilding a device from its credential, human-confirmed stock adjustments with branch-to-branch transfers, the Items/Inventory split with stock batches and their readable batch references, spreadsheet opening stock for a branch that has not traded yet, reports by email on four schedules, employee performance, and Login History as a calendar with one session per branch enforced on write.
 
 The suite currently runs `composer verify` offline plus 7 Playwright E2E spec files, with `composer verify:console` and `composer verify:hydrate` covering the Supabase-dependent halves.
 

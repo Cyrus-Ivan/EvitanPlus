@@ -162,6 +162,19 @@ command verifies the JSON by connecting **as the new role** and reading the seed
 before it reports success — so a credentials file that cannot authenticate is impossible
 to ship silently.
 
+**The Owner's password needs ten characters, with letters and numbers** — the same rule
+the app applies to every account it creates. It is *spelled out* in
+`BusinessProvisionCommand::rules()` rather than taken from `Password::defaults()`, because
+this app has no service provider to configure one (`bootstrap/providers.php` is empty by
+design — it is CLI-only) and §18 forbids either app referencing the other's code. So the
+two are kept in step by hand, the same way `CredentialVault` restates `BranchSecret`'s
+domain separator: **if the app's policy changes, change it here too.** The Owner is the one
+account that can never be archived and the only one that sees item cost, so it is the last
+one that should be held to a weaker rule than a cashier.
+
+The password chosen here is **permanent** unless the Owner replaces it — there is no forced
+change on first login. Deliver it accordingly.
+
 It prints the business UUID. Keep it: it is how you target everything below.
 
 ### Inspect what exists

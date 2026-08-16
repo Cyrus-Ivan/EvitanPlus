@@ -11,8 +11,8 @@
 > constraint makes *unusable*; §8.3's "delete a branch" named an operation that deletes a role
 > and no branch; §9's "the credential" collapsed two values that must stay separate — a bug
 > that, in the spec's own words, "surfaces only in the field, at setup, on a customer's
-> device". Each cost implementation time to rediscover. M4–M12 are written from the same
-> prose, so the vocabulary is fixed here first.
+> device". Each cost implementation time to rediscover. Every phase from M4 on is written from
+> the same prose, so the vocabulary is fixed here first.
 >
 > **How entries are written.** Every definition names a **code anchor** — a class, column,
 > command or config key that can be checked — so this file is verifiable rather than merely
@@ -42,16 +42,24 @@ offline. Application id `com.evitan.plus`, data under `~/.config/evitan-plus/`.
 one. A build of Evitan Plus does not adopt an Evitan POS install's data.
 
 ### The multi-branch initiative
-The programme of work — phases **M0–M13.5** — that turns Evitan POS into Evitan Plus. Use this
+The programme of work — phases **M0–M18** — that turns Evitan POS into Evitan Plus. Use this
 phrase for the *work*; use "Evitan Plus" for the *product*.
-✗ **Not** "M0–M12", which this entry said until the audit that added this line. The initiative
-ran past M12 four times — see [Phase numbering].
+✗ **Not** "M0–M12", nor "M0–M13.5", each of which this entry said until the audit that corrected
+it. The range has now drifted three times, always the same way: a phase ships, the roadmap gains a
+heading, and the eight documents that quote the range do not. If you are adding a phase, `grep -rn
+"M0–M1"` before you finish — the range appears in this file, `CLAUDE.md`, `README.md` (three
+times), `ROADMAP.md`, `BRAINSTORM.md` (twice), `MULTIBRANCH-ROADMAP.md`, `docs/sync-architecture.md`
+(twice) and `docs/ui-conventions.md`.
 
 ### Phase numbering
 **M-numbers are not dense and not chronological.** Work that arrived between planned phases took
-a decimal — M6.5, M11.5, M11.6, M11.7, M11.8, M13.5 — so the sequence reads
-M11 → M11.5 → … → M11.8 → M12 → M13 → M13.5, and a higher number is not always later work.
+a decimal — M6.5, M11.5, M11.6, M11.7, M11.8, M13.5, M14.5 — so the sequence reads
+M11 → M11.5 → … → M11.8 → M12 → M13 → M13.5 → M14 → M14.5 → M15 → …, and a higher number is not
+always later work.
 *Anchor:* the `# Phase` headings of `MULTIBRANCH-ROADMAP.md`, in order.
+✗ **Not** decimals from M15 on. The decimals mean "arrived between two planned phases", and
+nothing after M14.5 was planned in advance — M15–M18 are unplanned work filed in the order it
+landed, so they take plain integers.
 ✗ **Not** two meanings of **M12**. It means the **branch scope on sales and inventory stock**
 phase. It briefly also titled a "Hardening, testing & release verification" phase in the roadmap
 while three other documents were using it for the feature work; the hardening tasks are standing
@@ -161,7 +169,7 @@ screen included — so any screen can name the installation without asking for i
 which is why it is one prop rather than two: `business` is a pulled setting, `branch`/`code`
 come from [`instance`].
 *Anchor:* the `identity` key in `HandleInertiaRequests::share()`;
-`resources/js/components/branch-identity.tsx` (M11.5).
+`resources/js/components/sync/branch-identity.tsx` (M11.5).
 ✗ **Not** the product name. The sidebar wordmark stays *Evitan Plus*; this is the shop's name
 and its branch.
 ✗ **Not** a [branch roster] entry. A till knows only which branch it *is*.
@@ -323,7 +331,7 @@ One sidebar group, four screens, and the split between them is load-bearing:
 | **Stock History** | `/inventory/stock-history` | Movements that already happened — the ledger | `local`, `all`, or a branch id |
 
 *Anchor:* `ItemController`, `InventoryController`, `Inventory\StockHistoryController`,
-`Inventory\InventoryQueueController`; the sidebar group in `resources/js/components/app-sidebar.tsx`.
+`Inventory\InventoryQueueController`; the sidebar group in `resources/js/components/layout/app-sidebar.tsx`.
 ✗ **Not** one "Inventory page". Items and Inventory shared a screen until **M13** split them,
 because a total is not a shelf: nothing on the catalog is per-branch, and everything about stock
 is. Do not use "Inventory" for the catalog.
@@ -757,7 +765,7 @@ the three — see the fourth bullet.
 M11.8), `SalesController` and `Inventory\InventoryController` (both M12; the latter was
 `Inventory\ItemController` until M13 split the catalog off it); `BranchScope` in
 `resources/js/types/index.ts`; the picker
-`resources/js/components/branch-scope-select.tsx` and
+`resources/js/components/filters/branch-scope-select.tsx` and
 `App\Http\Controllers\Concerns\OffersBranchScope`, which fills it.
 ✗ **Not** a filter over one dataset. `local` and the other two read different databases.
 ✗ **Not** necessarily a swap of the whole page's source. On Inventory (M12) it changes **stock and
@@ -1312,9 +1320,15 @@ is the one to trust.
 
 ## 10. Report delivery
 
-The sales report leaves the device by **email** and by nothing else. The PDF download
+A report leaves the device by **email** and by nothing else. The PDF download
 (`reports.export`) was removed outright when this was built; there is no fallback, and no other
 export remains in the product — CSV export went at M13 and Database Backup at M11.6.
+
+Everything in this section is written about the **sales** report (`/reports`), which was the only
+one when it was built. There is a second emailed document since M16 — see [Employee Performance
+report] in §11 — and it reuses this section's machinery wholesale: the same
+[sender credentials], the same [default recipients], the same synchronous send. What it does not
+reuse is the [schedule]: there is no scheduled employee report, and §11 says why.
 
 Everything in this section is a **device-local setting**, which is the load-bearing term the whole
 design rests on and which had no entry before now.
@@ -1454,3 +1468,122 @@ Business Settings, to prove the [sender credentials] work.
 whether it was.
 ✗ **Not** a substitute for `isConfigured()`. That answers whether a send can be *attempted*;
 credentials are only ever proven by trying them, which is what this is for.
+
+---
+
+## 11. Attendance and employee reporting
+
+Added at M16–M17. This section answers about a **person** what §5 and §8 answer about a
+**branch**, and almost every entry here exists because those two questions do not have the same
+shape: a branch is where rows live, a person moves between branches, and the vocabulary that
+serves the first reads plausibly and wrongly when pointed at the second.
+
+### Employee Performance report
+One employee, one month: the shifts they worked and the sales they rang, on one calendar. The one
+reporting screen with **no [branch scope]** and the one read screen with **no offline path** —
+both for the same reason, stated at [branch scope]'s ✗ line and in `docs/sync-architecture.md` §7.
+*Anchor:* `EmployeePerformanceController` (`/employee-performance`, `index`/`day`/`email`),
+`App\Support\Reports\EmployeePerformanceBuilder`.
+✗ **Not** Owner-only. The whole route sits in the `role:admin` group, because nothing on it is
+cost, COGS or profit — an Admin and the Owner read the identical document. It follows `/sales` and
+`/login-history`, not `/reports`.
+✗ **Not** degraded offline the way a scoped screen is. It renders and says it cannot report
+(`online: false`), rather than falling back — there is no `consolidatedOnline` tri-state here
+because there is nothing to fall back **to**.
+✗ **Not** a payroll record. Hours come from `login_history`, which records when somebody was
+signed in at a till, and an [open shift] contributes none.
+
+### Shift
+A `login` paired with whatever ended it, **anchored to the day it started**. A cashier who signs
+in at 20:00 and out at 04:03 worked one shift on the earlier day, not two half-days either side of
+midnight.
+*Anchor:* `App\Support\Reports\AttendanceFigures` — the pairing walk, and `CLOSING_DAYS`, which
+reads one day past the window purely to close a shift that began inside it.
+✗ **Not** derived in SQL. The walk is in PHP over one ordered read: pairing needs the events in
+order, and doing it in PHP removes the whole `strftime`/`to_char` dialect class that
+`SalesFigures` has to carry. Only the window bounds differ between the two databases.
+✗ **Not** branch-less. A shift carries the branch code its `login` was recorded at, from a LEFT
+JOIN onto `branches` that runs **only on `pgsql`** — the local `login_history` has no `branch_id`
+and deliberately never will. On SQLite that code is simply null.
+
+### Open shift
+A shift with a start, no believable end, and therefore **no hours** — never zero hours. Produced
+two ways: nothing ended it (still signed in, or the device has not been back), or it ended in
+`application_crash`, whose timestamp is written on the *next launch* and says nothing about when
+the person actually left.
+*Anchor:* `AttendanceFigures` — the four end-kinds are enumerated in its class docblock; the
+month's open-shift count is reported beside the total hours.
+✗ **Not** a gap to be filled with an estimate. A till left off over a weekend would otherwise book
+the weekend as worked. The count is surfaced so an unclean exit reads as the data-quality problem
+it is.
+✗ **Not** the same as a `forced_logout`. An admin ending a session is a real end at a real time.
+
+### One session per branch
+The rule that a branch holds one till, a till holds one session, and therefore two `login` rows
+with nothing between them is a shape the business cannot produce. Enforced on write: a sign-in
+first closes whatever session this branch left open, attributed to **whoever opened it**, as an
+`application_crash`.
+*Anchor:* `App\Support\Auth\SessionManager::handleLogin()` → `closeDanglingSession()`; the rig's
+`assertOneSessionPerBranch()` in `tests/manual/pg.php` is the standing statement of it, checked
+before the seed commits so a reopened seam fails the seed rather than reaching a calendar.
+✗ **Not** already covered by the single-window session cookie or by `EnforceBootSession`. Those
+cover a window close and a crash; neither covers an **idle** session — `session.lifetime` is 120
+minutes, and a cashier who steps away past it is returned to the login screen with nothing
+written at all.
+✗ **Not** stamped at the moment it is noticed. The closing row is written a second *before* the
+sign-in that noticed it, but never before the sign-in it closes — whole seconds are all the
+precision `timestamp(0) with time zone` has, so a shared second would leave the order resting on
+an id tiebreak, and two sign-ins inside one second would otherwise produce `crash, login, login`.
+✗ **Not** a distinguishable cause. A crash, a power cut and an expired idle session are
+indistinguishable after the fact; they share one label, and `AttendanceFigures` declines to
+believe that label's timestamp.
+
+### Month window
+The window Login History and Employee Performance both take: **one month**, picked by month and
+year, rather than a free From/To range. Login History carried a date range until M17 and lost it
+with the table.
+*Anchor:* `App\Http\Controllers\Concerns\NormalizesMonthFilter`;
+`App\Support\Reports\ReportPeriods::resolveWindow()` for the bounds themselves, which stay the one
+copy of what a period is.
+✗ **Not** a narrowing of the date range for tidiness. A calendar grid cannot honour an arbitrary
+range — a control offering one would produce windows the grid has no way to draw.
+✗ **Not** hinted as `Illuminate\Support\Carbon`. `resolveWindow()` returns `Carbon\Carbon`, and
+hinting the subclass downstream is a `TypeError` that the `rescue()` around an online read
+swallows: every wider-scope request silently falls back to branch-local and shows the offline
+notice, with no stack trace and a correct-looking screen. See the memory note; it cost a Supabase
+run to find.
+
+### Login event calendar
+Login History's month as a grid: three events to a cell then "+n more", each day opening a dialog
+drawn from the payload the page already holds.
+*Anchor:* `App\Support\LoginHistory\LoginCalendar` (the one copy of the bucketing, shared by the
+local and consolidated reads); `resources/js/components/login-history/event-calendar.tsx` and
+`day-dialog.tsx`; the grid itself is `components/data/month-grid.tsx`, shared with the attendance
+calendar.
+✗ **Not** newest-first. A day reads **forward**, unlike every other index in the app: a paginated
+list is newest-first because its far end is unbounded, and a day is bounded, so a truncated cell
+should hide the end of the day rather than its beginning.
+✗ **Not** fetched per day, unlike the Employee Performance day dialog. The whole month is already
+the page — the cells are drawn from it — so a second request would re-fetch what the client holds,
+and holding it is also what makes the dialog work offline in the `local` scope. The employee day
+dialog is the opposite call for the opposite reason: those receipts are the one thing *not*
+already on the page.
+✗ **Not** carrying a Notes column. Only an unclean exit and a forced logout ever have one, so as a
+column it was a dash on most rows and a paragraph on a few; it is a disclosure, keyed off the note
+being present rather than off the event type, because a consolidated read renders whatever another
+branch's build wrote.
+
+### Employee report email
+The Employee Performance report as an emailed PDF, for one employee or several.
+*Anchor:* `EmployeePerformanceController::email()`,
+`App\Http\Requests\Reports\EmailEmployeePerformanceRequest`, `App\Mail\EmployeePerformanceMail`,
+`App\Support\Reports\EmployeePerformancePdf`.
+✗ **Not** a second mail configuration. It reuses §10 entirely — same [sender credentials], same
+[default recipients], same synchronous send with the same transport timeout.
+✗ **Not** schedulable. `ReportSchedule`'s four kinds are the sales report's; there is no scheduled
+employee report, because a scheduled send has no actor to authorize it and this document names a
+person rather than a period.
+✗ **Not** buildable offline. The path reads *first*, so an offline device is refused before any
+PDF is built rather than after — and a refusal writes no audit row, because nothing was attempted.
+✗ **Not** one online read per employee. Every employee on a multi-employee send is built inside
+**one** closure: a `BranchCycle` holds a Supavisor client slot for its length.

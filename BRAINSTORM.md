@@ -5,7 +5,7 @@
 > **Scope.** This is the functional spec of **Evitan POS** — the single-install,
 > offline-only product released as `v1.0.0`. It is **still the spec of record for the
 > commerce chain** (POS, inventory, ledger, returns, discounts, reports, settings, audit,
-> archiving, UUID policy): the `M0–M13.5` multi-branch initiative did not change those rules,
+> archiving, UUID policy): the `M0–M18` multi-branch initiative did not change those rules,
 > and the code still implements what is written below.
 >
 > What it does **not** cover is everything that initiative added — branches, provisioning,
@@ -37,7 +37,7 @@ The project should prioritize:
 * Clean architecture
 * Future compatibility for synchronization and multi-branch support
 
-The application is intentionally designed for a **single business installation**. Multi-branch support and cloud synchronization are future milestones and are **not part of the MVP**. *(Both were subsequently built by the `M0–M13.5` initiative that turned this product into Evitan Plus — see `MULTIBRANCH-BRAINSTORM.md`. The "future compatibility" bullet above is why that was possible without rewriting the schema.)*
+The application is intentionally designed for a **single business installation**. Multi-branch support and cloud synchronization are future milestones and are **not part of the MVP**. *(Both were subsequently built by the `M0–M18` initiative that turned this product into Evitan Plus — see `MULTIBRANCH-BRAINSTORM.md`. The "future compatibility" bullet above is why that was possible without rewriting the schema.)*
 
 ---
 

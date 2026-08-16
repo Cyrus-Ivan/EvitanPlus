@@ -44,7 +44,7 @@ function discountLabel(transaction: TransactionDetail, money: MoneyFormatter): s
     return transaction.discount_type === 'percentage' ? `${amount}%` : money(transaction.discount);
 }
 
-// A read-only label over its value. NOT `components/field.tsx`, which wraps a
+// A read-only label over its value. NOT `components/forms/field.tsx`, which wraps a
 // form control — this one has nothing to type into, hence the different name.
 function Detail({ label, value }: { label: string; value: string }) {
     return (

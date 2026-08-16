@@ -27,7 +27,7 @@ work lands, per [`docs/releasing.md`](docs/releasing.md) §2.
 
 | | |
 | --- | --- |
-| Schema version | **23** |
+| Schema version | **24** |
 | Minimum app version | **1.1.0**, raised from 1.0.0 at schema 21 |
 | Order | `schema:migrate --all` **first**, then build, then visit the tills |
 
@@ -45,8 +45,9 @@ and arriving nowhere, looking from the schema's side exactly like a branch doing
 its job. Migrating first freezes those builds at `version_blocked`, where they
 keep selling offline until somebody swaps the binary. Every other migration has
 been additive and left the floor alone — including **schema 22** (M11.8,
-`issued_by_branch_id`) and **schema 23** (M13, `batch_id`), both of which an
-older build writes null into and neither of which makes it do anything untrue.
+`issued_by_branch_id`), **schema 23** (M13, `batch_id`) and **schema 24** (M15,
+`batch_reference`), all three of which an older build writes null into and none
+of which makes it do anything untrue.
 
 Full procedure — gates, `--pretend`, the re-grant step, confirming with
 `monitor` — is [`docs/releasing.md`](docs/releasing.md).
@@ -99,6 +100,37 @@ Full procedure — gates, `--pretend`, the re-grant step, confirming with
   every existing product a file would change and asks before applying it, and
   lives in a modal on Items. The stock columns and the CSV **export** are gone;
   stock has its own file now, under Opening stock above.
+- **Stock batches have a name you can say.** A batch that moves twelve products
+  as one act now carries a reference — `MNL-B-000001` — printed on the pending
+  card, on every ledger row it wrote, and searchable on Stock History. Two
+  branches looking at the same delivery finally have a shared word for it.
+- **Reports leave by email.** A report is emailed as a PDF, to a list of
+  recipients you keep and tick per send, and by no other route — the download is
+  gone, and it was the last export in the product. The Owner can also switch on
+  **four independent schedules** — daily (choosing which weekdays), weekly,
+  monthly and yearly — each with its own send time, each emailing the branch's
+  last complete period on its own. A device that was switched off sends late
+  rather than skipping, and one off for three weeks sends one report, not three.
+  The mail account is configured per device and its password never leaves it.
+- **Employee performance.** One employee, one month: the shifts they worked and
+  the sales they rang on the same calendar, with any day opening to its shifts
+  and its receipts. It is the one report with no branch filter and no offline
+  mode — a person is not a branch, and a month read from one branch's own copy
+  would say, confidently and wrongly, that somebody posted elsewhere never came
+  in. Admin and above; no cost or profit on it.
+- **Login History is a calendar.** A month at a time, picked by month and year,
+  with each day's events in its cell and a dialog behind it — instead of paging a
+  table until the dates changed. The per-person question moved to Employee
+  Performance, so the user filter is gone from here.
+- **A branch cannot be signed in twice.** A cashier who steps away long enough
+  for the session to expire used to come back, sign in, and leave the first
+  session open forever. The new sign-in now closes it first, recorded against
+  whoever opened it as an unexpected exit — which is what it was.
+- **Quieter, safer housekeeping.** Logs rotate daily and keep two weeks, so a
+  till on a counter for years cannot fill its own disk and stop selling. New
+  passwords need ten characters with letters and numbers, the Owner's included —
+  a shop-floor guess now reaches a database role that can rewrite the whole
+  business's catalog and prices.
 
 ### Removed
 
@@ -106,6 +138,12 @@ Full procedure — gates, `--pretend`, the re-grant step, confirming with
   data; a branch has the business database, and a dead device is replaced by
   running the wizard again on new hardware.
 - **CSV export**, and the `stock` / `mode` columns on import.
+- **The report PDF download.** A report now leaves as an email or not at all — a
+  file that lands in the Downloads folder of a shop counter has not left the
+  building, which was the only thing anybody wanted from it.
+- **Login History's date range and user filter.** The window is a month, because
+  a calendar cannot draw an arbitrary range; the per-person question is Employee
+  Performance.
 
 ### Known limitations
 

@@ -11,10 +11,11 @@ use Illuminate\Database\Eloquent\Builder;
  *
  * `inventory_ledger` says what happened across THREE independent columns, and no
  * single one of them answers "what kind of movement was this". `type` alone puts
- * a recount, a CSV import and both legs of a transfer under one word, which is
- * every non-sale row there is since schema 21 made {@see AdjustmentResolver} the
- * only writer of `type = 'stock_adjustment'`. So each kind here is a PREDICATE
- * over the three columns rather than a value of any of them.
+ * a recount, an opening-stock import and both legs of a transfer under one word,
+ * which is every non-sale row there is — schema 21 narrowed the writers of
+ * `type = 'stock_adjustment'` to {@see AdjustmentResolver}, and M13.5 added the
+ * one deliberate second, {@see OpeningStockImporter}. So each kind here is a
+ * PREDICATE over the three columns rather than a value of any of them.
  *
  * This is a presentation and filter vocabulary, deliberately: nothing about sync
  * may ever key on it. Which way a row travels is decided by `type`

@@ -13,6 +13,7 @@ use App\Models\Variant;
 use App\Support\Audit\AuditRecorder;
 use App\Support\Inventory\AdjustmentQueue;
 use App\Support\Inventory\AdjustmentResolver;
+use App\Support\Inventory\OpeningStockImporter;
 use App\Support\Sync\BranchCycle;
 use App\Support\Sync\BranchRoster;
 use App\Support\Sync\OnlineRead;
@@ -55,10 +56,14 @@ use Inertia\Response;
  * ## What this controller does NOT do
  *
  * It never writes a ledger entry. Answering a row moves stock, and that belongs
- * to {@see AdjustmentResolver} — one class, because it is now the only writer of
- * `type = 'stock_adjustment'` anywhere and single-writer-per-table is what keeps
- * last-write-wins out of this system. This controller issues, displays, and
- * hands decisions to that class.
+ * to {@see AdjustmentResolver} — one class, because single-writer-per-table is
+ * what keeps last-write-wins out of this system. This controller issues,
+ * displays, and hands decisions to that class.
+ *
+ * `type = 'stock_adjustment'` has exactly two writers: that resolver, and
+ * {@see OpeningStockImporter} for a branch inside its opening window (M13.5).
+ * Neither is this controller. `docs/glossary.md` §4 is normative on the count
+ * and the reason.
  *
  * ## Every branch's rows go through here, including this one's
  *

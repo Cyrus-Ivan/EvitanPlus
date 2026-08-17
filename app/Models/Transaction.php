@@ -53,9 +53,27 @@ class Transaction extends Model
     /**
      * @return HasMany<TransactionItem, $this>
      */
+    /**
+     * The sale's lines, in a fixed order.
+     *
+     * Ordered on the relation rather than at each call site because a receipt is
+     * a document: a reprint that lists the same lines in a different order from
+     * the original is a second version of a record this app promises never
+     * changes. Nothing guaranteed one — SQLite's incidental row order held in
+     * practice and is not a rule — and the same relation feeds the receipt, the
+     * sale detail and the after-sales apportionment, which is exactly the set
+     * that has to agree with itself. `ProcessSaleReturn` already ordered by `id`
+     * explicitly for the apportionment remainder; this makes that the default
+     * rather than the one place somebody remembered.
+     *
+     * By `id`, which is UUIDv7 and therefore insertion-ordered — the order the
+     * cashier rang the items up in.
+     *
+     * @return HasMany<TransactionItem, $this>
+     */
     public function items(): HasMany
     {
-        return $this->hasMany(TransactionItem::class);
+        return $this->hasMany(TransactionItem::class)->orderBy('id');
     }
 
     /**

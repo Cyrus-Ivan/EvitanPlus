@@ -8,6 +8,7 @@ use Illuminate\Database\Connection;
 use Illuminate\Database\Query\JoinClause;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use RuntimeException;
 
 /**
  * The second half of a cycle's pull: this branch's stock, agreed with the
@@ -121,6 +122,22 @@ class StockReconciler
         // validated against reconciled stock before it becomes a ledger entry.
         // The clamp is the honest floor, not a design.
         $reconciled = max(0, $baseline + $unsynced);
+
+        if ($baseline + $unsynced < 0) {
+            // The clamp firing is the SIGNAL that the upstream baseline and this
+            // device's ledger have diverged — the one thing this class exists to
+            // keep in step — and it used to happen in complete silence, leaving a
+            // wrong-but-plausible figure on the shelf and nothing anywhere to say
+            // the two sources disagreed. Reported rather than thrown: a cycle may
+            // never stop a sale, and a clamped zero is still the safe number.
+            report(new RuntimeException(sprintf(
+                'Stock reconciliation clamped variant %s to zero: upstream baseline %d with %d unsynced local movement(s). '
+                .'The business database and this device disagree about this product.',
+                $variantId,
+                $baseline,
+                $unsynced,
+            )));
+        }
 
         $existing = DB::table('stock_snapshots')->where('variant_id', $variantId)->first();
 

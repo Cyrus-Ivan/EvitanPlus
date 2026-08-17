@@ -13,8 +13,15 @@ use App\Models\Variant;
 use App\Support\Inventory\StockLedger;
 use App\Support\Sync\BranchCycle;
 use App\Support\Sync\CredentialVault;
+use App\Support\Sync\Heartbeat;
+use App\Support\Sync\Puller;
+use App\Support\Sync\Pusher;
+use App\Support\Sync\StockReconciler;
 use App\Support\Sync\SyncCycle;
+use App\Support\Sync\VersionGate;
 use Closure;
+use Illuminate\Database\Connection;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\DB;
@@ -255,6 +262,180 @@ class SyncCycleTest extends TestCase
 
         $this->assertSame($before, $result['unsynced_count']);
         $this->assertSame($before, SyncOutboxEntry::query()->whereNull('synced_at')->count());
+    }
+
+    /**
+     * A push that can never succeed must not make the branch deaf.
+     *
+     * The push runs before the pull, and its exception used to escape straight
+     * past it. `markFailed()` deliberately leaves the rows PENDING and
+     * `pendingGroups()` orders strictly by `min(sequence)`, so one group that
+     * will never commit — a `(branch_id, transaction_number)` collision after
+     * hardware was replaced, a check-constraint violation, a revoked column grant
+     * — sits at the head of the outbox forever. Every later cycle threw at the
+     * same place, so `Puller::pull()` and `StockReconciler::reconcile()` never ran
+     * again: no price changes, no new or archived staff, no settings, and none of
+     * the adjustments other branches approved. Indefinitely. While
+     * `sync_status.connection_state` read `online`, because a constraint
+     * violation classifies as a conflict rather than a network fault.
+     *
+     * The push failure is still recorded and still re-thrown — the cycle did not
+     * succeed and must not say it did. It is simply re-thrown AFTER the pull, so
+     * the one direction that still works keeps working. Safe by construction:
+     * `StockReconciler` already subtracts this branch's unsynced local movements
+     * from the baseline, which is exactly the state a failed push leaves.
+     */
+    public function test_a_push_that_cannot_succeed_still_lets_the_pull_run(): void
+    {
+        $pulled = false;
+
+        $this->fakeCollaborators(
+            push: fn () => throw new QueryException('pgsql', 'insert into transactions', [], new PDOException(
+                'SQLSTATE[23505]: Unique violation: duplicate key value violates unique constraint',
+            )),
+            pull: function () use (&$pulled): array {
+                $pulled = true;
+
+                return ['items' => 2];
+            },
+        );
+
+        $result = app(SyncCycle::class)->run();
+
+        $this->assertTrue($pulled, 'A branch stops receiving the catalog, staff and settings the moment one row cannot be pushed.');
+
+        // And it still reports the failure: the cycle did not succeed.
+        //
+        // The STATE is `online`, and correctly so — a constraint violation means
+        // the branch reached Postgres and was refused, which is the distinction
+        // `classify()` exists to draw (see the conflict test above). What says
+        // the cycle failed is the error and the absence of a sync stamp.
+        $this->assertSame(SyncStatus::ONLINE, $result['state']);
+        $this->assertNotNull(SyncStatus::current()->last_error);
+        $this->assertSame(SyncStatus::KIND_CONFLICT, SyncStatus::current()->last_error_kind);
+        $this->assertNull(SyncStatus::current()->last_sync_at, 'A cycle whose push failed has not synced.');
+        $this->assertNotNull(SyncStatus::current()->blocked_since);
+    }
+
+    /** A pull failure is still fatal to the cycle, and nothing masks it. */
+    public function test_a_failing_pull_is_still_reported(): void
+    {
+        $this->fakeCollaborators(
+            push: fn (): array => ['rows' => 0],
+            pull: fn () => throw new SetupFailedException('the catalog read fell over'),
+        );
+
+        $result = app(SyncCycle::class)->run();
+
+        $this->assertNotSame(SyncStatus::ONLINE, $result['state']);
+        $this->assertStringContainsString('catalog read', (string) SyncStatus::current()->last_error);
+    }
+
+    /**
+     * Run the real inner closure — version gate, push, pull, reconcile,
+     * heartbeat — with the collaborators replaced, so the ORDER of the steps is
+     * what is under test rather than any one of them.
+     */
+    private function fakeCollaborators(Closure $push, Closure $pull): void
+    {
+        $this->stubCycle(fn (Closure $work) => $work(DB::connection()));
+
+        $this->app->instance(VersionGate::class, new class extends VersionGate
+        {
+            public function __construct() {}
+
+            public function read(Connection $remote): array
+            {
+                return ['schema_version' => 24, 'min_app_version' => '1.0.0'];
+            }
+
+            public function assert(string $minAppVersion): void {}
+        });
+
+        $this->app->instance(Pusher::class, new class($push) extends Pusher
+        {
+            public function __construct(private readonly Closure $behaviour) {}
+
+            public function push(Connection $remote): array
+            {
+                return ($this->behaviour)();
+            }
+        });
+
+        $this->app->instance(Puller::class, new class($pull) extends Puller
+        {
+            public function __construct(private readonly Closure $behaviour) {}
+
+            public function pull(Connection $remote, string $branchId): array
+            {
+                return ($this->behaviour)();
+            }
+        });
+
+        $this->app->instance(StockReconciler::class, new class extends StockReconciler
+        {
+            public function __construct() {}
+
+            public function reconcile(Connection $remote, string $branchId): int
+            {
+                return 0;
+            }
+        });
+
+        $this->app->instance(Heartbeat::class, new class extends Heartbeat
+        {
+            public function __construct() {}
+
+            public function upsert(Connection $remote, string $branchId, string $state, ?string $error, bool $synced): void {}
+        });
+    }
+
+    /**
+     * A credential that cannot be decrypted says so, and is not reported as
+     * having no credential at all.
+     *
+     * `CredentialVault::open()` builds an accurate, actionable message — the
+     * sealed value belongs to a different install's `APP_KEY`, which is what a
+     * copied SQLite file looks like — and the cycle threw it away for a generic
+     * "this device has no stored branch credential". Two situations with
+     * completely different remedies ("was this ever set up?" versus "did someone
+     * copy the database?"), reported identically.
+     *
+     * A device with no credential at all also stamps its probe time now: a
+     * tried-and-failed cycle is still a try, and that path used to return before
+     * the stamp — leaving the question unanswerable for exactly the device that
+     * most needs it answered.
+     */
+    public function test_an_undecryptable_credential_is_diagnosed_rather_than_flattened(): void
+    {
+        // Sealed under a key this install does not hold.
+        InstanceSecret::query()->where('id', InstanceSecret::ID)->update([
+            'dsn_ciphertext' => 'eyJpdiI6InNvbWV0aGluZyIsInZhbHVlIjoiZ2FyYmFnZSIsIm1hYyI6ImJhZCJ9',
+        ]);
+
+        $this->stubCycle(fn () => $this->fail('A credential that cannot be opened must not reach Postgres.'));
+
+        $result = app(SyncCycle::class)->run();
+
+        $this->assertSame(SyncStatus::OFFLINE, $result['state']);
+        $this->assertSame(SyncStatus::KIND_AUTH, SyncStatus::current()->last_error_kind);
+
+        // The distinguishing half: not the "no credential" wording.
+        $this->assertStringNotContainsString(
+            'no stored branch credential',
+            (string) SyncStatus::current()->last_error,
+        );
+
+        $this->assertNotNull(SyncStatus::current()->last_probe_at, 'Even a cycle that got nowhere is an attempt.');
+    }
+
+    public function test_a_device_with_no_credential_still_records_the_attempt(): void
+    {
+        InstanceSecret::query()->delete();
+
+        app(SyncCycle::class)->run();
+
+        $this->assertNotNull(SyncStatus::current()->last_probe_at);
     }
 
     public function test_the_route_answers_json_even_when_the_cycle_fails(): void

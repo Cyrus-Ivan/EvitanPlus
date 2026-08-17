@@ -69,7 +69,24 @@ class SyncCycle
      */
     public function run(): array
     {
-        $connection = $this->credentials();
+        // A tried-and-failed cycle is still a try, so the probe stamp is written
+        // before the first way out rather than after it. This path used to return
+        // above the stamp below, leaving "when did this device last attempt
+        // anything?" unanswerable for precisely the device that most needs the
+        // question answered.
+        SyncStatus::current()->forceFill(['last_probe_at' => now()])->save();
+
+        try {
+            $connection = $this->vault->open();
+        } catch (Throwable $e) {
+            // The vault's own message, not a generic one. It distinguishes two
+            // situations with completely different remedies: a device that was
+            // never set up, and a device holding a credential sealed under a
+            // DIFFERENT install's APP_KEY — which is what a copied SQLite file
+            // looks like, and which "this device has no stored branch credential"
+            // actively misdirects somebody away from.
+            return $this->record(SyncStatus::OFFLINE, SyncStatus::KIND_AUTH, $e->getMessage());
+        }
 
         if ($connection === null) {
             return $this->record(
@@ -80,8 +97,6 @@ class SyncCycle
         }
 
         $reachable = $this->probe->reachable($connection);
-
-        SyncStatus::current()->forceFill(['last_probe_at' => now()])->save();
 
         if (! $reachable) {
             return $this->record(SyncStatus::OFFLINE, SyncStatus::KIND_NETWORK, 'The business database is not reachable.');
@@ -103,7 +118,35 @@ class SyncCycle
                     // Step 1. Before the pull, so the baseline read below already
                     // reflects this branch's own movements and the reconciliation
                     // has less to subtract.
-                    $pushed = $this->pusher->push($remote)['rows'];
+                    //
+                    // A failure here is HELD rather than thrown, and re-thrown
+                    // after step 2. The push and the pull are independent
+                    // directions, and letting a broken one take the other down
+                    // with it is what turned a single unpushable row into a
+                    // branch that stopped receiving anything at all: `markFailed`
+                    // leaves the rows pending on purpose and `pendingGroups`
+                    // orders by `min(sequence)`, so one group that can never
+                    // commit — a serial collision after hardware was replaced, a
+                    // check-constraint violation, a revoked column grant — sits
+                    // at the head of the outbox forever, and every later cycle
+                    // threw in exactly this spot. No prices, no staff, no
+                    // settings, none of the adjustments other branches approved,
+                    // indefinitely, while the state read `online` because a
+                    // constraint violation is a conflict rather than a network
+                    // fault.
+                    //
+                    // Pulling after a failed push is safe by construction:
+                    // `StockReconciler` computes `baseline + Σ unsynced local
+                    // movements`, and unsynced is precisely what a failed push
+                    // leaves behind.
+                    $pushed = 0;
+                    $pushFailure = null;
+
+                    try {
+                        $pushed = $this->pusher->push($remote)['rows'];
+                    } catch (Throwable $e) {
+                        $pushFailure = $e;
+                    }
 
                     // Step 2. The catalog, staff and settings deltas, then this
                     // branch's stock agreed against the business's figure. This
@@ -111,6 +154,11 @@ class SyncCycle
                     // approved, which is the only way this device learns of them.
                     $pulled = array_sum($this->puller->pull($remote, $branchId));
                     $pulled += $this->stock->reconcile($remote, $branchId);
+
+                    // The cycle did not succeed, and must not say it did.
+                    if ($pushFailure !== null) {
+                        throw $pushFailure;
+                    }
                 } catch (Throwable $e) {
                     // Step 3 on the way out, while there still IS a connection —
                     // and this is the beat that matters most. A `version_blocked`
@@ -144,24 +192,6 @@ class SyncCycle
             pulled: $moved['pulled'],
             synced: true,
         );
-    }
-
-    /**
-     * The sealed credential, or null on a device that has never been set up.
-     *
-     * Swallows a decryption failure into "no credential": it means the SQLite
-     * file arrived without the per-install APP_KEY that sealed it, and the
-     * remedy is to run setup again — the same remedy as having none.
-     *
-     * @return array<string, mixed>|null
-     */
-    private function credentials(): ?array
-    {
-        try {
-            return $this->vault->open();
-        } catch (Throwable) {
-            return null;
-        }
     }
 
     /**

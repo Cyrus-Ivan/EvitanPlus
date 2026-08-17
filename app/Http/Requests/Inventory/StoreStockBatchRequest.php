@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests\Inventory;
 
+use App\Rules\SellableVariant;
 use App\Support\Inventory\AdjustmentQueue;
 use App\Support\Sync\OnlineRead;
 use Illuminate\Contracts\Validation\ValidationRule;
@@ -64,7 +65,7 @@ class StoreStockBatchRequest extends FormRequest
             'to_branch_id' => ['required_if:kind,transfer', 'uuid', 'different:from_branch_id'],
 
             'lines' => ['required', 'array', 'min:1', 'max:'.self::MAX_LINES],
-            'lines.*.variant_id' => ['required', 'uuid', 'exists:variants,id'],
+            'lines.*.variant_id' => ['required', 'uuid', SellableVariant::rule()],
             // Always positive. What it means is decided by `kind` and `mode`, and
             // asking an operator to type a minus sign to remove stock is how a
             // removal ends up adding.

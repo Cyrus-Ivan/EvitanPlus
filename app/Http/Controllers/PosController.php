@@ -8,6 +8,7 @@ use App\Models\Transaction;
 use App\Models\TransactionItem;
 use App\Models\Variant;
 use App\Support\Audit\AuditRecorder;
+use App\Support\Http\FilterText;
 use App\Support\Inventory\StockLedger;
 use App\Support\Printing\PrinterSettings;
 use App\Support\Printing\ReceiptPrinter;
@@ -49,7 +50,7 @@ class PosController extends Controller
      */
     public function index(Request $request): Response
     {
-        $search = trim((string) $request->query('search', '')) ?: null;
+        $search = FilterText::orNull($request->query('search'));
 
         $products = Variant::query()
             // Qualify the column: the join brings in items.archived_at too, so an

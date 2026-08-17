@@ -403,9 +403,21 @@ the batch at all. `batch_reference` — `MNL-B-000001`, the issuing branch's cod
 serial — is the half a person uses; see §"Batch reference" in `docs/glossary.md`, which is
 normative. `App\Support\Inventory\StockBatch` holds both names and mints the reference **inside the
 online write's own transaction**, because the serial is read from `inventory_update_queue` — which
-is Postgres-only, and a batch can only be issued online anyway. A `pg_advisory_xact_lock` on the
-prefix serializes minting per branch, so two tills at one branch cannot be handed one name; it is
-skipped on anything but Postgres, which means the SQLite stand-in the offline suite runs against.
+is Postgres-only, and a batch can only be issued online anyway. It takes a `pg_advisory_xact_lock`
+on the prefix, skipped on anything but Postgres (which means the SQLite stand-in the offline suite
+runs against).
+
+> **That lock does not currently serialize anything, and this paragraph used to claim it did.**
+> `pg_advisory_xact_lock` is **transaction**-scoped, and the mint runs from an `afterMirroring`
+> closure that `BranchCycle` opens **no remote transaction** for — so in autocommit the implicit
+> single-statement transaction releases the lock before the `max()` on the next line runs. Two
+> tills at one branch minting at the same instant can therefore still be handed one name. The
+> consequence is bounded and cosmetic: `batch_id` remains the identity, nothing keys off the
+> reference, and the visible effect is Stock History's `?batch=` filter returning two deliveries
+> as one. It is latent while the MVP holds one device per branch (`docs/glossary.md` §2 "Till"),
+> which is the same constraint the accepted risk in §9 rests on. Fixing it means wrapping the mint
+> in `$remote->transaction()`, which belongs with the wider "remote half is not transactional"
+> decision rather than on its own.
 From there it travels exactly as `batch_id` does — onto the receiving legs, onto the ledger — and
 it is on the ledger for the same reason: the Pending Stocks card, the Stock History entry dialog
 and that page's `?batch=` filter all print or read it, and the last two must work with no

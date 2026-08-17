@@ -13,6 +13,7 @@ use App\Support\Printing\PrinterSettings;
 use App\Support\Printing\ReceiptPrinter;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class CheckoutTest extends TestCase
@@ -197,6 +198,86 @@ class CheckoutTest extends TestCase
             ->assertSessionHasErrors('discount');
 
         $this->assertSame(0, Transaction::count());
+    }
+
+    /**
+     * A discount without a type is refused rather than guessed at.
+     *
+     * `discount_type` was `nullable` on its own, so a payload carrying money but
+     * no type fell through the controller's `match` to the amount branch and was
+     * APPLIED — then stored with a null type. Every surface that reads the pair
+     * keys on the type (`sales.tsx`, `sales/show.tsx` both return early on a null
+     * one), so the sale showed no discount on screen while the receipt, which
+     * derives it from `subtotal − total`, showed the money. The screen and the
+     * printed document disagreed about what the customer was charged.
+     *
+     * Not reachable from the POS page, which always sends the pair — reachable
+     * from any direct POST or a stale client bundle, and it is the money field.
+     */
+    public function test_a_discount_without_a_type_is_rejected()
+    {
+        $variant = $this->sellable(price: 100, cost: 40, stock: 5);
+
+        $this->actingAs(User::factory()->cashier()->create())
+            ->post(route('pos.checkout'), [
+                'lines' => [['variant_id' => $variant->id, 'quantity' => 2]],
+                'payment_type' => 'cashless',
+                'discount' => 50,
+            ])
+            ->assertSessionHasErrors('discount_type');
+
+        $this->assertSame(0, Transaction::count());
+    }
+
+    /** A zero discount still needs no type — nothing is being taken off. */
+    public function test_a_zero_discount_needs_no_type()
+    {
+        $variant = $this->sellable(price: 100, cost: 40, stock: 5);
+
+        $this->actingAs(User::factory()->cashier()->create())
+            ->post(route('pos.checkout'), [
+                'lines' => [['variant_id' => $variant->id, 'quantity' => 2]],
+                'payment_type' => 'cashless',
+                'discount' => 0,
+            ])
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame('200.00', Transaction::sole()->total);
+    }
+
+    /**
+     * Money is refused below the centavo rather than silently rounded.
+     *
+     * `centavos()` multiplies by 100 and rounds, so ₱100.999 tendered became
+     * ₱101.00 and the change was computed from the rounded figure — the drawer
+     * short by up to a centavo per sale, with nothing said. A peso has two
+     * decimal places; a third is a typo, and the place to answer it is the form.
+     */
+    #[DataProvider('subCentavoAmounts')]
+    public function test_money_below_the_centavo_is_rejected(string $field, mixed $value)
+    {
+        $variant = $this->sellable(price: 100, cost: 40, stock: 5);
+
+        $this->actingAs(User::factory()->cashier()->create())
+            ->post(route('pos.checkout'), array_merge([
+                'lines' => [['variant_id' => $variant->id, 'quantity' => 1]],
+                'payment_type' => 'cash',
+                'cash_received' => 200,
+                'discount_type' => 'amount',
+                'discount' => 10,
+            ], [$field => $value]))
+            ->assertSessionHasErrors($field);
+
+        $this->assertSame(0, Transaction::count());
+    }
+
+    /** @return array<string, array{0: string, 1: mixed}> */
+    public static function subCentavoAmounts(): array
+    {
+        return [
+            'tendered cash' => ['cash_received', 100.999],
+            'an amount discount' => ['discount', 10.555],
+        ];
     }
 
     public function test_cash_received_below_the_total_is_rejected()

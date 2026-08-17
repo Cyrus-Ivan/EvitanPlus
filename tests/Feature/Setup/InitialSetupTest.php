@@ -7,9 +7,12 @@ use App\Models\Instance;
 use App\Models\User;
 use App\Support\Printing\PrinterSettings;
 use App\Support\Setup\CredentialsFilePicker;
+use App\Support\Sync\ConnectAndHydrate;
 use App\Support\Sync\CredentialsDocument;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
+use PDOException;
 use Tests\TestCase;
 
 /**
@@ -203,6 +206,50 @@ class InitialSetupTest extends TestCase
                 ->where('appVersion', config('nativephp.version'))
                 ->has('desktop')
         );
+    }
+
+    /**
+     * A hydrate that falls over partway through is reported on the form, not as
+     * a blank error page.
+     *
+     * Every refusal covered above happens BEFORE the copy — a missing file, bad
+     * JSON, the wrong format, a credential that cannot connect — and each throws
+     * the app's own `SetupFailedException`, which the controller catches. The
+     * copy itself is a different matter: `Hydrator::copyTable()` writes through
+     * the query builder, so a local UNIQUE, FK or NOT NULL violation arrives as a
+     * `QueryException`, and that escaped to a 500. The class's own docblock names
+     * the cases — a device that already carries rows, a schema that has drifted,
+     * a connection lost mid-copy — and the person meeting them is standing at a
+     * till with a printed instruction sheet.
+     *
+     * Atomicity was never in question and is asserted here anyway: the outer
+     * transaction rolls the whole thing back either way.
+     */
+    public function test_a_failure_during_hydration_is_shown_on_the_form(): void
+    {
+        $path = $this->write('branch.json', json_encode($this->document()));
+        $this->fakePicker($path);
+
+        $this->app->instance(ConnectAndHydrate::class, new class extends ConnectAndHydrate
+        {
+            public function __construct() {}
+
+            public function __invoke(CredentialsDocument $document): array
+            {
+                throw new QueryException(
+                    'sqlite',
+                    'insert into "users" ...',
+                    [],
+                    new PDOException('SQLSTATE[23000]: Integrity constraint violation: UNIQUE constraint failed: users.username'),
+                );
+            }
+        });
+
+        $this->post(route('setup.store'), $this->payload())
+            ->assertRedirect()
+            ->assertSessionHasErrors('credentials_path');
+
+        $this->assertNothingPersisted();
     }
 
     private function assertNothingPersisted(): void

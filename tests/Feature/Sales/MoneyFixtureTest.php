@@ -111,11 +111,15 @@ class MoneyFixtureTest extends TestCase
 
         $lineA = $transaction->items->firstWhere('variant_id', $a->id);
 
-        // Staggered returns: 30.02, 30.02, then the final unit trues up to 30.01
-        // so the cumulative refund equals the line's paid share of 90.05 exactly.
-        $this->assertSame('30.02', $this->returnUnits($transaction, $lineA->id, 1)->total_refund);
+        // Staggered returns of a 90.05 share over three units. Each event pays
+        // the cumulative share owed so far less what the line has already had, so
+        // the odd centavo falls where the rounding puts it rather than being
+        // dumped on the final unit — 3002, then 6003 − 3002, then 9005 − 6003.
+        // What matters is that no prefix ever exceeds the share and the set sums
+        // to it exactly; see fixture E for why the per-event form is unsafe.
         $this->assertSame('30.02', $this->returnUnits($transaction, $lineA->id, 1)->total_refund);
         $this->assertSame('30.01', $this->returnUnits($transaction, $lineA->id, 1)->total_refund);
+        $this->assertSame('30.02', $this->returnUnits($transaction, $lineA->id, 1)->total_refund);
 
         $this->assertReport([
             'gross_sales' => '270.04',
@@ -171,6 +175,66 @@ class MoneyFixtureTest extends TestCase
             // All three units returned: their cost is credited back in full,
             // so profit nets to zero.
             'profit' => '0.00',
+        ]);
+    }
+
+    /**
+     * Fixture E — the paid share is SMALLER than the units sold.
+     *
+     * Six units at ₱1.00 discounted 99.5% leaves a line paid share of 3 centavos
+     * across 6 units, so a single unit's share is half a centavo. This is the
+     * only shape in which the refund apportionment can drift the wrong way: a
+     * per-unit `round()` that ignores what has already been refunded rounds every
+     * half-centavo UP, and five single-unit returns can pay out more than the
+     * line was ever worth — leaving the true-up on the final unit to hand back a
+     * NEGATIVE refund, i.e. an instruction to take money from the customer.
+     *
+     * The rules, in order of importance: no refund is ever negative, the running
+     * total never exceeds the paid share, and the completed set sums to it
+     * exactly. A unit whose share rounds to nothing refunds nothing, which is the
+     * honest answer — it is what the customer paid for it.
+     */
+    public function test_fixture_e_paid_share_smaller_than_units_never_over_refunds(): void
+    {
+        $a = $this->sellable(price: 1.00, cost: null, stock: 10);
+
+        $transaction = $this->checkout([[$a, 6]], 'percentage', 99.5);
+
+        // 600 centavos less a 597-centavo discount.
+        $this->assertSame('0.03', $transaction->total);
+
+        $line = $transaction->items->sole();
+
+        $refunds = [];
+        $running = 0;
+
+        for ($unit = 1; $unit <= 6; $unit++) {
+            $refund = $this->returnUnits($transaction, $line->id, 1)->total_refund;
+            $refunds[] = $refund;
+
+            $running += (int) round((float) $refund * 100);
+
+            $this->assertGreaterThanOrEqual(
+                0,
+                (float) $refund,
+                "Unit {$unit} refunded {$refund} — a negative refund tells the cashier to take money back.",
+            );
+            $this->assertLessThanOrEqual(
+                3,
+                $running,
+                "After unit {$unit} the line had refunded {$running} centavos of a 3-centavo share.",
+            );
+        }
+
+        // The whole line came back, so its refunds sum to exactly what was paid.
+        $this->assertSame(3, $running, 'Refunds for a fully returned line must equal its paid share.');
+
+        $this->assertSame(['0.01', '0.00', '0.01', '0.00', '0.01', '0.00'], $refunds);
+
+        $this->assertReport([
+            'gross_sales' => '0.03',
+            'returns' => '0.03',
+            'net_sales' => '0.00',
         ]);
     }
 

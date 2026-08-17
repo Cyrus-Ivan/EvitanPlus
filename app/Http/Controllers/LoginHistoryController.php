@@ -7,6 +7,7 @@ use App\Http\Controllers\Concerns\NormalizesMonthFilter;
 use App\Http\Controllers\Concerns\OffersBranchScope;
 use App\Models\Instance;
 use App\Models\LoginHistory;
+use App\Support\Http\FilterText;
 use App\Support\LoginHistory\LoginCalendar;
 use App\Support\Sync\BranchRoster;
 use App\Support\Sync\OnlineRead;
@@ -16,7 +17,6 @@ use App\Support\Sync\OnlineRead;
 use Carbon\Carbon;
 use Illuminate\Database\Connection;
 use Illuminate\Http\Request;
-use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -90,12 +90,6 @@ use Inertia\Response;
 class LoginHistoryController extends Controller
 {
     use NormalizesMonthFilter, OffersBranchScope;
-
-    /** This branch's own sessions: SQLite, works offline. */
-    private const SCOPE_LOCAL = 'local';
-
-    /** Every branch's sessions: Postgres, read live. */
-    private const SCOPE_ALL = 'all';
 
     public function __construct(
         private readonly OnlineRead $read,
@@ -254,7 +248,7 @@ class LoginHistoryController extends Controller
                 ];
             },
             'Login history across branches',
-        ), null, report: false);
+        ), null, report: OnlineRead::reportUnlessOffline());
 
         // Offline, or the credential could not be opened — `rescue` catches
         // Throwable, which matters because CredentialVault throws
@@ -368,33 +362,6 @@ class LoginHistoryController extends Controller
      */
     private function normalizeEvent(mixed $event): ?string
     {
-        return LoginEventType::tryFrom((string) $event)?->value;
-    }
-
-    /**
-     * Which branches to read, snapped to what this viewer and this device can
-     * actually serve.
-     *
-     * A Cashier, or a device that was never connected to a business database,
-     * gets `local` back rather than a 403: the local history is theirs by right
-     * and it is on the same route.
-     *
-     * This branch's own id is `local` under another name, and the picker offers
-     * it only under that one — a bookmarked link naming it would otherwise leave
-     * the control showing a value that is not in its list.
-     */
-    private function normalizeScope(mixed $value, bool $canViewAll): string
-    {
-        $scope = (string) $value;
-
-        if ($scope === '' || $scope === self::SCOPE_LOCAL || ! $canViewAll || ! Instance::isHydrated()) {
-            return self::SCOPE_LOCAL;
-        }
-
-        if ($this->isThisBranch($scope)) {
-            return self::SCOPE_LOCAL;
-        }
-
-        return $scope === self::SCOPE_ALL || Str::isUuid($scope) ? $scope : self::SCOPE_ALL;
+        return LoginEventType::tryFrom(FilterText::of($event))?->value;
     }
 }

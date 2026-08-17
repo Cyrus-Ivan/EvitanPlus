@@ -7,7 +7,11 @@ use App\Models\User;
 use App\Models\Variant;
 use App\Support\Inventory\StockLedger;
 use App\Support\Printing\PrinterSettings;
+use App\Support\Printing\ReceiptPrinter;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Mockery;
+use Symfony\Component\Process\Exception\ProcessTimedOutException;
+use Symfony\Component\Process\Process;
 use Tests\TestCase;
 
 class ReprintTest extends TestCase
@@ -108,6 +112,39 @@ class ReprintTest extends TestCase
             'receipt_device_path' => '/dev/does-not-exist-'.uniqid(),
         ]);
         $transaction = $this->makeSale();
+
+        $this->actingAs(User::factory()->cashier()->create())
+            ->post(route('sales.print', $transaction))
+            ->assertRedirect()
+            ->assertSessionHas('toast.type', 'error');
+    }
+
+    /**
+     * A printer failure that is not a `PrinterException` still toasts.
+     *
+     * The two tests above both drive the RAW DEVICE connector, which fails in the
+     * app's own typed exception — so the `catch (PrinterException)` in
+     * `SalesController::print()` looked sufficient. It is not: the `system`
+     * connection runs `Process::timeout(15)`, and a CUPS queue that accepts the
+     * job and then stalls (out of paper, printer paused) throws Laravel's
+     * `ProcessTimedOutException`, a plain `RuntimeException`. That escaped to a
+     * 500 error page on the exact failure the toast exists for.
+     *
+     * Checkout already catches `\Throwable` here (a print may never take a sale
+     * down with it); this pins the reprint path to the same rule.
+     */
+    public function test_reprint_survives_a_printer_failure_that_is_not_a_printer_exception(): void
+    {
+        $transaction = $this->makeSale();
+
+        $printer = Mockery::mock(ReceiptPrinter::class);
+        $printer->shouldReceive('print')
+            ->once()
+            ->andThrow(new ProcessTimedOutException(
+                Process::fromShellCommandline('lp')->setTimeout(15),
+                ProcessTimedOutException::TYPE_GENERAL,
+            ));
+        $this->app->instance(ReceiptPrinter::class, $printer);
 
         $this->actingAs(User::factory()->cashier()->create())
             ->post(route('sales.print', $transaction))

@@ -264,11 +264,41 @@ class ConsolidatedStockTest extends TestCase
      */
     private function variantOnPage(mixed $page, string $sku): array
     {
+        $this->assertReadWasOnline($page);
+
         $variant = collect($page->toArray()['props']['variants']['data'])->firstWhere('sku', $sku);
 
         $this->assertNotNull($variant, "No variant [{$sku}] on the page.");
 
         return $variant;
+    }
+
+    /**
+     * The consolidated read actually happened.
+     *
+     * Every `scoped_stock` assertion in this file depends on it, and only one
+     * test used to say so — so when a read fell back, the others failed with
+     * `Undefined array key "scoped_stock"`, which describes the symptom and hides
+     * the cause. A fallback is a designed behaviour here (`consolidatedOnline:
+     * false`, attach nothing, render exactly as a local page does), and the whole
+     * point of that design is that it is indistinguishable from an ordinary
+     * render — which is precisely why a test has to check the flag rather than
+     * infer it from a missing key.
+     *
+     * Worth stating plainly: this fires on a transient connection failure as
+     * readily as on a broken feature, because the app cannot tell those apart
+     * either. That is what the message says.
+     */
+    private function assertReadWasOnline(mixed $page): void
+    {
+        $props = $page->toArray()['props'];
+
+        $this->assertTrue(
+            $props['consolidatedOnline'] ?? false,
+            'The page fell back to the local shelf instead of reading the business database, so no scoped figure was attached. '
+            .'Either the cross-branch read is broken, or this run lost its connection to Postgres — the log will say which, '
+            .'since a fault is reported and an outage is not.',
+        );
     }
 
     /**

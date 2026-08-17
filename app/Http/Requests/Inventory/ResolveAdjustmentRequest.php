@@ -6,6 +6,7 @@ use App\Support\Inventory\AdjustmentResolver;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Validator;
 
 /**
  * Answering pending stock adjustments: approve, partially approve, or reject.
@@ -54,8 +55,9 @@ class ResolveAdjustmentRequest extends FormRequest
             'adjustments' => ['required', 'array', 'min:1', 'max:500'],
             'adjustments.*.id' => ['required', 'uuid'],
             'adjustments.*.outcome' => ['required', Rule::in(AdjustmentResolver::OUTCOMES)],
+            // Shape only. WHETHER each is required depends on that row's own
+            // outcome, which no rule in this list can see — see withValidator().
             'adjustments.*.quantity' => [
-                Rule::requiredIf(fn (): bool => $this->hasOutcome('partial')),
                 'nullable',
                 'integer',
                 'min:-999999',
@@ -63,7 +65,6 @@ class ResolveAdjustmentRequest extends FormRequest
                 'not_in:0',
             ],
             'adjustments.*.reason' => [
-                Rule::requiredIf(fn (): bool => $this->hasOutcome('partial', 'reject')),
                 'nullable',
                 'string',
                 'max:500',
@@ -72,13 +73,53 @@ class ResolveAdjustmentRequest extends FormRequest
     }
 
     /**
+     * Require a quantity on the rows partially approved, and a reason on the rows
+     * partially approved or turned down — each judged by ITS OWN outcome.
+     *
+     * These were `Rule::requiredIf` closures, which have no idea which row they
+     * are running for, so the condition was asked of the whole submit: any one
+     * partial made `quantity` required on EVERY row, and any one rejection made
+     * `reason` required on every row. A card answered row by row — some arrived,
+     * some did not — came back 422 with errors against rows the operator had
+     * answered perfectly well. Defensible while a resolution was one row from a
+     * dialog; not once "Approve all" began posting a whole card here.
+     *
+     * An `after` closure rather than `Rule::forEach`, which expands over the data
+     * that IS there and so never fires for the missing key that is the whole
+     * point of a `required` rule.
+     */
+    public function withValidator(Validator $validator): void
+    {
+        $validator->after(function (Validator $validator): void {
+            /** @var array<int, array<string, mixed>> $adjustments */
+            $adjustments = (array) $this->input('adjustments', []);
+
+            foreach ($adjustments as $index => $adjustment) {
+                $outcome = $adjustment['outcome'] ?? null;
+
+                if ($outcome === 'partial' && ($adjustment['quantity'] ?? null) === null) {
+                    $validator->errors()->add(
+                        "adjustments.{$index}.quantity",
+                        'Enter how much of it actually arrived.',
+                    );
+                }
+
+                if (in_array($outcome, ['partial', 'reject'], true) && trim((string) ($adjustment['reason'] ?? '')) === '') {
+                    $validator->errors()->add(
+                        "adjustments.{$index}.reason",
+                        'Say why, so the branch that asked for this can see what happened.',
+                    );
+                }
+            }
+        });
+    }
+
+    /**
      * @return array<string, string>
      */
     public function messages(): array
     {
         return [
-            'adjustments.*.reason.required' => 'Say why, so the branch that asked for this can see what happened.',
-            'adjustments.*.quantity.required' => 'Enter how much of it actually arrived.',
             'adjustments.*.quantity.not_in' => 'Approving none of it is a rejection — turn it down instead.',
         ];
     }
@@ -108,24 +149,5 @@ class ResolveAdjustmentRequest extends FormRequest
         }
 
         return $decisions;
-    }
-
-    /**
-     * Is any row in this submit being answered one of these ways?
-     *
-     * Per-row conditional rules cannot see their own row's siblings — the closure
-     * a `requiredIf` runs has no index — so the requirement is stated for the
-     * whole submit. In practice a resolution is one row at a time from the dialog,
-     * and the bulk path is Approve all, which sends nothing but approvals.
-     */
-    private function hasOutcome(string ...$outcomes): bool
-    {
-        foreach ((array) $this->input('adjustments', []) as $adjustment) {
-            if (in_array($adjustment['outcome'] ?? null, $outcomes, true)) {
-                return true;
-            }
-        }
-
-        return false;
     }
 }

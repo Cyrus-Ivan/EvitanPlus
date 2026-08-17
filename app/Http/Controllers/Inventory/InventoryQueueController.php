@@ -11,6 +11,7 @@ use App\Models\Instance;
 use App\Models\User;
 use App\Models\Variant;
 use App\Support\Audit\AuditRecorder;
+use App\Support\Http\FilterText;
 use App\Support\Inventory\AdjustmentQueue;
 use App\Support\Inventory\AdjustmentResolver;
 use App\Support\Inventory\OpeningStockImporter;
@@ -25,7 +26,6 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -80,11 +80,6 @@ class InventoryQueueController extends Controller
 
     /** Enough work to review; this is not an audit log. */
     private const LIMIT = 200;
-
-    /** The shared branch scope vocabulary. See normalizeScope(). */
-    private const SCOPE_LOCAL = 'local';
-
-    private const SCOPE_ALL = 'all';
 
     /** A request is a transfer, or it is not. See normalizeKind(). */
     private const KIND_TRANSFER = 'transfer';
@@ -143,14 +138,14 @@ class InventoryQueueController extends Controller
         // The `null` is the rescue's fallback, not this closure's: a read that
         // failed is a device with no connection, which is a different answer from
         // a queue with nothing in it.
-        $data = rescue(fn (): array => $this->read->run(function (Connection $remote) use ($kind): array {
-            $pending = $this->pending($remote, $kind);
+        $data = rescue(fn (): array => $this->read->run(function (Connection $remote) use ($kind, $scope): array {
+            $pending = $this->pending($remote, $kind, $scope);
 
             return [
                 'branches' => BranchRoster::read($remote),
                 'rows' => [...$pending, ...$this->parents($remote, $pending)],
             ];
-        }, 'Branch stock updates'), null, report: false);
+        }, 'Branch stock updates'), null, report: OnlineRead::reportUnlessOffline());
 
         if ($data === null) {
             return Inertia::render('inventory/stock-updates', [
@@ -194,7 +189,7 @@ class InventoryQueueController extends Controller
                 'The branch list',
             ),
             [],
-            report: false,
+            report: OnlineRead::reportUnlessOffline(),
         );
 
         return response()->json(['branches' => $branches]);
@@ -402,17 +397,32 @@ class InventoryQueueController extends Controller
     }
 
     /**
-     * Every row in the business still waiting on somebody.
+     * Every row still waiting on somebody, within the requested scope.
      *
-     * Business-wide and not branch-scoped: which branch's work a person is
-     * looking at is the `scope` filter's job, applied after grouping, because a
-     * transfer's involvement spans two rows and SQL would have to see both to
-     * decide it.
+     * Which rows a GROUP finally shows is still {@see inScope()}'s call, in PHP,
+     * because a transfer's involvement spans two rows and SQL would have to see
+     * both to decide it. What happens here is narrower and only about the LIMIT.
+     *
+     * ## Why the scope has to reach the query at all
+     *
+     * The limit used to be applied business-wide, oldest first, and the scope
+     * afterwards — so a branch with more than 200 rows waiting filled the window
+     * on its own and every other branch's page rendered EMPTY while its stock sat
+     * there. One 100-line transfer batch is already 200 legs. The rows existed,
+     * the screen said there was nothing to do, and nothing said otherwise.
+     *
+     * So a scoped read is narrowed first, on the three columns
+     * {@see inScope()} itself reads — the row's own branch, the counterparty, and
+     * the branch that issued it. A group survives if any of its rows does, which
+     * is the same predicate {@see parents()} then completes from the other side.
+     * `all` keeps the business-wide window, which is what that scope means.
      *
      * @return list<object>
      */
-    private function pending(Connection $remote, ?string $kind): array
+    private function pending(Connection $remote, ?string $kind, string $scope): array
     {
+        $branchId = $scope === self::SCOPE_LOCAL ? $this->branchId() : $scope;
+
         return $remote->table('inventory_update_queue')
             ->where('status', 'pending')
             // A kind IS `reference_type = 'transfer'` or the absence of it, so
@@ -420,6 +430,12 @@ class InventoryQueueController extends Controller
             // same value, so it never splits a group in half.
             ->when($kind === self::KIND_TRANSFER, fn ($query) => $query->where('reference_type', 'transfer'))
             ->when($kind === self::KIND_ADJUSTMENT, fn ($query) => $query->where('reference_type', '!=', 'transfer'))
+            ->when($scope !== self::SCOPE_ALL, fn ($query) => $query->where(
+                fn ($involved) => $involved
+                    ->where('branch_id', $branchId)
+                    ->orWhere('counterparty_branch_id', $branchId)
+                    ->orWhere('issued_by_branch_id', $branchId),
+            ))
             ->orderBy('created_at')
             ->orderBy('id')
             ->limit(self::LIMIT)
@@ -740,31 +756,10 @@ class InventoryQueueController extends Controller
         }));
     }
 
-    /**
-     * `local` (this branch), `all`, or a branch id — the shared branch scope
-     * vocabulary (docs/glossary.md), as Reports, Login History and Stock History
-     * use it.
-     *
-     * No role gate, unlike those three. Nothing here is a figure: it is a list of
-     * work that has not happened, every row of which was already visible to every
-     * role on the page this replaces. What still bounds ANSWERING one is the
-     * branch, and that is enforced in {@see AdjustmentResolver}, not here.
-     */
-    private function normalizeScope(mixed $value): string
-    {
-        $scope = (string) $value;
-
-        if ($scope === '' || $scope === self::SCOPE_LOCAL || $this->isThisBranch($scope)) {
-            return self::SCOPE_LOCAL;
-        }
-
-        return $scope === self::SCOPE_ALL || Str::isUuid($scope) ? $scope : self::SCOPE_LOCAL;
-    }
-
     /** `transfer`, `adjustment`, or null for both. */
     private function normalizeKind(mixed $value): ?string
     {
-        $kind = (string) $value;
+        $kind = FilterText::of($value);
 
         return in_array($kind, [self::KIND_TRANSFER, self::KIND_ADJUSTMENT], true) ? $kind : null;
     }

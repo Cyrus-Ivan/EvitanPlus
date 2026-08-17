@@ -11,6 +11,7 @@ use App\Support\Audit\AuditRecorder;
 use App\Support\Email\ReportEmailException;
 use App\Support\Email\ReportEmailSettings;
 use App\Support\Email\ReportMailer;
+use App\Support\Http\FilterText;
 use App\Support\Reports\EmployeeDaySales;
 use App\Support\Reports\EmployeePerformanceBuilder;
 use App\Support\Reports\EmployeePerformancePdf;
@@ -285,7 +286,7 @@ class EmployeePerformanceController extends Controller
         return rescue(fn (): array => $this->read->run(
             fn (Connection $remote): array => (new EmployeeDaySales($remote))->forDay($userId, $day),
             'Employee day sales',
-        ), null, report: false);
+        ), null, report: OnlineRead::reportUnlessOffline());
     }
 
     /**
@@ -324,7 +325,7 @@ class EmployeePerformanceController extends Controller
                 return $reports;
             },
             'Employee performance',
-        ), null, report: false);
+        ), null, report: OnlineRead::reportUnlessOffline());
     }
 
     /**
@@ -362,7 +363,7 @@ class EmployeePerformanceController extends Controller
      */
     private function selected(mixed $requested, Collection $employees, Carbon $from, Carbon $to): ?User
     {
-        $id = (string) $requested;
+        $id = FilterText::of($requested);
 
         if ($id !== '') {
             $employee = $employees->firstWhere('id', $id);

@@ -71,4 +71,30 @@ class VersionGateTest extends TestCase
     {
         $this->assertSame('9.9.9', $this->gate('9.9.9')->appVersion());
     }
+
+    /**
+     * A build that cannot say what version it is must not freeze the business.
+     *
+     * `version_compare('', '1.0.0', '<')` is TRUE, so an empty
+     * `nativephp.version` — shipped with the env key blank, or a config cache
+     * written before it existed — would block sync in both directions AND every
+     * online write, at every branch at once, on a floor no migration raised. A
+     * missing version is a packaging fault; the safe reading is "as old as the
+     * product has ever been".
+     */
+    public function test_a_build_with_no_version_is_not_blocked_by_every_schema(): void
+    {
+        config(['nativephp.version' => '']);
+
+        $gate = app(VersionGate::class);
+
+        $this->assertSame('1.0.0', $gate->appVersion());
+
+        // Clears the lowest floor...
+        $gate->assert('1.0.0');
+
+        // ...and still trips one a breaking migration really did raise.
+        $this->expectException(VersionBlockedException::class);
+        $gate->assert('1.1.0');
+    }
 }

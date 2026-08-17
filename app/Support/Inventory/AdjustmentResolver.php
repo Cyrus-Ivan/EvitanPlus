@@ -153,7 +153,12 @@ class AdjustmentResolver
             ->get()
             ->keyBy('id');
 
-        $this->online->run(function () use ($rows, $decisions, $variants, $actor, $branchId): void {
+        // Written by the settle inside `afterMirroring` below, which is what
+        // makes the return value "rows this call moved" rather than "rows this
+        // call read" — the two differ whenever somebody answered first.
+        $settled = 0;
+
+        $this->online->run(function () use ($rows, $decisions, $variants, $actor, $branchId, &$settled): void {
             /** @var list<InventoryLedger> $entries */
             $entries = [];
             /** @var list<string> $fullyApproved */
@@ -204,9 +209,19 @@ class AdjustmentResolver
             $variantIds = $rows->pluck('variant_id')->map(fn ($id): string => (string) $id)->unique()->values()->all();
 
             $this->online->afterMirroring(function (Connection $remote) use (
-                $fullyApproved, $individual, $onward, $actor, $branchId, $variantIds, $entries,
+                $fullyApproved, $individual, $onward, $actor, $branchId, $variantIds, $entries, &$settled,
             ): void {
-                $this->settle($remote, $fullyApproved, $individual, $actor);
+                $transitioned = $this->settle($remote, $fullyApproved, $individual, $actor);
+                $settled = count($transitioned);
+
+                // Only legs whose sending row THIS call moved out of `pending`.
+                // A leg spawned for a row somebody else answered would be a
+                // second "N arrived" card at the counterparty, and stock created
+                // out of nothing when both are approved — see settle().
+                $onward = array_values(array_filter(
+                    $onward,
+                    fn (array $leg): bool => in_array($leg['parent_id'], $transitioned, true),
+                ));
 
                 if ($onward !== []) {
                     // Timestamps from Postgres's own clock, not PHP's, for the
@@ -234,7 +249,7 @@ class AdjustmentResolver
             });
         }, 'Stock');
 
-        return $rows->count();
+        return $settled;
     }
 
     /**
@@ -303,6 +318,14 @@ class AdjustmentResolver
             // The person who put the stock in the van, which is who the receiving
             // branch is answering — not whoever first typed the transfer.
             'issued_by' => (string) $actor->getKey(),
+            // And the branch they said it from, which is THIS one: the actor
+            // confirming a sending leg is standing at the sending branch by
+            // definition. `AdjustmentQueue::enqueue()` stamps this from
+            // `instance` "so no caller can get it wrong or forget it" — and this
+            // caller, which bypasses `enqueue()`, forgot it, leaving every
+            // receiving leg ever written anonymous as to where it came from.
+            // Schema 22 added the column precisely because it cannot be derived.
+            'issued_by_branch_id' => (string) $row->branch_id,
         ];
     }
 
@@ -489,14 +512,21 @@ class AdjustmentResolver
     {
         $requested = (int) $row->quantity;
 
+        // `>=` on the magnitude, not `>`: a "partial" equal to the whole request
+        // is a full approval wearing the wrong label. It was accepted, and wrote
+        // `Partially approved: +5 of +5 asked for.` onto the ledger row along
+        // with a mandatory reason explaining a shortfall that did not happen —
+        // a permanent, offline-readable record saying something untrue. The
+        // operator's move is Approve, and the message already names the range.
         if ($quantity === null || $quantity === 0
             || ($quantity <=> 0) !== ($requested <=> 0)
-            || abs($quantity) > abs($requested)) {
+            || abs($quantity) >= abs($requested)) {
             throw ValidationException::withMessages([
                 'adjustments' => sprintf(
-                    'A partial approval has to be part of what was asked for — between %+d and %+d.',
+                    'A partial approval has to be LESS than what was asked for — between %+d and %+d. '
+                    .'To agree to all of it, approve it.',
                     $requested > 0 ? 1 : -1,
-                    $requested,
+                    $requested > 0 ? $requested - 1 : $requested + 1,
                 ),
             ]);
         }
@@ -516,6 +546,33 @@ class AdjustmentResolver
      * `and status = 'pending'` on every one: if somebody else answered the row
      * between the read and here, theirs stands.
      *
+     * ## Why it returns the ids rather than nothing
+     *
+     * That `and status = 'pending'` is the only concurrency guard in this class,
+     * and for a long time its result was discarded — so a caller could not tell a
+     * row it had answered from one somebody else got to first. Two things went
+     * wrong downstream of that:
+     *
+     * - **A transfer's receiving leg was inserted unconditionally.** It is the
+     *   one thing here that mints a NEW id ({@see secondLeg()}), so it does not
+     *   have the local ledger row's protection — that row reuses the queue row's
+     *   own id, which is what makes a repeat collide on the primary key rather
+     *   than moving stock twice. A second device at the same branch answering the
+     *   same leg would therefore lose the settle and still queue a second "N
+     *   arrived" card at the counterparty; approving both adds 2N of stock that
+     *   never existed. One device per branch is the MVP rule (`docs/glossary.md`
+     *   §"Till"), so this was not reachable in the field — but nothing in the code
+     *   depended on that rule, and the class docblock claimed the opposite.
+     * - **The operator was told rows were answered when they were not.**
+     *   {@see resolve()} returned the count from the READ, and the toast is built
+     *   from it.
+     *
+     * The full-approval path stays ONE statement — that is the shape approve-all
+     * takes and a batch can be a hundred rows wide — by asking Postgres which
+     * rows it touched with `RETURNING`, rather than by degrading to a statement
+     * per row. SQLite has supported `RETURNING` since 3.35, so the stand-in the
+     * offline suite runs against answers this too.
+     *
      * Nothing sets `updated_at`, and it must not. The branch role holds
      * column-level UPDATE on exactly six columns; a seventh in the SET list is
      * `permission denied for table inventory_update_queue`, which reads as a
@@ -523,24 +580,31 @@ class AdjustmentResolver
      *
      * @param  list<string>  $fullyApproved
      * @param  list<array{id: string, quantity: int|null, reason: string|null, accepted: bool}>  $individual
+     * @return list<string> the ids this call actually moved out of `pending`
      */
-    private function settle(Connection $remote, array $fullyApproved, array $individual, User $actor): void
+    private function settle(Connection $remote, array $fullyApproved, array $individual, User $actor): array
     {
+        $transitioned = [];
+
         if ($fullyApproved !== []) {
-            $remote->table('inventory_update_queue')
-                ->whereIn('id', $fullyApproved)
-                ->where('status', 'pending')
-                ->update([
-                    'status' => 'accepted',
-                    'resolved_at' => $remote->raw('CURRENT_TIMESTAMP'),
-                    'resolved_by' => $actor->getKey(),
-                    'approved_quantity' => $remote->raw('quantity'),
-                    'ledger_entry_id' => $remote->raw('id'),
-                ]);
+            $placeholders = implode(', ', array_fill(0, count($fullyApproved), '?'));
+
+            $returned = $remote->select(
+                'update inventory_update_queue'
+                .' set status = ?, resolved_at = CURRENT_TIMESTAMP, resolved_by = ?,'
+                .' approved_quantity = quantity, ledger_entry_id = id'
+                ." where id in ({$placeholders}) and status = ?"
+                .' returning id',
+                ['accepted', $actor->getKey(), ...$fullyApproved, 'pending'],
+            );
+
+            foreach ($returned as $row) {
+                $transitioned[] = (string) $row->id;
+            }
         }
 
         foreach ($individual as $row) {
-            $remote->table('inventory_update_queue')
+            $affected = $remote->table('inventory_update_queue')
                 ->where('id', $row['id'])
                 ->where('status', 'pending')
                 ->update([
@@ -554,6 +618,12 @@ class AdjustmentResolver
                     // follows back to find what was originally asked for.
                     'ledger_entry_id' => $row['id'],
                 ]);
+
+            if ($affected > 0) {
+                $transitioned[] = $row['id'];
+            }
         }
+
+        return $transitioned;
     }
 }

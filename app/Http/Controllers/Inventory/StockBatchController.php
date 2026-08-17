@@ -7,6 +7,7 @@ use App\Http\Requests\Inventory\StoreStockBatchRequest;
 use App\Models\Instance;
 use App\Models\Variant;
 use App\Support\Audit\AuditRecorder;
+use App\Support\Http\FilterText;
 use App\Support\Inventory\AdjustmentQueue;
 use App\Support\Inventory\StockBatch;
 use App\Support\Inventory\StockLedger;
@@ -138,7 +139,7 @@ class StockBatchController extends Controller
      */
     public function variants(Request $request): JsonResponse
     {
-        $search = trim((string) $request->query('search', '')) ?: null;
+        $search = FilterText::orNull($request->query('search'));
         $branch = (string) $request->query('branch', '');
 
         $variants = Variant::query()

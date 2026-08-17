@@ -98,14 +98,31 @@ final class StockBatch
     }
 
     /**
-     * Serialize minting per branch, for the length of this transaction.
+     * Intended to serialize minting per branch, for the length of this
+     * transaction.
      *
      * Two tills at one branch issuing a batch at the same instant would otherwise
      * both read the same MAX and print one name on two batches — which does not
      * fail anywhere, it just makes the Stock History batch filter quietly return
-     * two deliveries as one. A transaction-level advisory lock is released at
-     * commit, so it is safe under Supavisor's transaction pooling in a way a
-     * session-level one would not be.
+     * two deliveries as one. A transaction-level lock is released at commit, so
+     * it is safe under Supavisor's transaction pooling in a way a session-level
+     * one would not be.
+     *
+     * ## It does not actually serialize anything yet
+     *
+     * `pg_advisory_xact_lock` is transaction-scoped, and this runs from an
+     * `afterMirroring` closure that {@see BranchCycle} opens **no remote
+     * transaction** for — so in autocommit the implicit single-statement
+     * transaction releases the lock before the `max()` on the next line runs. The
+     * paragraph above describes the intent, not the behaviour, and said so as
+     * though it were fact until the pre-release audit.
+     *
+     * Left as-is deliberately: the fix is `$remote->transaction()` around the
+     * mint, which is the same change as the accepted "the remote half of an
+     * online write is not transactional" risk in `docs/glossary.md` §9 and
+     * belongs with it. The exposure is bounded — `batch_id` is the identity,
+     * nothing keys off the reference — and latent while one device serves one
+     * branch.
      *
      * Skipped on anything but Postgres, which means the SQLite stand-in the
      * offline suite runs against: the function does not exist there, and SQLite

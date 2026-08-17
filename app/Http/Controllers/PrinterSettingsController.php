@@ -5,7 +5,6 @@ namespace App\Http\Controllers;
 use App\Http\Requests\PrinterSettingsUpdateRequest;
 use App\Support\Audit\AuditRecorder;
 use App\Support\Audit\SettingsDiff;
-use App\Support\Printing\PrinterException;
 use App\Support\Printing\PrinterSettings;
 use App\Support\Printing\ReceiptPrinter;
 use Illuminate\Http\JsonResponse;
@@ -94,7 +93,14 @@ class PrinterSettingsController extends Controller
     {
         try {
             $printed = $printer->test();
-        } catch (PrinterException $e) {
+        } catch (\Throwable $e) {
+            // `\Throwable` for the reason given on `SalesController::print()`: a
+            // stalled `system` spooler raises `ProcessTimedOutException`, not the
+            // app's own typed exception, and a test print exists precisely to
+            // report a printer that is not working. A 500 here is the screen
+            // failing at its one job.
+            report($e);
+
             return back()->with('toast', ['type' => 'error', 'message' => $e->getMessage()]);
         }
 

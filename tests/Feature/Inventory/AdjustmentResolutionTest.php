@@ -5,6 +5,7 @@ namespace Tests\Feature\Inventory;
 use App\Models\InventoryLedger;
 use App\Models\User;
 use App\Models\Variant;
+use App\Support\Inventory\AdjustmentResolver;
 use App\Support\Inventory\StockLedger;
 use Illuminate\Database\Connection;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -51,6 +52,38 @@ class AdjustmentResolutionTest extends TestCase
         ], $overrides));
 
         return $id;
+    }
+
+    /**
+     * Let somebody else answer $ids after this resolver has read them and before
+     * it settles them — the race a second till at the same branch produces.
+     *
+     * There is no seam between the two in the resolver, so the hook is the local
+     * ledger row it writes in between: `apply()` creates one inside the
+     * transaction, and `settle()` runs afterwards from the `afterMirroring`
+     * closure. Firing once is enough and keeps the flip from re-running for every
+     * row of a batch.
+     *
+     * @param  list<string>  $ids
+     */
+    private function answerElsewhereMidFlight(Connection $remote, array $ids): void
+    {
+        $fired = false;
+
+        InventoryLedger::created(function () use ($remote, $ids, &$fired): void {
+            if ($fired) {
+                return;
+            }
+
+            $fired = true;
+
+            $remote->table('inventory_update_queue')
+                ->whereIn('id', $ids)
+                ->update([
+                    'status' => 'accepted',
+                    'resolved_at' => now()->toDateTimeString(),
+                ]);
+        });
     }
 
     private function stocked(int $quantity = 0): Variant
@@ -267,6 +300,204 @@ class AdjustmentResolutionTest extends TestCase
         $this->assertSame(0, app(StockLedger::class)->currentStock($variant));
     }
 
+    /**
+     * A sending leg that somebody else answered first spawns NO receiving leg.
+     *
+     * `settle()` has always guarded its UPDATE with `and status = 'pending'`, but
+     * it discarded the result — so the loser of that race carried on and inserted
+     * the transfer's receiving leg anyway, with a brand-new uuid. That is the one
+     * write in the resolver without the local ledger row's protection (which
+     * reuses the queue row's own id, so a repeat collides on the primary key).
+     * The counterparty would see two identical "N arrived" cards, and approving
+     * both adds 2N of stock that never existed.
+     *
+     * Simulated the only way it can be from one device: the row is pending when
+     * the resolver reads it and accepted by the time it settles. That is exactly
+     * what a second till at the same branch produces, and it is why the guard
+     * cannot rest on "one device per branch" — nothing in the code knew that.
+     */
+    public function test_a_sending_leg_answered_first_elsewhere_spawns_no_receiving_leg(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $variant = $this->stocked(10);
+        $admin = User::factory()->admin()->create();
+
+        $sending = $this->pending($remote, $variant, -3, [
+            'reference_type' => 'transfer',
+            'counterparty_branch_id' => self::OTHER_BRANCH,
+        ]);
+
+        // Pending when the resolver reads it, accepted by the time it settles.
+        // Marking it accepted UP FRONT proves nothing: `authoritative()` filters
+        // on `pending`, so the row would never be read and the code under test
+        // would never run — which is exactly why the existing
+        // "already answered" test could not catch this.
+        $this->answerElsewhereMidFlight($remote, [$sending]);
+
+        app(AdjustmentResolver::class)->resolve([$sending => ['outcome' => 'approve']], $admin);
+
+        // The whole point: no second leg was queued at the counterparty.
+        $this->assertSame(
+            0,
+            $remote->table('inventory_update_queue')->where('parent_id', $sending)->count(),
+            'A receiving leg was queued for a sending leg this call did not answer.',
+        );
+    }
+
+    /**
+     * The count in the toast is what MOVED, not what was read.
+     *
+     * `resolve()` returned `$rows->count()` — the size of the authoritative read
+     * — while its own docblock promised "rows actually resolved … fewer than
+     * asked for when a row has since been answered elsewhere". A resolution that
+     * lost every race still reported success for every row.
+     */
+    public function test_the_resolved_count_excludes_rows_answered_elsewhere(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $mine = $this->stocked();
+        $taken = $this->stocked();
+        $admin = User::factory()->admin()->create();
+
+        $mineId = $this->pending($remote, $mine, 5);
+        $takenId = $this->pending($remote, $taken, 5);
+
+        // Taken after the read, so both rows are in `$rows` and only one settles.
+        $this->answerElsewhereMidFlight($remote, [$takenId]);
+
+        $resolved = app(AdjustmentResolver::class)->resolve([
+            $mineId => ['outcome' => 'approve'],
+            $takenId => ['outcome' => 'approve'],
+        ], $admin);
+
+        $this->assertSame(1, $resolved, 'The count must name the rows this call moved, not the rows it read.');
+    }
+
+    /**
+     * Every receiving leg says which branch sent it.
+     *
+     * `secondLeg()` bypasses `AdjustmentQueue::enqueue()`, which stamps
+     * `issued_by_branch_id` from `instance` so no caller can forget it — and this
+     * caller forgot it. Schema 22 added the column because the issuer's branch
+     * genuinely cannot be derived: an Owner at head office can arrange a move
+     * between two branches that are neither of them theirs.
+     */
+    public function test_a_receiving_leg_records_the_branch_that_sent_it(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $variant = $this->stocked(10);
+        $admin = User::factory()->admin()->create();
+
+        $sending = $this->pending($remote, $variant, -3, [
+            'reference_type' => 'transfer',
+            'counterparty_branch_id' => self::OTHER_BRANCH,
+            // Issued by somebody at a third branch, so "the issuer's branch" and
+            // "the branch it leaves from" are provably different values.
+            'issued_by_branch_id' => '00000000-0000-0000-0000-0000000f0f0f',
+        ]);
+
+        app(AdjustmentResolver::class)->resolve([$sending => ['outcome' => 'approve']], $admin);
+
+        $leg = $remote->table('inventory_update_queue')->where('parent_id', $sending)->sole();
+
+        $this->assertSame(self::OTHER_BRANCH, $leg->branch_id);
+        // The leg was issued by the person confirming it out of the door, who is
+        // standing at the SENDING branch — not at whichever branch first asked.
+        $this->assertSame(self::HERE, $leg->issued_by_branch_id);
+    }
+
+    /**
+     * One row answered differently from its neighbours does not invalidate them.
+     *
+     * `quantity` and `reason` were `requiredIf` over the WHOLE submit, because a
+     * `requiredIf` closure has no row index to look at. So one partial approval
+     * made `quantity` required on every plain approval beside it, and one
+     * rejection made `reason` required on every row — a 422 pointing at rows the
+     * operator answered perfectly well. The dialog answers one row at a time, but
+     * this is the same route "Approve all" posts a whole card to.
+     */
+    /**
+     * A "partial" equal to the whole request is refused, not relabelled.
+     *
+     * The magnitude check was `>` rather than `>=`, so approving 5 of 5 as a
+     * partial was accepted — and wrote `Partially approved: +5 of +5 asked for.`
+     * onto the ledger row, beside the reason a partial makes mandatory,
+     * explaining a shortfall that did not happen. That row is the permanent,
+     * offline-readable account of the movement, so it is the one place a lie
+     * costs the most.
+     */
+    public function test_a_partial_equal_to_the_whole_request_is_refused(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $variant = $this->stocked();
+        $admin = User::factory()->admin()->create();
+        $id = $this->pending($remote, $variant, 5);
+
+        $this->actingAs($admin)
+            ->post(route('stock-updates.resolve'), ['adjustments' => [[
+                'id' => $id,
+                'outcome' => 'partial',
+                'quantity' => 5,
+                'reason' => 'All of it turned up.',
+            ]]])
+            ->assertSessionHasErrors('adjustments');
+
+        $this->assertSame(0, app(StockLedger::class)->currentStock($variant));
+        $this->assertSame('pending', $remote->table('inventory_update_queue')->find($id)->status);
+
+        // Approving it is the move, and it says the true thing.
+        $this->actingAs($admin)
+            ->post(route('stock-updates.resolve'), ['adjustments' => [['id' => $id, 'outcome' => 'approve']]])
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame(5, app(StockLedger::class)->currentStock($variant));
+        $this->assertStringNotContainsString('Partially approved', (string) InventoryLedger::query()->find($id)->notes);
+    }
+
+    public function test_a_card_answered_row_by_row_validates(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $admin = User::factory()->admin()->create();
+
+        $whole = $this->stocked();
+        $some = $this->stocked();
+        $none = $this->stocked(9);
+
+        $wholeId = $this->pending($remote, $whole, 4);
+        $someId = $this->pending($remote, $some, 6);
+        $noneId = $this->pending($remote, $none, -9);
+
+        $this->actingAs($admin)
+            ->post(route('stock-updates.resolve'), ['adjustments' => [
+                ['id' => $wholeId, 'outcome' => 'approve'],
+                ['id' => $someId, 'outcome' => 'partial', 'quantity' => 4, 'reason' => 'Two short.'],
+                ['id' => $noneId, 'outcome' => 'reject', 'reason' => 'Nothing came.'],
+            ]])
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame(4, app(StockLedger::class)->currentStock($whole));
+        $this->assertSame(4, app(StockLedger::class)->currentStock($some));
+        $this->assertSame(9, app(StockLedger::class)->currentStock($none));
+    }
+
+    /** A partial with no quantity is still refused — on its own row. */
+    public function test_a_partial_still_needs_its_quantity_even_beside_an_approval(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $admin = User::factory()->admin()->create();
+
+        $fine = $this->pending($remote, $this->stocked(), 4);
+        $vague = $this->pending($remote, $this->stocked(), 6);
+
+        $this->actingAs($admin)
+            ->post(route('stock-updates.resolve'), ['adjustments' => [
+                ['id' => $fine, 'outcome' => 'approve'],
+                ['id' => $vague, 'outcome' => 'partial', 'reason' => 'Some arrived.'],
+            ]])
+            ->assertSessionHasErrors('adjustments.1.quantity')
+            ->assertSessionDoesntHaveErrors('adjustments.0.quantity');
+    }
+
     public function test_approve_all_clears_everything_waiting_on_this_branch(): void
     {
         $remote = $this->fakeBusinessQueue();
@@ -373,6 +604,44 @@ class AdjustmentResolutionTest extends TestCase
                 ->where('filters.scope', 'local')
                 ->has('requests', 1)
                 ->where('requests.0.legs.0.requested', 3)
+            );
+    }
+
+    /**
+     * A busy neighbour must not push this branch's own work off the page.
+     *
+     * The read takes the 200 oldest PENDING rows in the whole business and only
+     * then filters to the scope, in PHP. So a branch with more than that waiting
+     * — one 100-line transfer batch is already 200 legs across its two branches —
+     * fills the window on its own, and every other branch's page renders empty
+     * while its stock sits there. The rows exist, the screen says there is
+     * nothing to do, and nothing anywhere says otherwise.
+     *
+     * The scoped read is now narrowed in SQL before the limit. `all` still takes
+     * the business-wide window, which is what that scope means.
+     */
+    public function test_another_branchs_backlog_cannot_hide_this_branchs_work(): void
+    {
+        $remote = $this->fakeBusinessQueue();
+        $mine = $this->stocked();
+
+        // 250 older rows aimed elsewhere — past the 200-row window on their own.
+        for ($i = 0; $i < 250; $i++) {
+            $this->pending($remote, $mine, 1, [
+                'branch_id' => self::OTHER_BRANCH,
+                'created_at' => now()->subDays(30)->addSeconds($i)->toDateTimeString(),
+            ]);
+        }
+
+        // Ours is the newest row in the business, so it sorts last of all 251.
+        $this->pending($remote, $mine, 7, ['created_at' => now()->toDateTimeString()]);
+
+        $this->actingAs(User::factory()->admin()->create())
+            ->get(route('stock-updates.index'))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->has('requests', 1)
+                ->where('requests.0.legs.0.requested', 7)
             );
     }
 

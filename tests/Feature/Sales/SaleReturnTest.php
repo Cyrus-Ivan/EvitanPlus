@@ -209,6 +209,86 @@ class SaleReturnTest extends TestCase
         ]);
     }
 
+    /**
+     * A line of ANOTHER sale cannot be returned against this one.
+     *
+     * The guard is stated twice — `SaleReturnRequest` scopes the `exists` rule to
+     * this transaction, and `ProcessSaleReturn::write()` re-checks it against the
+     * loaded sold lines — and until now neither was covered: every other test in
+     * this file reuses `$transaction->items->first()`, so both copies could have
+     * been deleted with the suite still green. Without them a refund is paid at
+     * one sale's captured price against another sale's quota.
+     */
+    public function test_a_line_belonging_to_another_sale_is_refused(): void
+    {
+        $variant = $this->sellable(price: 100, cost: 40, stock: 20);
+
+        $mine = $this->sell([[$variant, 2]]);
+        $theirs = $this->sell([[$variant, 2]]);
+
+        $this->actingAs(User::factory()->cashier()->create())
+            ->post(route('sales.returns.store', $mine), [
+                'type' => 'return',
+                'refund_payment_type' => 'cash',
+                'lines' => [['transaction_item_id' => $theirs->items->first()->id, 'quantity' => 1]],
+            ])
+            ->assertSessionHasErrors('lines.0.transaction_item_id');
+
+        $this->assertSame(0, SaleReturn::count());
+        // Neither sale's stock moved.
+        $this->assertSame(20 - 4, $this->stockOf($variant));
+    }
+
+    /**
+     * Returns and defects consume ONE quota, not one each.
+     *
+     * The cumulative check sums `sale_return_items` for the line without
+     * filtering on the event type, which is what makes "3 sold" mean 3 units of
+     * after-sales activity in total. Filtering it to `type = 'return'` would look
+     * harmless and would let a line be defected AND returned in full — a
+     * write-off and a refund for the same unit. Every existing quota test chains
+     * returns only, so that filter could have been added unnoticed.
+     */
+    public function test_defects_and_returns_share_one_quota(): void
+    {
+        $variant = $this->sellable(price: 100, cost: 40, stock: 10);
+        $transaction = $this->sell([[$variant, 3]]); // stock now 7
+        $line = $transaction->items->first();
+
+        // Write off 2 of the 3 sold. Stock stays where it was.
+        $this->actingAs(User::factory()->admin()->create())
+            ->post(route('sales.returns.store', $transaction), [
+                'type' => 'defect',
+                'lines' => [['transaction_item_id' => $line->id, 'quantity' => 2]],
+            ])
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame(7, $this->stockOf($variant));
+
+        // Only one unit remains answerable, so returning 2 is over the quota.
+        $this->actingAs(User::factory()->cashier()->create())
+            ->post(route('sales.returns.store', $transaction), [
+                'type' => 'return',
+                'refund_payment_type' => 'cash',
+                'lines' => [['transaction_item_id' => $line->id, 'quantity' => 2]],
+            ])
+            ->assertSessionHasErrors('lines');
+
+        $this->assertSame(1, SaleReturn::count());
+
+        // The last unit is still returnable, and it restores stock.
+        $this->actingAs(User::factory()->cashier()->create())
+            ->post(route('sales.returns.store', $transaction), [
+                'type' => 'return',
+                'refund_payment_type' => 'cash',
+                'lines' => [['transaction_item_id' => $line->id, 'quantity' => 1]],
+            ])
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame(8, $this->stockOf($variant));
+        $this->assertSame(3, (int) SaleReturnItem::query()->where('transaction_item_id', $line->id)->sum('quantity'));
+    }
+
     public function test_cashier_may_return_but_not_defect(): void
     {
         $variant = $this->sellable(price: 100, cost: 40, stock: 10);

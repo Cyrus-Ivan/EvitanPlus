@@ -5,7 +5,9 @@ namespace App\Http\Controllers\Concerns;
 use App\Models\Instance;
 use App\Support\Sync\BranchRoster;
 use App\Support\Sync\OnlineRead;
+use Closure;
 use Illuminate\Database\Connection;
+use Illuminate\Support\Str;
 
 /**
  * The branch roster as a scope picker offers it — shared by every screen that
@@ -39,6 +41,23 @@ use Illuminate\Database\Connection;
 trait OffersBranchScope
 {
     /**
+     * This branch, served from the local SQLite mirror. The default everywhere,
+     * the only scope that works offline, and the only one that includes rows the
+     * device has not pushed yet.
+     */
+    private const SCOPE_LOCAL = 'local';
+
+    /**
+     * Every branch, read live from the business database.
+     *
+     * Held here rather than per-screen because six controllers each carried a
+     * private copy of this pair and one of them ({@see InventoryController})
+     * carried only half — it never RETURNS `all`, but it still has to recognise
+     * the word in order to snap it back.
+     */
+    private const SCOPE_ALL = 'all';
+
+    /**
      * The branches this screen's scope picker may offer: every branch but this
      * one, ordered by code.
      *
@@ -67,6 +86,86 @@ trait OffersBranchScope
     }
 
     /**
+     * Resolve a requested `scope` into one this screen will actually read.
+     *
+     * The shared branch scope vocabulary (`docs/glossary.md` §"Branch scope"):
+     * `local`, `all`, or a branch id. Six screens had a near-identical private
+     * copy of this and disagreed in two ways that mattered, which is the whole
+     * reason it lives here now:
+     *
+     * - **An unusable value narrows, it never widens.** Four of the copies ended
+     *   `… ? $scope : SCOPE_ALL`, so `?scope=nonsense` silently became "all
+     *   branches" — a typo widening the reader's view, and the echoed-back value
+     *   is the only thing on screen that says so. The fallback is `local`
+     *   everywhere now: the narrow answer is the one the viewer is entitled to
+     *   whatever went wrong.
+     * - **A non-string is not a scope.** Every copy began `(string) $value` on a
+     *   raw query parameter, so `?scope[]=1` raised "Array to string conversion",
+     *   which Laravel's error handler turns into an `ErrorException` — a 500 from
+     *   a crafted URL on all six screens.
+     *
+     * @param  bool  $canViewAll  Whether this viewer may read past their own branch
+     *                            at all. False snaps everything to `local` rather
+     *                            than refusing: on these screens the local view is
+     *                            the viewer's by right and sits on the same route.
+     * @param  bool  $allowAll  Whether `all` is meaningful here. False on
+     *                          `/inventory`, where a wider scope adds rows to a
+     *                          NUMBER rather than to a list and a business-wide
+     *                          total per variant says nothing on its own.
+     * @param  ?Closure():void  $authorize  Run instead of the `$canViewAll` check
+     *                                      when a screen must REFUSE a wider scope
+     *                                      rather than narrow it — `/reports`, which
+     *                                      is Owner-only and 403s an Admin. Called
+     *                                      after the `local` short-circuit and before
+     *                                      the own-branch snap, so an Admin naming a
+     *                                      branch id still gets the 403 rather than a
+     *                                      report that is not the one they asked for.
+     */
+    private function normalizeScope(
+        mixed $value,
+        bool $canViewAll = true,
+        bool $allowAll = true,
+        ?Closure $authorize = null,
+    ): string {
+        $scope = is_string($value) ? $value : '';
+
+        if ($scope === '' || $scope === self::SCOPE_LOCAL) {
+            return self::SCOPE_LOCAL;
+        }
+
+        // Decide what was ASKED FOR before deciding whether it is allowed. A
+        // value naming neither `all` nor a branch is not a request for either, so
+        // it resolves exactly like no scope at all — including on `/reports`,
+        // where running the Owner-only gate first would turn a typo into a 403.
+        if ($scope !== self::SCOPE_ALL && ! Str::isUuid($scope)) {
+            return self::SCOPE_LOCAL;
+        }
+
+        if ($authorize !== null) {
+            $authorize();
+        } elseif (! $canViewAll || ! Instance::isHydrated()) {
+            // The hydration half is belt-and-braces: `RequireInitialSetup`
+            // redirects an un-hydrated device off every route but the wizard, so
+            // nothing should reach here without an identity. Kept because a
+            // device with no branch has no business to widen INTO, and that
+            // should not depend on a middleware ordering somewhere else.
+            return self::SCOPE_LOCAL;
+        }
+
+        // This branch's own id is `local` under another name, and the picker
+        // offers it only under that one.
+        if ($this->isThisBranch($scope)) {
+            return self::SCOPE_LOCAL;
+        }
+
+        if ($scope === self::SCOPE_ALL) {
+            return $allowAll ? self::SCOPE_ALL : self::SCOPE_LOCAL;
+        }
+
+        return $scope;
+    }
+
+    /**
      * Is this scope just another name for `local`?
      */
     private function isThisBranch(string $scope): bool
@@ -91,7 +190,7 @@ trait OffersBranchScope
                 'The branch list',
             ),
             [],
-            report: false,
+            report: OnlineRead::reportUnlessOffline(),
         );
     }
 }

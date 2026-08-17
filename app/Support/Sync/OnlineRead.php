@@ -3,8 +3,11 @@
 namespace App\Support\Sync;
 
 use App\Exceptions\OfflineWriteException;
+use App\Exceptions\SetupFailedException;
 use Closure;
 use Illuminate\Database\Connection;
+use PDOException;
+use Throwable;
 
 /**
  * A live query against the business database, serving one screen
@@ -81,5 +84,76 @@ class OnlineRead
     public function possible(): bool
     {
         return $this->probe->online();
+    }
+
+    /**
+     * Should this failure be logged, or is it just the network being the network?
+     *
+     * Every consolidated screen wraps its read in
+     * `rescue(..., null, report: false)` and falls back to the branch-local view,
+     * which is the right BEHAVIOUR — a shop with no connection still has to work
+     * — and was the wrong logging policy, because `rescue()` catches `Throwable`.
+     * A `TypeError`, a column that does not exist upstream, a grant the matrix
+     * forgot: all of them presented to the operator as "the business database
+     * could not be reached", and `report: false` meant none of them reached the
+     * log either. There was no way to tell a broken feature from a broken router,
+     * and no trace anywhere to find out.
+     *
+     * The `Carbon\Carbon` vs `Illuminate\Support\Carbon` trap this codebase
+     * documents in two places is exactly that shape: a hint mismatch downstream
+     * of `ReportPeriods::resolveWindow()` is a `TypeError` that silently degrades
+     * every wider-scope request to branch-local, forever, in total silence.
+     *
+     * So an OUTAGE stays quiet and anything else is reported. The two shapes an
+     * outage really arrives in are the app's own — the probe refusing before a
+     * connection is opened, and {@see BranchCycle} failing to open one — plus a
+     * connection dropping mid-query, which Postgres reports as **SQLSTATE class
+     * 08**.
+     *
+     * Judging a `PDOException` by its class rather than its type is the part that
+     * earns its keep: `42703 undefined column` and `42501 permission denied` are
+     * also `PDOException`s, and they are exactly the bugs this predicate exists
+     * to stop hiding. A dropped connection and a query the schema cannot answer
+     * are not the same news.
+     */
+    public static function isOutage(Throwable $e): bool
+    {
+        for ($cause = $e; $cause !== null; $cause = $cause->getPrevious()) {
+            if ($cause instanceof OfflineWriteException || $cause instanceof SetupFailedException) {
+                return true;
+            }
+
+            if ($cause instanceof PDOException && self::isConnectionState((string) $cause->getCode())) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Is this SQLSTATE a connection problem rather than a rejected query?
+     *
+     * Class `08` is "connection exception" in the standard. `HY000` and an empty
+     * code are PDO's own generic slots, which is where a transport-level failure
+     * with no SQLSTATE of its own ends up — treated as an outage because a driver
+     * that could not say anything more specific usually could not reach anything.
+     */
+    private static function isConnectionState(string $sqlState): bool
+    {
+        return $sqlState === '' || $sqlState === 'HY000' || str_starts_with($sqlState, '08');
+    }
+
+    /**
+     * The `report:` argument every consolidated read passes to `rescue()`.
+     *
+     * A named thing rather than a closure repeated eleven times, so the policy
+     * has one definition and the call sites stay readable.
+     *
+     * @return Closure(Throwable): bool
+     */
+    public static function reportUnlessOffline(): Closure
+    {
+        return static fn (Throwable $e): bool => ! self::isOutage($e);
     }
 }

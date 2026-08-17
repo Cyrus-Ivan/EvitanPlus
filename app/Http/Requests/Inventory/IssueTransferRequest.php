@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests\Inventory;
 
+use App\Rules\SellableVariant;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
 
@@ -41,7 +42,7 @@ class IssueTransferRequest extends FormRequest
         return [
             'from_branch_id' => ['required', 'uuid'],
             'to_branch_id' => ['required', 'uuid', 'different:from_branch_id'],
-            'variant_id' => ['required', 'uuid', 'exists:variants,id'],
+            'variant_id' => ['required', 'uuid', SellableVariant::rule()],
             'quantity' => ['required', 'integer', 'min:1', 'max:999999'],
             'notes' => ['nullable', 'string', 'max:500'],
         ];

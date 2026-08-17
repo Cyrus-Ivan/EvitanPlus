@@ -250,23 +250,39 @@ class ProcessSaleReturn
      * Refund (centavos) for returning $newQty units of a sold line whose paid
      * share is $linePaid and which already has $already units returned.
      *
-     * When this event returns the line's final outstanding units, the refund is
-     * the paid share minus everything already refunded for the line, so cumulative
-     * refunds for a fully-returned line equal its paid share exactly (no drift).
+     * ## Cumulative, never per-event
+     *
+     * The figure is derived from the line's TOTAL returned quantity after this
+     * event, minus everything already paid out for it — never from this event's
+     * quantity alone. Two properties fall out of that, and both are load-bearing:
+     *
+     * - **A refund is never negative.** The cumulative payout after each event is
+     *   exactly the rounded share owed at that point, which is monotone in the
+     *   returned quantity, so this subtraction cannot go below zero.
+     * - **A fully returned line refunds its paid share exactly**, with no drift,
+     *   because the final event's owed figure IS the whole share.
+     *
+     * Apportioning each event on its own instead — `round(linePaid * newQty /
+     * soldQty)` — looks equivalent and is not. When the paid share is smaller
+     * than the units sold (a deep transaction-level discount), every single-unit
+     * return rounds its half-centavo UP, the running total passes the share, and
+     * the last unit is left to true up with a NEGATIVE refund: a receipt telling
+     * the cashier to take money back. See MoneyFixtureTest fixture E.
+     *
+     * A unit whose share rounds to nothing refunds nothing. That is the honest
+     * answer rather than a rounding failure — it is what the customer paid for it.
      */
     private function lineRefund(TransactionItem $sold, int $linePaid, int $already, int $newQty): int
     {
-        if ($already + $newQty === $sold->quantity) {
-            $priorRefunds = $this->centavos(
-                SaleReturnItem::query()
-                    ->where('transaction_item_id', $sold->getKey())
-                    ->sum('refund_amount'),
-            );
+        $priorRefunds = $this->centavos(
+            SaleReturnItem::query()
+                ->where('transaction_item_id', $sold->getKey())
+                ->sum('refund_amount'),
+        );
 
-            return $linePaid - $priorRefunds;
-        }
+        $owedAfterThisEvent = (int) round($linePaid * ($already + $newQty) / $sold->quantity);
 
-        return (int) round($linePaid * $newQty / $sold->quantity);
+        return $owedAfterThisEvent - $priorRefunds;
     }
 
     private function centavos(string|float|int $value): int

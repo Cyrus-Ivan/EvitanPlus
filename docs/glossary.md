@@ -340,6 +340,23 @@ it holds unfinished work only — what happened is in Stock History.
 ✗ **Not** all gated alike. Issuing a movement is Admin+; *answering* one is open to any role at
 the affected branch, so Pending Stocks itself gates on nothing. See [Resolution].
 
+**Pending Stocks is the one screen where a Cashier may read past their own branch, and that is a
+decision.** Every other screen carrying the branch scope gates the wider values at Admin+ (reports
+at Owner), and this one takes no role at all: `InventoryQueueController::normalizeScope()` has no
+`$canViewAll` and `pickerBranches(..., eligible: true)` is hardcoded, so `?scope=all` serves a
+Cashier the whole business's pending movements and the branch roster.
+
+The reason it was originally given — "every row was already visible to every role on the page this
+replaces" — was written when the page showed only *this* branch's rows and does **not** cover
+`all`. The reason that holds is about what the screen is: it lists work that has not happened yet.
+No cost, no profit, no totals, no takings — the things §6 reserves — only quantities somebody has
+asked another shop to confirm. Whoever is standing at a branch when a delivery arrives may need to
+see that its sending leg was confirmed at the far end, and that person is as often a Cashier as
+not. What bounds **answering** a row is the branch, enforced in `AdjustmentResolver`'s
+authoritative re-read, not a role and not this parameter.
+*Anchor:* `BranchScopeContractTest::test_pending_stocks_is_open_to_a_cashier_at_every_scope`, which
+pins it so the decision is tested rather than only written down.
+
 ### Ledger entry type — the three columns
 The spec's old six-value vocabulary (`restock / manual adjustment / import / sale / return /
 defect`) **does not exist**. `inventory_ledger` carries **three independent columns**:
@@ -1292,6 +1309,46 @@ rules, not preferences:
 keeps live Postgres equal to the matrix, so nothing widens quietly;
 `test_it_can_issue_a_queued_adjustment_for_any_branch_of_its_business` asserts the accepted reach
 rather than describing it.
+
+### Accepted: the remote half of an online write is not transactional
+
+`BranchCycle::run()` opens no Postgres transaction, and only `Pusher` opens one of its own.
+So an online write whose `afterMirroring` does several things upstream — `AdjustmentResolver`
+mirrors ledger rows, settles queue rows, inserts transfer legs and recomputes snapshots — commits
+each of them independently, while the LOCAL half rolls back as a unit. A failure between two of
+them leaves Postgres holding part of an act that never happened on the device.
+
+**Why it is acceptable for now.** Every step is written to be idempotent or guarded, which is what
+makes the exposure a stale row rather than a wrong number: ledger rows carry the queue row's own id
+and mirror `on conflict do nothing`, `settle()` filters on `status = 'pending'` and (since the
+release audit) returns the ids it actually moved so no second transfer leg can be spawned for a row
+this call did not answer, and `RemoteStock::recompute()` sums from Postgres's own ledger and
+converges however many times it runs.
+
+**Why it is not being fixed now.** Wrapping the remote side in a transaction changes the failure
+model of every online write in the product — including which Supavisor pooling mode is legal, since
+transaction pooling is what the branch credential connects through. That is a sync-engine change,
+not a bug fix, and it does not belong in a release hardening pass.
+
+*Anchor:* `BranchCycle::run()`; `AdjustmentResolver::settle()` and its `$onward` filter.
+
+### Accepted: `AdjustmentResolver` reads and writes over two Postgres sessions
+
+`authoritative()` goes through `OnlineRead`, which is its own `BranchCycle::run` — connect,
+query, purge, disconnect — and `resolve()` then opens a second connection for the write. So every
+decision (whose branch the row is, how much was asked for, whether it is still pending) is read in
+a session that closes before the writing one opens, and the window between them is a full reconnect
+rather than microseconds.
+
+**Why it is acceptable.** The device's own repeat is already impossible: the local ledger row reuses
+the queue row's id, so a second submit from the same till collides on the primary key and rolls
+back. What the gap really exposes is two DEVICES at one branch, which the MVP's one-device-per-branch
+rule (§2 "Till") excludes — and the one write that had no id-collision protection, a transfer's
+receiving leg, is now filtered to rows `settle()` actually transitioned.
+
+**Therefore the rule is: nothing in this class may depend on the read still being true.** Every
+write either carries an id that makes a repeat a no-op, or is gated on `settle()`'s return value.
+A future write that can do neither needs the sessions merged first.
 
 ### Open: four, all deferred rather than decided against
 

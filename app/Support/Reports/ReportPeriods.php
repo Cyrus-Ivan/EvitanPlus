@@ -3,6 +3,7 @@
 namespace App\Support\Reports;
 
 use App\Http\Controllers\ReportsController;
+use App\Support\Http\FilterText;
 use Carbon\Carbon;
 
 /**
@@ -33,7 +34,7 @@ class ReportPeriods
      */
     public static function normalize(mixed $value): string
     {
-        $value = (string) $value;
+        $value = FilterText::of($value);
 
         return array_key_exists($value, self::SUB_NOUNS) ? $value : 'daily';
     }

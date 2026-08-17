@@ -8,6 +8,7 @@ use App\Http\Requests\Users\UpdateUserRoleRequest;
 use App\Models\User;
 use App\Support\Audit\AuditRecorder;
 use App\Support\Auth\SessionManager;
+use App\Support\Http\FilterText;
 use App\Support\Sync\OnlineWrite;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -45,7 +46,7 @@ class UserController extends Controller
     {
         Gate::authorize('viewAny', User::class);
 
-        $search = trim((string) $request->query('search', '')) ?: null;
+        $search = FilterText::orNull($request->query('search'));
         $status = $this->normalizeStatus($request->query('status'));
 
         $users = User::query()

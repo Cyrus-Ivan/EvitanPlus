@@ -9,6 +9,7 @@ use App\Models\Category;
 use App\Models\Item;
 use App\Models\Variant;
 use App\Support\Audit\AuditRecorder;
+use App\Support\Http\FilterText;
 use App\Support\Sync\OnlineWrite;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -56,7 +57,7 @@ class ItemController extends Controller
      */
     public function index(Request $request): Response
     {
-        $search = trim((string) $request->query('search', '')) ?: null;
+        $search = FilterText::orNull($request->query('search'));
         $categoryId = $request->query('category') ?: null;
         $status = $this->normalizeStatus($request->query('status'));
 

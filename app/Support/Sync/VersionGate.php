@@ -35,6 +35,16 @@ use Illuminate\Database\Connection;
 class VersionGate
 {
     /**
+     * What a build with no version of its own is treated as.
+     *
+     * The first release, so it clears the lowest floor any schema carries and
+     * trips only the ones a breaking migration genuinely raised. See
+     * {@see appVersion()} for why the alternative — an empty string — freezes
+     * every branch in the business simultaneously.
+     */
+    private const UNVERSIONED_BUILD = '1.0.0';
+
+    /**
      * Read the schema's version pair over an open branch connection.
      *
      * Read LIVE, never taken from the credentials JSON: a schema migrated since
@@ -73,8 +83,22 @@ class VersionGate
         }
     }
 
+    /**
+     * This build's version, as the gate compares it.
+     *
+     * The fallback is the load-bearing part. `version_compare('', '1.0.0', '<')`
+     * is TRUE, so an empty resolution — a build shipped with
+     * `NATIVEPHP_APP_VERSION` set to nothing, a config cache written before the
+     * key existed — would freeze EVERY branch at once: sync refused in both
+     * directions and every {@see OnlineWrite} refused with it, on a floor no
+     * migration raised. A missing version is a packaging fault, and the safe
+     * reading of it is "as old as the product has ever been", which clears the
+     * lowest floor any schema can carry rather than tripping all of them.
+     */
     public function appVersion(): string
     {
-        return (string) config('nativephp.version');
+        $version = trim((string) config('nativephp.version'));
+
+        return $version !== '' ? $version : self::UNVERSIONED_BUILD;
     }
 }

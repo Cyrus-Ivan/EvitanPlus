@@ -84,6 +84,16 @@ class StockAdjustmentController extends Controller
      */
     public function store(StockAdjustmentRequest $request, Variant $variant): RedirectResponse
     {
+        // A withdrawn product has no shelf to recount. Archiving is this app's
+        // delete, so stock sent here is stock nobody can sell, on no screen
+        // (`/inventory` filters to active items) and still in the ledger sum.
+        // The three sibling paths refuse this in validation via
+        // {@see SellableVariant}; this one takes its variant from the URL, where
+        // "not addressable for this operation" is a 404. The item's flag counts
+        // as much as the variant's — a variant of an archived item is not on sale
+        // whatever its own says.
+        abort_if($variant->archived_at !== null || $variant->item?->archived_at !== null, 404);
+
         $data = $request->validated();
 
         $onHand = $this->ledger->currentStock($variant);

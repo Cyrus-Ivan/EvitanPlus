@@ -47,6 +47,19 @@ use Tests\Feature\Sync\Concerns\FakesTheBusinessDatabase;
  * quantities are legal, what a partial approval writes — and that file as
  * testing the round trip. A finding that belongs to the round trip must not be
  * asserted here, or it will pass while the shipped path is broken.
+ *
+ * ## One session, where production has two
+ *
+ * The `OnlineRead` fake below hands back the SAME connection the write uses,
+ * because there is only one stand-in. Production has two: `OnlineRead` runs its
+ * own `BranchCycle` — connect, query, `DB::purge`, disconnect — and the write
+ * then opens a second connection, so the gap between "what the resolver read"
+ * and "what it writes" is a full reconnect rather than microseconds.
+ *
+ * That gap cannot be reproduced here by construction, so a test about the RACE
+ * has to create it by hand — see `AdjustmentResolutionTest`'s
+ * `answerElsewhereMidFlight()`, which hooks the local ledger insert that happens
+ * between the two. `docs/glossary.md` §9 carries the accepted risk this leaves.
  */
 trait FakesThePendingQueue
 {
@@ -71,19 +84,37 @@ trait FakesThePendingQueue
 
             public function __construct(private readonly Connection $remote) {}
 
+            /**
+             * Saves and RESTORES the follow-up stack, exactly as the real class
+             * does in its `finally`.
+             *
+             * This used to just clear it (`$this->after = []`) on the way in,
+             * which is fine for one write and wrong for a NESTED one — and both
+             * importers nest, because their failure paths call `mirrorFailure()`
+             * inside the outer write. Under the old fake the inner write wiped
+             * the outer write's registered follow-ups and they never ran, so a
+             * real regression in that path would have passed here while failing
+             * in production. A fake that is laxer than the thing it stands in for
+             * is a false negative generator.
+             */
             public function run(Closure $work, string $subject = 'This'): mixed
             {
+                $previous = $this->after;
                 $this->after = [];
 
-                return DB::transaction(function () use ($work) {
-                    $result = $work();
+                try {
+                    return DB::transaction(function () use ($work) {
+                        $result = $work();
 
-                    foreach ($this->after as $follow) {
-                        $follow($this->remote);
-                    }
+                        foreach ($this->after as $follow) {
+                            $follow($this->remote);
+                        }
 
-                    return $result;
-                });
+                        return $result;
+                    });
+                } finally {
+                    $this->after = $previous;
+                }
             }
 
             /**

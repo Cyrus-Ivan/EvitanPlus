@@ -1032,4 +1032,41 @@ class InventoryImportTest extends TestCase
         $this->assertSame('abc-111', Variant::where('sku', 'NEW-1')->first()->barcode);
         $this->assertSame('AbC-111', Variant::where('sku', 'NEW-2')->first()->barcode);
     }
+
+    /**
+     * A genuinely large file imports end to end.
+     *
+     * Nothing else in this file's thousand-odd lines uses more than a handful of
+     * rows, so every chunk boundary, every accumulator and the mirror step at the
+     * end were only ever exercised at n≈3. 1,200 rows crosses `LOOKUP_CHUNK`
+     * twice and keeps the test around three seconds.
+     *
+     * It does NOT prove a bind-variable ceiling, and should not be read as
+     * though it does: SQLite has allowed 32,766 bound variables since 3.32 and
+     * Postgres 65,535, so the unchunked `mirrorImport()` this accompanied needed
+     * tens of thousands of rows to fail. What this pins is that a big file works
+     * — which had no coverage at all.
+     */
+    public function test_a_file_larger_than_one_bound_statement_imports_whole()
+    {
+        $rows = [];
+
+        for ($i = 1; $i <= 1200; $i++) {
+            $rows[] = $this->row([
+                'product' => "Bulk Product {$i}",
+                'variant' => '',
+                'sku' => sprintf('BULK-%04d', $i),
+                'barcode' => '',
+            ]);
+        }
+
+        $this->actingAs(User::factory()->owner()->create())
+            ->post(route('items.import.store'), ['file' => $this->csv($rows)])
+            ->assertSessionHasNoErrors();
+
+        $import = ImportHistory::query()->latest('created_at')->firstOrFail();
+
+        $this->assertSame('success', $import->status, 'The import did not survive its own mirror step.');
+        $this->assertSame(1200, Variant::query()->where('sku', 'like', 'BULK-%')->count());
+    }
 }

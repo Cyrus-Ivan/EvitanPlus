@@ -5,7 +5,6 @@ namespace App\Http\Controllers\Inventory;
 use App\Http\Controllers\Concerns\NormalizesDateFilter;
 use App\Http\Controllers\Concerns\OffersBranchScope;
 use App\Http\Controllers\Controller;
-use App\Http\Controllers\LoginHistoryController;
 use App\Models\Instance;
 use App\Models\InventoryLedger;
 use App\Models\User;
@@ -65,12 +64,6 @@ use Inertia\Response;
 class StockHistoryController extends Controller
 {
     use NormalizesDateFilter, OffersBranchScope;
-
-    /** This branch's own movements: SQLite, works offline. */
-    private const SCOPE_LOCAL = 'local';
-
-    /** Every branch's movements: Postgres, read live. */
-    private const SCOPE_ALL = 'all';
 
     private const PER_PAGE = 20;
 
@@ -226,7 +219,7 @@ class StockHistoryController extends Controller
                 return $this->describeRequest($row, $parent, BranchRoster::read($remote));
             },
             'The request behind this movement',
-        ), null, report: false);
+        ), null, report: OnlineRead::reportUnlessOffline());
 
         return response()->json(['request' => $data]);
     }
@@ -337,7 +330,7 @@ class StockHistoryController extends Controller
                 ];
             },
             'Stock history across branches',
-        ), null, report: false);
+        ), null, report: OnlineRead::reportUnlessOffline());
 
         // Offline, or the credential could not be opened — `rescue` catches
         // Throwable, which matters because CredentialVault throws
@@ -567,26 +560,5 @@ class StockHistoryController extends Controller
     private function localise(mixed $value): ?Carbon
     {
         return $value === null ? null : Carbon::parse((string) $value)->setTimezone(config('app.timezone'));
-    }
-
-    /**
-     * Which branches to read, snapped to what this viewer and this device can
-     * actually serve. Matches {@see LoginHistoryController} deliberately: a
-     * Cashier, or a device that was never connected to a business database, gets
-     * `local` back rather than a 403.
-     */
-    private function normalizeScope(mixed $value, bool $canViewAll): string
-    {
-        $scope = (string) $value;
-
-        if ($scope === '' || $scope === self::SCOPE_LOCAL || ! $canViewAll || ! Instance::isHydrated()) {
-            return self::SCOPE_LOCAL;
-        }
-
-        if ($this->isThisBranch($scope)) {
-            return self::SCOPE_LOCAL;
-        }
-
-        return $scope === self::SCOPE_ALL || Str::isUuid($scope) ? $scope : self::SCOPE_ALL;
     }
 }

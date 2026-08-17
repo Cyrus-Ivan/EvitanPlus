@@ -89,6 +89,27 @@ class SetupController extends Controller
             // Every one of these leaves the device untouched, so the message is
             // the whole remedy and it belongs on the field that caused it.
             return back()->withErrors(['credentials_path' => $e->getMessage()]);
+        } catch (Throwable $e) {
+            // Anything the hydrate itself threw. `Hydrator::copyTable()` writes
+            // through the query builder, so a local UNIQUE, FK or NOT NULL
+            // violation arrives as a `QueryException` rather than the app's own
+            // typed failure — and used to escape to a blank error page. The
+            // wizard's own docblock names this: a device that already carries
+            // rows, a schema that has drifted, a connection lost mid-copy.
+            //
+            // Atomicity was never the problem: the outer transaction rolls the
+            // whole thing back either way. What was missing is somewhere for the
+            // person standing at the till to read what happened, so this stays on
+            // the same field with the same shape as every other refusal — and is
+            // reported, because unlike the cases above it means something is
+            // wrong rather than mis-entered.
+            report($e);
+
+            return back()->withErrors([
+                'credentials_path' => 'Setting this device up failed partway through, and nothing was saved. '
+                    .'Check that this is a fresh install and that the connection held, then try again. ('
+                    .$e->getMessage().')',
+            ]);
         }
 
         $removed = $request->boolean('delete_after_import') && $this->removeCredentialsFile($path);

@@ -104,7 +104,12 @@ class SendScheduledSalesReport extends Command
 
         $lastAttempt = $settings->lastAttemptAt();
 
-        if ($lastAttempt !== null && $lastAttempt->diffInMinutes(Carbon::now()) < self::BACKOFF_MINUTES) {
+        // `abs()`, because `diffInMinutes` is SIGNED in Carbon 3. A marker
+        // stamped in the future — a device whose clock is corrected backwards, or
+        // an RTC that jumped — otherwise yields a negative difference, which is
+        // permanently "less than the backoff", and every scheduled report stops
+        // going out for good with nothing on screen to say why.
+        if ($lastAttempt !== null && abs($lastAttempt->diffInMinutes(Carbon::now())) < self::BACKOFF_MINUTES) {
             return self::SUCCESS;
         }
 
@@ -184,9 +189,14 @@ class SendScheduledSalesReport extends Command
             $this->info('Sent the '.$period.' sales report for '.$label.' to '.count($recipients).' recipient(s).');
         }
 
-        if ($sent > 0) {
-            $settings->clearAttempt();
-        }
+        // Cleared on every run that got this far, not only one that sent
+        // something. Reaching here means the walk completed without a transport
+        // failure — the failure path returns early, above — so the backoff has
+        // served its purpose whether or not a period happened to be due. Gated on
+        // `$sent > 0`, a marker left by one failed send survived every subsequent
+        // quiet tick and then delayed the next genuinely due report by up to
+        // another fifteen minutes for no reason.
+        $settings->clearAttempt();
 
         return self::SUCCESS;
     }

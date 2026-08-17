@@ -12,7 +12,7 @@ use App\Models\Transaction;
 use App\Models\TransactionItem;
 use App\Models\User;
 use App\Models\Variant;
-use App\Support\Printing\PrinterException;
+use App\Support\Http\FilterText;
 use App\Support\Printing\ReceiptPrinter;
 use App\Support\Sales\SoldLineLabel;
 use App\Support\Search\LikeQuery;
@@ -72,12 +72,6 @@ class SalesController extends Controller
     /** Allowed payment types (mirrors the POS checkout). */
     private const PAYMENT_TYPES = ['cash', 'cashless', 'others'];
 
-    /** This branch's own sales: SQLite, works offline. */
-    private const SCOPE_LOCAL = 'local';
-
-    /** Every branch's sales: Postgres, read live. */
-    private const SCOPE_ALL = 'all';
-
     private const PER_PAGE = 20;
 
     public function __construct(private readonly OnlineRead $read) {}
@@ -88,7 +82,7 @@ class SalesController extends Controller
         $canViewAll = $viewer->isAdmin() || $viewer->isOwner();
 
         $filters = [
-            'search' => trim((string) $request->query('search', '')) ?: null,
+            'search' => FilterText::orNull($request->query('search')),
             'payment_type' => $this->normalizePaymentType($request->query('payment_type')),
             'user' => $request->query('user') ?: null,
             'from' => $this->normalizeDate($request->query('date_from')),
@@ -219,7 +213,7 @@ class SalesController extends Controller
                 ];
             },
             'Sales across branches',
-        ), null, report: false);
+        ), null, report: OnlineRead::reportUnlessOffline());
 
         // Offline, or the credential could not be opened — `rescue` catches
         // Throwable, which matters because CredentialVault throws
@@ -348,7 +342,7 @@ class SalesController extends Controller
         $data = rescue(fn (): array|false => $this->read->run(
             fn (Connection $remote): array|false => $this->remoteDetail($remote, $transaction, $canViewCost),
             'This sale',
-        ), null, report: false);
+        ), null, report: OnlineRead::reportUnlessOffline());
 
         // Two different nulls, and conflating them would report a receipt number
         // that does not exist as a network problem. `false` is the read
@@ -598,7 +592,15 @@ class SalesController extends Controller
     {
         try {
             $printed = $printer->print($transaction, isReprint: true);
-        } catch (PrinterException $e) {
+        } catch (\Throwable $e) {
+            // `\Throwable` and not `PrinterException`: the `system` connection
+            // runs the spooler through `Process::timeout(15)`, which throws
+            // Symfony's `ProcessTimedOutException` — a plain RuntimeException —
+            // when a queue accepts the job and then stalls. Catching only the
+            // app's own typed exception turned the commonest real printer fault
+            // into a 500 page. Printing never mutates the sale, so nothing here
+            // is worth failing a request over; checkout has caught `\Throwable`
+            // for the same reason since Phase 11.
             report($e);
 
             return back()->with('toast', [
@@ -715,27 +717,12 @@ class SalesController extends Controller
      * deliberately: a Cashier, or a device that was never connected to a business
      * database, gets `local` back rather than a 403.
      */
-    private function normalizeScope(mixed $value, bool $canViewAll): string
-    {
-        $scope = (string) $value;
-
-        if ($scope === '' || $scope === self::SCOPE_LOCAL || ! $canViewAll || ! Instance::isHydrated()) {
-            return self::SCOPE_LOCAL;
-        }
-
-        if ($this->isThisBranch($scope)) {
-            return self::SCOPE_LOCAL;
-        }
-
-        return $scope === self::SCOPE_ALL || Str::isUuid($scope) ? $scope : self::SCOPE_ALL;
-    }
-
     /**
      * Constrain the payment-type filter to a known value, else null.
      */
     private function normalizePaymentType(mixed $value): ?string
     {
-        $value = (string) $value;
+        $value = FilterText::of($value);
 
         return in_array($value, self::PAYMENT_TYPES, true) ? $value : null;
     }

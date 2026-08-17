@@ -10,6 +10,8 @@ use App\Models\User;
 use App\Models\Variant;
 use App\Rules\SpreadsheetSafeName;
 use App\Support\Sync\OnlineWrite;
+use Closure;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -372,14 +374,51 @@ class CsvInventoryImporter
      */
     private function mirrorImport(ImportHistory $import, array $rows): void
     {
-        $variants = Variant::query()->whereIn('sku', array_column($rows, 'sku'))->get();
-        $items = Item::query()->whereIn('id', $variants->pluck('item_id')->unique())->get();
-        $categories = Category::query()->whereIn('id', $items->pluck('category_id')->filter()->unique())->get();
+        // Chunked like every other lookup in this class. It was the one that was
+        // not, which mattered more here than elsewhere because this is the LAST
+        // step of the import and runs inside the online write: a file that blew
+        // up binding this query would roll back rows that had all applied
+        // cleanly, and say only "Something went wrong while processing the file".
+        //
+        // Worth being accurate about the ceiling, since `LOOKUP_CHUNK`'s own
+        // comment is not: SQLite has allowed 32,766 bound variables since 3.32,
+        // not 999, and Postgres allows 65,535. So the unchunked version needed a
+        // file of tens of thousands of rows — possible under the 5 MB upload cap,
+        // and far past anything a shop uploads. This is consistency and a removed
+        // cliff edge, not a bug that was being hit.
+        $variants = $this->inChunks(array_column($rows, 'sku'), fn (array $chunk) => Variant::query()->whereIn('sku', $chunk)->get());
+        $items = $this->inChunks($variants->pluck('item_id')->unique()->all(), fn (array $chunk) => Item::query()->whereIn('id', $chunk)->get());
+        $categories = $this->inChunks($items->pluck('category_id')->filter()->unique()->all(), fn (array $chunk) => Category::query()->whereIn('id', $chunk)->get());
 
         $this->online->mirror(...$categories->all());
         $this->online->mirror(...$items->all());
         $this->online->mirror(...$variants->all());
         $this->online->mirror($import);
+    }
+
+    /**
+     * Run $lookup over $keys in chunks small enough for one SQL statement.
+     *
+     * @param  list<mixed>  $keys
+     * @param  Closure(list<mixed>): iterable<int, Model>  $lookup
+     * @return Collection<int, Model>
+     */
+    private function inChunks(array $keys, Closure $lookup): Collection
+    {
+        $unique = array_values(array_unique($keys));
+
+        if ($unique === []) {
+            return collect();
+        }
+
+        /** @var Collection<int, Model> $found */
+        $found = collect();
+
+        foreach (array_chunk($unique, self::LOOKUP_CHUNK) as $chunk) {
+            $found = $found->concat($lookup($chunk));
+        }
+
+        return $found;
     }
 
     /**
@@ -395,7 +434,10 @@ class CsvInventoryImporter
     {
         $header = fgetcsv($handle, escape: '');
 
-        if ($header === false || $header === null) {
+        // `false` at EOF. The `=== null` half that used to sit here was dead —
+        // fgetcsv returns a list or false, never null — and phpstan carried a
+        // baseline entry saying so.
+        if ($header === false) {
             return [[], [['row' => null, 'messages' => ['The file is empty.']]]];
         }
 

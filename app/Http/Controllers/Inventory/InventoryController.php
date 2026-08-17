@@ -8,6 +8,7 @@ use App\Models\Category;
 use App\Models\Concerns\HidesCostFromNonOwners;
 use App\Models\Instance;
 use App\Models\Variant;
+use App\Support\Http\FilterText;
 use App\Support\Inventory\OpeningWindow;
 use App\Support\Sync\BranchRoster;
 use App\Support\Sync\OnlineRead;
@@ -17,7 +18,6 @@ use App\Support\Sync\StockReconciler;
 use Illuminate\Database\Connection;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
-use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -77,9 +77,6 @@ class InventoryController extends Controller
 {
     use OffersBranchScope;
 
-    /** This branch's own shelf: the local snapshot, works offline. */
-    private const SCOPE_LOCAL = 'local';
-
     /**
      * One variant per row, so 25 rather than the catalog's 15 — a row here is
      * narrower than an item with its variants folded underneath it.
@@ -99,7 +96,7 @@ class InventoryController extends Controller
         $viewer = $request->user();
         $canViewAll = $viewer->isAdmin() || $viewer->isOwner();
 
-        $search = trim((string) $request->query('search', '')) ?: null;
+        $search = FilterText::orNull($request->query('search'));
         $categoryId = $request->query('category') ?: null;
         $status = $this->normalizeStatus($request->query('status'));
 
@@ -128,7 +125,12 @@ class InventoryController extends Controller
 
         $variants->getCollection()->each->append('current_stock');
 
-        $scope = $this->normalizeScope($request->query('scope'), $canViewAll);
+        // `allowAll: false` — a wider scope adds rows to a NUMBER here rather
+        // than to a list, and a business-wide total per variant says nothing on
+        // its own (twenty units is twenty spread evenly or twenty at one branch
+        // and none at the other four). The picker stopped offering it in M12;
+        // this is what keeps it from coming back by URL.
+        $scope = $this->normalizeScope($request->query('scope'), $canViewAll, allowAll: false);
 
         $stock = $scope === self::SCOPE_LOCAL
             ? ['scope' => self::SCOPE_LOCAL, 'branches' => [], 'consolidatedOnline' => null]
@@ -224,7 +226,7 @@ class InventoryController extends Controller
                 ];
             },
             'Stock across branches',
-        ), null, report: false);
+        ), null, report: OnlineRead::reportUnlessOffline());
 
         return $data ?? ['scope' => self::SCOPE_LOCAL, 'branches' => [], 'consolidatedOnline' => false];
     }
@@ -255,32 +257,6 @@ class InventoryController extends Controller
         $variants->getCollection()->each(function (Variant $variant) use ($stock): void {
             $variant->setAttribute('scoped_stock', $stock[(string) $variant->getKey()] ?? 0);
         });
-    }
-
-    /**
-     * WHICH branch's stock to read, snapped to what this viewer and this device
-     * can actually serve. Matches {@see StockHistoryController} deliberately: a
-     * Cashier, or a device that was never connected to a business database, gets
-     * `local` back rather than a 403 — the local shelf is what they are here for.
-     *
-     * Singular, unlike every other screen: `all` is not a scope this one has, so
-     * it falls through to the same `local` that `?scope=junk` gets. That is what
-     * keeps the option from coming back by URL after the picker stopped offering
-     * it (see the class docblock for why it does not).
-     */
-    private function normalizeScope(mixed $value, bool $canViewAll): string
-    {
-        $scope = (string) $value;
-
-        if ($scope === '' || $scope === self::SCOPE_LOCAL || ! $canViewAll || ! Instance::isHydrated()) {
-            return self::SCOPE_LOCAL;
-        }
-
-        if ($this->isThisBranch($scope)) {
-            return self::SCOPE_LOCAL;
-        }
-
-        return Str::isUuid($scope) ? $scope : self::SCOPE_LOCAL;
     }
 
     /**

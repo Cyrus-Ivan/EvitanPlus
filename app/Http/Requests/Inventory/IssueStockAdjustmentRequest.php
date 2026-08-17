@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests\Inventory;
 
+use App\Rules\SellableVariant;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -46,7 +47,7 @@ class IssueStockAdjustmentRequest extends FormRequest
     {
         return [
             'branch_id' => ['required', 'uuid'],
-            'variant_id' => ['required', 'uuid', 'exists:variants,id'],
+            'variant_id' => ['required', 'uuid', SellableVariant::rule()],
             'mode' => ['required', 'string', 'in:add,remove'],
             'quantity' => ['required', 'integer', 'min:1', 'max:999999'],
             'notes' => [

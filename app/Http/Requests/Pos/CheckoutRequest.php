@@ -46,11 +46,25 @@ class CheckoutRequest extends FormRequest
 
             'payment_type' => ['required', Rule::in(['cash', 'cashless', 'others'])],
 
-            'discount_type' => ['nullable', Rule::in(['amount', 'percentage'])],
+            // A discount that takes money off must say WHICH kind it is. Without
+            // this the controller's `match` falls through to the amount branch
+            // and applies it, then stores a null type beside a non-zero figure —
+            // and every screen that reads the pair keys on the type, so the sale
+            // renders as "no discount" while the receipt (which derives it from
+            // subtotal − total) shows the money. A zero discount still needs no
+            // type: nothing is being taken off.
+            'discount_type' => [
+                Rule::requiredIf(fn (): bool => (float) $this->input('discount', 0) > 0),
+                'nullable',
+                Rule::in(['amount', 'percentage']),
+            ],
             'discount' => [
                 'nullable',
                 'numeric',
                 'min:0',
+                // A peso has two decimal places. `centavos()` would otherwise
+                // round a third away in silence — see cash_received below.
+                'decimal:0,2',
                 // A percentage discount can never exceed 100%. The amount cap
                 // (≤ subtotal) depends on the server-computed subtotal, so it is
                 // enforced in the controller.
@@ -64,6 +78,11 @@ class CheckoutRequest extends FormRequest
                 'nullable',
                 'numeric',
                 'min:0',
+                // Refused below the centavo rather than rounded: `centavos()`
+                // multiplies by 100 and rounds, so ₱100.999 tendered became
+                // ₱101.00 and the CHANGE was computed from the rounded figure,
+                // leaving the drawer short by up to a centavo with nothing said.
+                'decimal:0,2',
             ],
 
             // Optional free-text note captured at sale time; normalized to null

@@ -25,7 +25,6 @@ use Illuminate\Database\Connection;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
-use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -78,12 +77,6 @@ class ReportsController extends Controller
 {
     use NormalizesDateFilter, OffersBranchScope;
 
-    /** The branch-local report: SQLite, this branch, works offline. */
-    private const SCOPE_LOCAL = SalesReportBuilder::SCOPE_LOCAL;
-
-    /** The consolidated report: Postgres, every branch. */
-    private const SCOPE_ALL = SalesReportBuilder::SCOPE_ALL;
-
     public function __construct(
         private readonly OnlineRead $read,
         private readonly SalesReportBuilder $builder,
@@ -95,7 +88,7 @@ class ReportsController extends Controller
         $period = ReportPeriods::normalize($request->query('period'));
         [$from, $to] = ReportPeriods::resolveWindow($period, $this->normalizeDate($request->query('date')));
         $canViewCost = Gate::allows('view-item-cost');
-        $scope = $this->normalizeScope($request->query('scope'));
+        $scope = $this->normalizeScope($request->query('scope'), authorize: $this->authorizeConsolidated(...));
         $chartBy = $this->normalizeChartBy($request->query('by'));
 
         $report = $scope === self::SCOPE_LOCAL
@@ -179,7 +172,7 @@ class ReportsController extends Controller
         $period = ReportPeriods::normalize($request->input('period'));
         [$from, $to] = ReportPeriods::resolveWindow($period, $this->normalizeDate($request->input('date')));
         $canViewCost = Gate::allows('view-item-cost');
-        $scope = $this->normalizeScope($request->input('scope'));
+        $scope = $this->normalizeScope($request->input('scope'), authorize: $this->authorizeConsolidated(...));
         $chartBy = $this->normalizeChartBy($request->input('by'));
 
         $report = $scope === self::SCOPE_LOCAL
@@ -288,7 +281,7 @@ class ReportsController extends Controller
                 ];
             },
             'Consolidated reports',
-        ), null, report: false);
+        ), null, report: OnlineRead::reportUnlessOffline());
 
         // Offline (or the credential could not be opened — `rescue` catches
         // Throwable, which matters because CredentialVault throws
@@ -366,37 +359,24 @@ class ReportsController extends Controller
     }
 
     /**
-     * Constrain the requested scope, and authorize it.
+     * May this viewer, on this device, read past their own branch?
      *
-     * Anything other than `local` is the consolidated report, which is
-     * Owner-only — refused HERE rather than by route placement, because the
-     * route also serves the branch-local report an Admin is entitled to. An
-     * Admin appending `?scope=all` gets a 403, never a silent downgrade to
-     * figures that are not the ones they asked for.
+     * Handed to {@see OffersBranchScope::normalizeScope()} as its `$authorize`
+     * hook, which is what makes this screen the one that REFUSES a wider scope
+     * instead of narrowing to `local` like the other five. The consolidated
+     * report carries cost and profit, which §6 reserves for the Owner — and it is
+     * refused here rather than by route placement, because the same route serves
+     * the branch-local report an Admin is entitled to. An Admin appending
+     * `?scope=all` gets a 403, never a silent downgrade to figures that are not
+     * the ones they asked for.
      *
      * A device that has never hydrated has no business to consolidate: it does
      * not know which branch it is, and holds no credential to ask with.
      */
-    private function normalizeScope(mixed $value): string
+    private function authorizeConsolidated(): void
     {
-        $scope = (string) $value;
-
-        if ($scope === '' || $scope === self::SCOPE_LOCAL) {
-            return self::SCOPE_LOCAL;
-        }
-
         Gate::authorize('view-consolidated-reports');
         abort_unless(Instance::isHydrated(), 403, 'This device is not connected to a business database.');
-
-        // This branch's own id is `local` under another name, and the picker
-        // offers it only under that one. Snapped AFTER the checks above, so an
-        // Admin naming a branch id still gets the 403 rather than a report that
-        // is not the one they asked for.
-        if ($this->isThisBranch($scope)) {
-            return self::SCOPE_LOCAL;
-        }
-
-        return $scope === self::SCOPE_ALL || Str::isUuid($scope) ? $scope : self::SCOPE_ALL;
     }
 
     /**
@@ -406,6 +386,6 @@ class ReportsController extends Controller
      */
     private function normalizeChartBy(mixed $value): string
     {
-        return (string) $value === 'branch' ? 'branch' : 'item';
+        return is_string($value) && $value === 'branch' ? 'branch' : 'item';
     }
 }

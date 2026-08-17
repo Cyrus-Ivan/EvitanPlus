@@ -4,6 +4,7 @@ namespace Tests\Unit\Sync;
 
 use App\Support\Sync\ConnectivityProbe;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -34,6 +35,38 @@ class ConnectivityProbeTest extends TestCase
             'username' => 'branch_9f2c.abcdefghijklmnop',
             'password' => 'secret',
         ], $overrides);
+    }
+
+    /**
+     * The advertised two-second budget must bound a server that never answers,
+     * not only one that answers slowly.
+     *
+     * `Http::timeout()` sets Guzzle's `timeout` alone, leaving `connect_timeout`
+     * at Laravel's default of ten seconds. So the shop failure that matters —
+     * a router associated but black-holing packets, no refusal and no DNS error,
+     * just silence — took five times the budget this class documents. That lands
+     * on a render path: the Inventory page probes, and so does the roster read
+     * behind every scope picker, on every load.
+     *
+     * Asserted on the request options rather than by timing, which would be a
+     * ten-second test and a flaky one.
+     */
+    public function test_the_probe_bounds_the_connect_as_well_as_the_response(): void
+    {
+        $options = [];
+
+        // The fake's callback is handed the MERGED Guzzle options, which is the
+        // only place a timeout that never reaches the wire can be observed.
+        Http::fake(function (Request $request, array $sent) use (&$options) {
+            $options = $sent;
+
+            return Http::response('', 401);
+        });
+
+        app(ConnectivityProbe::class)->reachable($this->connection());
+
+        $this->assertSame(2, $options['connect_timeout'] ?? null, 'A server that never answers must not outlast the budget.');
+        $this->assertSame(2, $options['timeout'] ?? null);
     }
 
     public function test_the_endpoint_comes_from_the_pooler_username(): void

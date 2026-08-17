@@ -82,7 +82,20 @@ class ConnectivityProbe
         }
 
         try {
-            Http::timeout(self::TIMEOUT_SECONDS)->head($endpoint);
+            // BOTH timeouts, and the connect one is the point. `timeout()` sets
+            // only Guzzle's total-response budget; `connect_timeout` keeps
+            // Laravel's default of TEN SECONDS, so the two-second budget this
+            // class advertises was two seconds for a server that answers and ten
+            // for one that does not. The shop failure that matters is a router
+            // associated but black-holing packets — no refusal, no DNS error,
+            // just silence — which is exactly the case that hit the connect
+            // timeout. And this runs on a render path (the Inventory page, and
+            // the roster read behind every scope picker), so a page a cashier
+            // lives on was blocking ten seconds every load with the network half
+            // up.
+            Http::connectTimeout(self::TIMEOUT_SECONDS)
+                ->timeout(self::TIMEOUT_SECONDS)
+                ->head($endpoint);
 
             return true;
         } catch (Throwable) {

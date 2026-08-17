@@ -22,6 +22,28 @@ use Throwable;
  * So reachability is answered over HTTPS, against the project's REST endpoint,
  * and the database is opened only once a cycle is actually going to run.
  *
+ * ## The link check comes first, and it is free
+ *
+ * A socket does not fail fast just because the machine is plainly offline:
+ * forcing traffic onto an interface whose `carrier` reads 0 still burns the full
+ * two seconds below. Since this runs on the render path of a dozen screens, that
+ * was two seconds added to every page load of a till with its WiFi switched off —
+ * for a question the kernel answers for free. {@see NetworkLink} reads the route
+ * table in about two milliseconds and, when it is CERTAIN there is no route out,
+ * short-circuits before any HTTP is attempted. It never reports offline on a
+ * doubt; see its own docblock.
+ *
+ * ## The answer is remembered for the length of the request
+ *
+ * `/inventory` asked twice per render — once for its own `online` prop and once
+ * inside the roster read behind the scope picker — neither call aware of the
+ * other, so a page cost two identical round trips milliseconds apart, and four
+ * seconds rather than two when the network was silent. The memo below is scoped
+ * to one request and nothing more: this class is bound as a singleton
+ * (`AppServiceProvider`) precisely so the several collaborators that hold a probe
+ * share one, and Laravel builds a fresh container per request, so there is no
+ * staleness to reason about between page loads.
+ *
  * ## Any HTTP response is a yes
  *
  * `/rest/v1/` without an apikey answers 401. That is a complete success for this
@@ -41,7 +63,22 @@ class ConnectivityProbe
     /** Short on purpose: this runs before a page render on the CSV import screen. */
     private const TIMEOUT_SECONDS = 2;
 
-    public function __construct(private readonly CredentialVault $vault) {}
+    /**
+     * What the HTTP check answered this request, keyed by endpoint.
+     *
+     * Keyed rather than a bare bool because the key is the honest one: a request
+     * only ever holds one credential, but the endpoint is what the answer is
+     * actually ABOUT, and a memo keyed on nothing would be wrong the moment that
+     * stopped being true.
+     *
+     * @var array<string, bool>
+     */
+    private array $answered = [];
+
+    public function __construct(
+        private readonly CredentialVault $vault,
+        private readonly NetworkLink $link,
+    ) {}
 
     /**
      * Is this device online right now, as far as anything that matters can tell?
@@ -71,14 +108,32 @@ class ConnectivityProbe
      * such a device unable to sync at all, with nothing in the logs but a
      * network error that never happened.
      *
+     * It returns false without asking anything of the network in one case only:
+     * when {@see NetworkLink} is CERTAIN this machine has no route out. That check
+     * is held to the same rule as the paragraph above — it never answers on a
+     * doubt — so it can only ever reach the same verdict sooner, never a different
+     * one.
+     *
      * @param  array<string, mixed>  $connection  The JSON's `connection` block.
      */
     public function reachable(array $connection): bool
     {
+        // Before anything that can block. The kernel already knows there is no
+        // way out of this machine, and asking it costs two milliseconds against
+        // the two seconds the request below would spend arriving at the same
+        // answer. Not memoised: at that price, twice is free.
+        if (! $this->link->isUp()) {
+            return false;
+        }
+
         $endpoint = $this->endpoint($connection);
 
         if ($endpoint === null) {
             return true;
+        }
+
+        if (array_key_exists($endpoint, $this->answered)) {
+            return $this->answered[$endpoint];
         }
 
         try {
@@ -97,9 +152,9 @@ class ConnectivityProbe
                 ->timeout(self::TIMEOUT_SECONDS)
                 ->head($endpoint);
 
-            return true;
+            return $this->answered[$endpoint] = true;
         } catch (Throwable) {
-            return false;
+            return $this->answered[$endpoint] = false;
         }
     }
 

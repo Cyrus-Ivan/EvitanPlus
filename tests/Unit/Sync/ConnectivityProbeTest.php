@@ -3,6 +3,7 @@
 namespace Tests\Unit\Sync;
 
 use App\Support\Sync\ConnectivityProbe;
+use App\Support\Sync\NetworkLink;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
@@ -109,6 +110,50 @@ class ConnectivityProbeTest extends TestCase
         // device unable to sync at all, reported as a network error that never
         // happened. Let the cycle try and let its own failure classify itself.
         $this->assertTrue(app(ConnectivityProbe::class)->reachable($this->connection(['username' => 'postgres'])));
+    }
+
+    /**
+     * The cheap layer must actually save the expensive one.
+     *
+     * A socket does not fail fast just because the machine is plainly offline —
+     * traffic forced onto an interface with no carrier still burns the full two
+     * seconds. So the saving is real only if no HTTP is attempted at all, which
+     * is why this asserts on the absence of a request rather than on the result.
+     */
+    public function test_a_down_link_answers_without_touching_the_network(): void
+    {
+        $this->app->instance(NetworkLink::class, new class extends NetworkLink
+        {
+            public function isUp(): bool
+            {
+                return false;
+            }
+        });
+
+        Http::fake(fn () => throw new ConnectionException('the probe must not have got this far'));
+
+        $this->assertFalse(app(ConnectivityProbe::class)->reachable($this->connection()));
+
+        Http::assertNothingSent();
+    }
+
+    /**
+     * `/inventory` asks twice per render — once for its own `online` prop, once
+     * inside the roster read behind the scope picker — and neither call knows the
+     * other exists. That was two identical round trips milliseconds apart, and
+     * four seconds rather than two when the network was silent.
+     *
+     * Bound to the container deliberately: the memo only works because the probe
+     * is a shared singleton, so resolving it twice is half of what is under test.
+     */
+    public function test_the_answer_is_reused_for_the_rest_of_the_request(): void
+    {
+        Http::fake(['*' => Http::response('', 401)]);
+
+        $this->assertTrue(app(ConnectivityProbe::class)->reachable($this->connection()));
+        $this->assertTrue(app(ConnectivityProbe::class)->reachable($this->connection()));
+
+        Http::assertSentCount(1);
     }
 
     public function test_a_device_with_no_credential_is_offline(): void

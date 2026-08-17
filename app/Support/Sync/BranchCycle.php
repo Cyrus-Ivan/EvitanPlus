@@ -47,6 +47,26 @@ use Throwable;
  * `ALTER ROLE ... SET search_path`, which Postgres applies at backend startup and
  * therefore reaches every pooled backend — which is why the JSON's
  * `search_path` is null and gets assigned as such.
+ *
+ * ## The connect below cannot be given a timeout from here — do not try again
+ *
+ * A connect to a host that silently drops packets takes about THIRTY SECONDS (TCP
+ * SYN retries), and neither lever that looks like it should bound that does
+ * anything. Measured on the shipped static runtime: `connect_timeout` in the DSN
+ * and the `PGCONNECT_TIMEOUT` environment variable both left it at 30.03s, and
+ * `connect_timeout=2` and `connect_timeout=10` produced times identical to each
+ * other and to no setting at all. It is not that the key fails to arrive —
+ * PDO_PGSQL demonstrably forwards the DSN to libpq, since a bogus key raises
+ * libpq's own `invalid connection option` — it simply has no effect. (Laravel's
+ * `PostgresConnector::getDsn()` would not emit the key anyway; that is the second
+ * obstacle, not the first.)
+ *
+ * It is left unbounded because it is nearly unreachable rather than because it is
+ * harmless: {@see OnlineRead} and {@see OnlineWrite} both consult the probe before
+ * calling in here, and the probe is now floored by a {@see NetworkLink} check. So
+ * arriving at that 30 seconds requires Supabase's REST endpoint answering while
+ * Postgres black-holes — a genuine split-brain at the far end, not a shop with bad
+ * WiFi. Bounding it properly would mean a custom connector via `DB::extend()`.
  */
 class BranchCycle
 {

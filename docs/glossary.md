@@ -726,6 +726,31 @@ HTTPS request to the project's REST endpoint, derived from `connection.username`
 ✗ **Must never open Postgres.** Every connected client holds a Supavisor client slot (capped
 per tenant in the low hundreds), so a probing offline till would permanently occupy one — the
 exact ceiling that connecting per cycle exists to avoid.
+✓ Its answer is **memoised for the length of the request**. `/inventory` asks twice per render
+— once for its own `online` prop, once inside the [branch roster](#branch-roster) read behind
+the scope picker — and neither call knows the other exists. `ConnectivityProbe` is bound as a
+**singleton** in `AppServiceProvider` for exactly this reason; the container is rebuilt per
+request, so the memo cannot outlive the page it was taken for. There is deliberately **no**
+cache between page loads.
+
+### Link check
+The layer **beneath** the probe: is this computer attached to a network *at all*? Reads the
+kernel's route tables (`/proc/net/route`, `/proc/net/ipv6_route`) plus
+`/sys/class/net/<iface>/carrier` — about a millisecond, no I/O off the machine — and when it is
+**certain** there is no default route out, the probe returns `offline` without attempting HTTP.
+*Anchor:* `App\Support\Sync\NetworkLink`.
+✓ Worth having because a socket does **not** fail fast on an obviously dead link: traffic forced
+onto an interface whose `carrier` reads `0` still burns the probe's full two-second budget. The
+kernel had the answer for free and nothing asked it, so every screen on a till with its WiFi
+switched off paid two seconds a probe.
+✗ **Never reports offline on a doubt.** It answers `false` only on certainty; a platform with no
+`/proc`, an unreadable file, or an unrecognised route shape all answer `true` and let the probe
+decide for real. A gateway-less default route (WireGuard, OpenVPN) is a **network** — requiring a
+gateway would strand a VPN-only till — and an interface with no `carrier` file counts as up.
+A false "offline" leaves a working branch unable to sync, reported as a failure that never
+happened; a false "online" costs one probe that was going to run anyway.
+⚠ It is **not** a statement about the internet, only about the first hop. A router that is
+associated but black-holing packets passes the link check and still costs a full probe.
 
 ### Push
 Sending local-write rows up, **insert-only and UUID-keyed**, so a re-push is a harmless no-op.

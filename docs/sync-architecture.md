@@ -204,6 +204,17 @@ is a yes** — `/rest/v1/` without an apikey answers 401, which proves something
 end spoke HTTP. Only a transport failure is offline. The project ref comes from the login
 name, which Supavisor requires to be `<role>.<project-ref>`.
 
+Two things keep that off the render path's back, because the probe is consulted by a dozen
+screens on every load and costs its full two-second budget when the answer is no. Beneath it,
+`NetworkLink` reads the kernel's route tables (~1ms) and short-circuits to offline when it is
+**certain** no default route exists — a socket does not fail fast on a dead link, so a till
+with its WiFi off was paying two seconds for a question the kernel answers for free. Above it,
+the probe **memoises its answer for the length of the request** and is bound as a singleton, so
+`/inventory` makes one round trip per render rather than two (its own `online` prop, and the
+roster read behind the scope picker). There is deliberately no cache *between* page loads: a
+router that is associated but black-holing still costs one real probe per load. See
+`docs/glossary.md` §5 "Link check" for the never-guess rule that governs the cheap layer.
+
 ### When a cycle runs
 
 Four triggers, in `resources/js/hooks/use-sync.ts`:

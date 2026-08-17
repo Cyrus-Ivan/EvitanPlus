@@ -11,6 +11,7 @@ use App\Support\Search\LikeQuery;
 use App\Support\Settings\ApplyBusinessTimezone;
 use App\Support\Setup\CredentialsFilePicker;
 use App\Support\Setup\NativeCredentialsFilePicker;
+use App\Support\Sync\ConnectivityProbe;
 use App\Support\Sync\OnlineWrite;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
@@ -33,6 +34,17 @@ class AppServiceProvider extends ServiceProvider
         // to the other and would silently never reach the business database —
         // which is the exact failure M6.5 exists to end.
         $this->app->singleton(OnlineWrite::class);
+
+        // Singleton because the probe memoises its answer for the length of the
+        // request, and a memo nobody shares is not a memo. Laravel's default
+        // binding is NOT shared, so OnlineRead and OnlineWrite each built their
+        // own — which is how /inventory came to make two identical round trips
+        // per render, one for its `online` prop and one behind the scope picker.
+        //
+        // Request-scoped by construction rather than by policy: there is no
+        // Octane here and the container is rebuilt per request, so the memo
+        // cannot outlive the page it was taken for.
+        $this->app->singleton(ConnectivityProbe::class);
 
         // Packaged builds ship without an APP_KEY; generate a per-install one
         // on first use. Runs after the NativePHP provider's register phase, so

@@ -5,6 +5,7 @@ namespace Tests;
 use App\Exceptions\OfflineWriteException;
 use App\Models\Instance;
 use App\Support\Sync\ConnectivityProbe;
+use App\Support\Sync\NetworkLink;
 use App\Support\Sync\OnlineWrite;
 use Closure;
 use Illuminate\Database\Eloquent\Model;
@@ -58,6 +59,21 @@ abstract class TestCase extends BaseTestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // Never let a suite's verdict depend on whether the machine running it
+        // has WiFi. The link check reads the real kernel route table, and it sits
+        // BENEATH the probe fake below — so wherever the real probe is under test
+        // ($connected === null), an unplugged laptop would short-circuit it to
+        // "offline" and fail tests that are about something else entirely.
+        // NetworkLinkTest is the one place the real implementation runs, against
+        // its own fixtures.
+        $this->app->instance(NetworkLink::class, new class extends NetworkLink
+        {
+            public function isUp(): bool
+            {
+                return true;
+            }
+        });
 
         if ($this->connected !== null) {
             $this->app->instance(ConnectivityProbe::class, new class($this->connected) extends ConnectivityProbe

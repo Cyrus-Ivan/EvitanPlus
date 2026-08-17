@@ -677,6 +677,22 @@ transfer. Null when a branch is adjusting its own stock, which is most rows.
 ✗ **Not** a direction. One column serves both ends of a transfer; the quantity's sign says
 whether the stock went there or came from there.
 
+### Sellable variant
+A variant that may be **sold or given stock**: it exists, and neither it nor the item above it
+is archived. The one rule object every path that names a variant id validates against, rather
+than a bare `exists:variants,id`.
+*Anchor:* `App\Rules\SellableVariant`; `tests/Feature/Inventory/ArchivedVariantStockTest.php`.
+✓ It checks **both levels**. `Variant::scopeActive()` qualifies `variants.archived_at` because
+`items` carries one too (M13), and archiving an item is the usual way a product leaves the
+catalog — so a variant whose own flag is null can still be unsellable.
+✗ **Not** a rule about visibility. An archived variant stays in every historical record, on
+Stock History and in reports; what it may not do is receive **new** movement.
+⚠ Before the release hardening sweep the rule was stated in three places and absent in four:
+`CheckoutRequest` had it, both importers refused archived rows, and the four request classes
+behind stock adjustments, transfers and batches did not — so stock could be added to a product
+already taken off the shelf. Stating an invariant per call site is how that happens; there is
+one statement of it now, and a new path gets the rule by using the rule.
+
 ---
 
 ## 5. Sync
@@ -808,7 +824,8 @@ M11.8), `SalesController` and `Inventory\InventoryController` (both M12; the lat
 `Inventory\ItemController` until M13 split the catalog off it); `BranchScope` in
 `resources/js/types/index.ts`; the picker
 `resources/js/components/filters/branch-scope-select.tsx` and
-`App\Http\Controllers\Concerns\OffersBranchScope`, which fills it.
+`App\Http\Controllers\Concerns\OffersBranchScope`, which both **resolves** the parameter
+(`normalizeScope()`) and fills the picker (`pickerBranches()`).
 ✗ **Not** a filter over one dataset. `local` and the other two read different databases.
 ✗ **Not** necessarily a swap of the whole page's source. On Inventory (M12) it changes **stock and
 nothing else**: the variant list is read locally in every scope, because the catalog is mirrored
@@ -821,7 +838,7 @@ never `all`**: everywhere else a wider scope adds rows to a list, but there it w
 them to a *number*, and a business-wide total per variant answers nothing on its own — twenty
 units is twenty spread evenly or twenty at one branch and none at the other four. It is the one
 value of the parameter that needed a second display (a per-branch breakdown under every figure)
-to be readable at all, so it was dropped rather than kept. `InventoryController::normalizeScope()`
+to be readable at all, so it was dropped rather than kept. `normalizeScope(..., allowAll: false)`
 snaps `?scope=all` back to `local` like any other scope it cannot serve, and the shared picker
 takes `allowAll={false}` there.
 ✗ **Not** three values plus a fourth for this branch. **This** branch's id *is* `local`: it is
@@ -832,6 +849,17 @@ than a second answer.
 ✗ **Not** silently downgraded when the connection is down. The screen falls back to `local` and
 says so (`consolidatedOnline: false`); presenting one branch's rows under an "All branches"
 heading is the failure this design refuses.
+✗ **Not** widened by a value it cannot read. **An unusable scope narrows to `local`, never to
+`all`** — the narrow answer is the one the viewer is entitled to whatever went wrong, and the
+echoed-back value is the only thing on screen that would have said otherwise. Four of the six
+private copies this replaced ended `… ? $scope : SCOPE_ALL`, so `?scope=nonsense` served the
+whole business. Relatedly, **a non-string is not a scope**: every copy opened `(string) $value`
+on a raw query parameter, making `?scope[]=x` an `ErrorException` and a 500 on all six screens.
+Both fixed in the release hardening sweep, and both are properties of the *shared* method — a
+seventh screen gets them by calling it.
+*Anchor:* `App\Http\Controllers\Concerns\OffersBranchScope::normalizeScope()`;
+`tests/Feature/BranchScopeContractTest.php` (six routes × seven scope values × three roles) and
+`tests/Feature/ArrayQueryParameterTest.php`.
 ✗ **Not** on every screen with data worth widening. **Items** (`/items`) carries no scope at all,
 and that is the M13 split working: nothing on the catalog is per-branch, so there is nothing for a
 scope to change. Stock moved to `/inventory`, and the parameter went with it.
@@ -1630,10 +1658,13 @@ copy of what a period is.
 ✗ **Not** a narrowing of the date range for tidiness. A calendar grid cannot honour an arbitrary
 range — a control offering one would produce windows the grid has no way to draw.
 ✗ **Not** hinted as `Illuminate\Support\Carbon`. `resolveWindow()` returns `Carbon\Carbon`, and
-hinting the subclass downstream is a `TypeError` that the `rescue()` around an online read
-swallows: every wider-scope request silently falls back to branch-local and shows the offline
-notice, with no stack trace and a correct-looking screen. See the memory note; it cost a Supabase
-run to find.
+hinting the subclass downstream is a `TypeError` — which the `rescue()` around an online read
+still **catches**, so every wider-scope request falls back to branch-local and shows the offline
+notice exactly as a dead router does. Hint the wider type downstream of `ReportPeriods`, never
+the subclass. It cost a Supabase run to find, and it is **no longer silent**: since the release
+hardening sweep the `report:` argument is `OnlineRead::reportUnlessOffline()`, so a `TypeError`
+is logged where it used to be discarded along with the ten other consolidated reads' programming
+errors (§5 "Online read"). The screen still degrades; the log now says why.
 
 ### Login event calendar
 Login History's month as a grid: three events to a cell then "+n more", each day opening a dialog

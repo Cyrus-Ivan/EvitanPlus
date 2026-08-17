@@ -194,6 +194,13 @@ Reading `connection_state`:
 | `unauthorized` | The console disabled, rotated or revoked this credential | Call the developer |
 | `version_blocked` | This build is below the schema's floor | Install a newer build |
 
+**A conflict stalls the push only.** The pull runs every cycle regardless, so a branch stuck on
+one outbox group still receives catalog, staff, settings and other branches' approved
+adjustments while its own rows wait. That was not true before the release hardening sweep —
+the push threw before step 2 and the branch silently received nothing, indefinitely, while this
+column read `online` (`sync-architecture.md` §3). If you are diagnosing an old report of "the
+prices never came down", that is the shape it had.
+
 For the Postgres side, parse `console/.env` as plain text and open a raw PDO — exactly as
 `tests/manual/pg.php` does. **Never reference console code from the app** (§18).
 
@@ -249,6 +256,16 @@ Each of these has cost real time on this project.
 - **`pkill -f <pattern>` matches your own shell's command line** and kills the compound
   command running it. Kill by port: `fuser -k 8123/tcp`.
 - **A green console suite may have tested nothing** — see `--fail-on-skipped` above.
+- **The suite always believes it has a network link.** `tests/TestCase.php` binds a link-up
+  `NetworkLink` stub unconditionally, so no test result depends on whether the machine running
+  it has WiFi. `tests/Unit/Sync/NetworkLinkTest.php` is the **only** place the real reader runs,
+  against fixtures. A probe test behaving oddly is looking at the stub, not at `/proc`.
+- **`ConnectivityProbe` is a singleton and memoises within the request.** A second
+  `reachable()` for the same endpoint returns the first verdict rather than re-probing — in a
+  request, and in one `tinker` session, which has no request boundary to clear it. The singleton
+  binding in `AppServiceProvider` is load-bearing rather than tidy: Laravel's default binding is
+  not shared, so `OnlineRead` and `OnlineWrite` each built their own probe and a memo nobody
+  shares is not a memo. There is deliberately no cache *between* page loads.
 - **The console's `.env` loses to the app's** in any subprocess. `console/config/app.php`
   reads `env('APP_TIMEZONE', 'UTC')` and the app's `.env` sets `Asia/Manila`, so a console
   command launched from inside an app process inherits the app's value and stamps its

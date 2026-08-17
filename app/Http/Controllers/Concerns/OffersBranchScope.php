@@ -10,10 +10,17 @@ use Illuminate\Database\Connection;
 use Illuminate\Support\Str;
 
 /**
- * The branch roster as a scope picker offers it — shared by every screen that
- * takes a `scope` parameter (`docs/glossary.md` §"Branch scope": reports since
- * M11, login history since M11.5, stock history and pending stocks since M11.8,
- * sales and inventory stock since M12).
+ * Everything a screen needs to offer a branch scope — shared by every screen
+ * that takes one (`docs/glossary.md` §"Branch scope": reports since M11, login
+ * history since M11.5, stock history and pending stocks since M11.8, sales and
+ * inventory stock since M12).
+ *
+ * Two jobs, and the second arrived late: {@see self::pickerBranches()} fills the
+ * picker, and {@see self::normalizeScope()} decides which scope the viewer
+ * actually gets. The second was six near-identical private copies until the
+ * release hardening sweep, which is where its own docblock's two rules — an
+ * unusable value narrows rather than widens, and a non-string is not a scope —
+ * come from. A seventh screen gets both by calling it.
  *
  * ## Why the roster is read on every render, not only a consolidated one
  *

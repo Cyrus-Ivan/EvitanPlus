@@ -2271,6 +2271,63 @@ Each of these is a standing obligation met once, not a milestone, which is why n
   `#nprogress` element and only the following visit un-hides it; the assertion read the element twice
   — `toBeVisible()`, then a bare `boundingBox()` — and could lose it in the gap. A gate that fails one
   run in three teaches people to re-run a red gate.
+- **The pre-release hardening sweep** (`984290f`). Started from a fully green baseline — 850 tests,
+  pint, phpstan, tsc, eslint — so none of it was a failing assertion waiting to be noticed. Every
+  defect was found by **reading**, and the method was the same each time: write a test that fails
+  against HEAD, then fix, then re-run. Four that move money or stock: a staggered partial return
+  could over-refund and then write a **negative** refund (the per-unit proration trued up only on
+  the final unit; it is cumulative now, which makes that branch redundant —
+  `docs/returns-refunds-voids-design.md` carries the corrected algorithm); approving a transfer's
+  sending leg twice minted a **second receiving leg**, stock from nothing, because `settle()`
+  guarded its UPDATEs but returned void and the onward insert ran unconditionally; `resolve()`
+  reported rows it had not resolved; and **one poison outbox group stopped a branch receiving
+  anything, forever, while `sync_status` read `online`** — the push threw before step 2, so no
+  price changes, no new users, no settings, no other branch's approved adjustments, indefinitely.
+  Then the ones a shop feels: a blocked USB printer wedged the app with **no timeout of any kind**
+  on the default connection, and two of the four print call sites caught only `PrinterException`
+  while the `system` connector throws `ProcessTimedOutException`; `?scope[]=x` 500'd every scoped
+  screen, and garbage scope **widened** rather than narrowed on four of them — failing open, on
+  the one parameter whose job is to bound what a reader sees, now one shared `normalizeScope()`;
+  Pending Stocks truncated business-wide at 200 rows *before* scoping in PHP, and one 100-line
+  transfer batch is 200 legs; archived variants could be given stock through four paths, now
+  `App\Rules\SellableVariant`; and **eleven consolidated reads swallowed programming errors as
+  "offline"** with `report: false`, which is the documented `Carbon\Carbon` trap's own detector,
+  disabled. Three claims were corrected **downward**, which matters as much as the fixes: the
+  duplicate-leg bug needs two devices at one branch rather than a double-click (the local ledger
+  row reuses the queue row's id, so a same-device repeat collides on the primary key); the CSV
+  importer's unchunked `whereIn` is **not** a live bug, since modern SQLite allows 32,766 bind
+  variables rather than 999, and the ~1,200-row test written to prove it passed against the
+  unfixed code; and a Supabase failure blamed on two different mechanisms was transient, disproved
+  by measuring the endpoint rather than by reasoning. 942 backend tests from 850, the largest
+  addition being `BranchScopeContractTest` (six routes × seven scope values × three roles),
+  proved discriminating by restoring both defects and watching six data sets fail. **No migration,
+  no `SCHEMA_VERSION` bump, no `BranchGrants` change, no console edit** — checked at the end, and
+  it is the property that makes the sweep shippable without a coordinated migrate-then-install.
+  The two accepted risks behind the transfer race went to `docs/glossary.md` §9 rather than
+  unrecorded: the remote half of an online write opens no Postgres transaction, and
+  `AdjustmentResolver` reads and writes over two separate sessions.
+- **The kernel knew there was no network and nobody asked it** (`6f5320f`). Pages took visibly
+  longer to load on a till with no connection: `ConnectivityProbe::reachable()` sits on the render
+  path of a dozen screens, was never memoised, and on `/inventory` ran **twice** per load — once
+  for the page's own `online` prop, once inside the roster read behind the scope picker, neither
+  call aware of the other. The finding that drives the fix is that a socket does **not** fail fast
+  just because the machine is plainly offline: traffic forced onto an interface whose `carrier`
+  reads `0` burns the full budget, same as a router that is associated but black-holing.
+  `App\Support\Sync\NetworkLink` asks the kernel instead — `/proc/net/route`,
+  `/proc/net/ipv6_route`, `/sys/class/net/<iface>/carrier`, about a millisecond — and short-circuits
+  `reachable()` when it is **certain** there is no default route out. The rule that governs it is
+  in `docs/glossary.md` §5 "Link check" and is the same one `reachable()` already followed for an
+  underivable endpoint: **answer `false` only on certainty**, because a false "offline" strands a
+  working branch while a false "online" costs one probe that was going to run anyway. The second
+  half is the memo — one HTTP verdict per request, keyed on endpoint, with the probe bound as a
+  **singleton**, which is load-bearing rather than tidy since Laravel's default binding is not
+  shared. Measured on `/inventory` against a real provisioned branch, median of 10: online
+  0.960s → 0.752s, silent network 4.12s → 2.09s, no default route → 0.075s with the page
+  rendering correctly at `online: false` and stock still served from local SQLite. Recorded in
+  `BranchCycle` on the way past: the PDO connect below it **cannot** be given a timeout from
+  config — ~30s to a silent host, measured identical at `connect_timeout=2` and `=10` and with
+  `PGCONNECT_TIMEOUT` — so nobody spends an afternoon rediscovering it. Left alone because the
+  probe now guards it.
 
 ## Milestone
 A green test suite and a verified build in which a single provisioned branch runs offline,

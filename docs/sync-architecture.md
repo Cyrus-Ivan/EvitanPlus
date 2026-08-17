@@ -152,6 +152,25 @@ The order is load-bearing:
 - **heartbeat last**, so it describes the cycle that just finished rather than the one
   about to start.
 
+**A failing push no longer strands the pull.** The two are independent — one sends this
+branch's rows up, the other brings everyone else's changes down — so a push failure is now
+*held* and re-thrown after step 2 rather than escaping from step 1. Before the release
+hardening sweep it escaped immediately, and the consequence was unbounded: `Pusher` rethrows
+after `markFailed()`, which deliberately leaves the rows pending, and `pendingGroups()` orders
+strictly by `min(sequence)` — so **one group that can never succeed sits at the head forever**
+and every later cycle dies on it. That branch received no price changes, no new or archived
+users, no settings and no other branch's approved adjustments, indefinitely, while
+`sync_status` read `online`: a 23xxx or 42xxx classifies as ONLINE + `conflict` (§"Four
+outcomes"), which is the correct reading of the *push* and says nothing about the pull that
+never ran.
+
+Running the pull anyway is safe by construction rather than by luck: `StockReconciler` already
+computes `baseline + Σ(signed unsynced movements)`, so a pull landing on top of work that has
+not been pushed yet is the case it was written for. **Quarantine-after-N-attempts** — moving a
+group that keeps failing out of the head of the queue — is the fuller fix and is deliberately
+not built; holding the exception restores the pull without changing what a failed push means.
+*Anchor:* `SyncCycle::run()`, and `tests/Feature/Sync/SyncCycleTest.php`.
+
 There was a **queue step between push and pull** until schema 21. It answered this branch's
 pending stock adjustments by arithmetic, accepting whatever fit. A person answers them now
 (§6), which is an ordinary online write and needs no cycle — so the step was deleted rather
@@ -585,6 +604,24 @@ owning the connection — **but no version gate**, and that is the one deliberat
 the gate exists so a build below the floor cannot *write* stale data. Refusing to render a
 read-only screen would take away the display of the very problem.
 
+**A failed consolidated read is no longer assumed to be the network.** Every one of the eleven
+screens wraps its read in `rescue(..., null, ...)` and falls back to the branch-local view,
+which is the right *behaviour* — a shop with no connection still has to work — and was the
+wrong *logging policy*, because `rescue()` catches `Throwable` and the call sites passed
+`report: false`. A `TypeError`, a `42703 undefined column`, a `42501` from a grant the matrix
+forgot: all three reached the operator as "the business database could not be reached", and
+reached the log not at all. There was no way to tell a broken feature from a broken router.
+
+`OnlineRead::isOutage()` is the predicate that separates them, and `reportUnlessOffline()` is
+the `report:` argument all eleven now pass. An outage is the app's own two refusals
+(`OfflineWriteException`, `SetupFailedException`) plus a connection dropping mid-query, which
+Postgres reports as **SQLSTATE class 08** — with PDO's generic `HY000` and empty-code slots
+counted too, since a driver that could not say anything more specific usually could not reach
+anything. Everything else is reported. Judging a `PDOException` by its **class** rather than
+its type is the part that earns its keep: `42703` and `42501` are `PDOException`s as well, and
+they are exactly the bugs the predicate exists to stop hiding. The user-visible fallback is
+unchanged; only the silence is gone.
+
 **Employee performance** (`/employee-performance`) is the one screen served by `OnlineRead`
 *alone*. It has no `scope` and no local path: the report is about a **person**, who can sign in
 at one branch on Monday and another on Tuesday, so the mirror's answer is not narrower but
@@ -659,6 +696,28 @@ it means the cost queries are never run and the keys are absent from the payload
 
 Same parameter, same fallback, same trait — different databases underneath, and each one has a
 trap of its own worth naming.
+
+**Resolving the parameter is one implementation, and was six.** `OffersBranchScope::normalizeScope()`
+now takes `$canViewAll`, `$allowAll` and an optional `$authorize` closure, and every screen calls
+that. The six private copies disagreed in two ways that mattered, both found in the release
+hardening sweep and both about failing *open*:
+
+- **An unusable value narrows, it never widens.** Four copies ended `… ? $scope : SCOPE_ALL`, so
+  `?scope=nonsense` silently resolved to *all branches* — a typo widening what a reader sees, on
+  the one parameter whose entire job is to bound that. The fallback is `local` everywhere now:
+  whatever went wrong, the narrow answer is the one the viewer is entitled to.
+- **A non-string is not a scope.** Every copy opened `(string) $value` on a raw query parameter,
+  so `?scope[]=x` raised "Array to string conversion" — which Laravel's handler turns into an
+  `ErrorException`, i.e. a 500 from a crafted URL on all six screens. The value is string-typed
+  at the door now, and seven sibling filters that had the same shape went through
+  `App\Support\Http\FilterText`.
+
+`/reports` keeps its own ordering, which is load-bearing: the `$authorize` closure runs *after*
+the `local` short-circuit and *before* the own-branch snap, so a typo resolves like no scope at
+all rather than becoming a 403, while an Admin naming a real branch id still gets the 403.
+*Anchor:* `tests/Feature/BranchScopeContractTest.php` — six routes × seven scope values × three
+roles, asserting a fingerprint of the resolved scope **and** `consolidatedOnline`, because the
+echoed scope alone is post-fallback and passes against both defects.
 
 **Login history** (M11.5) and **Stock History** / **Pending Stocks** (M11.8) read
 `login_history`, `inventory_ledger` and `inventory_update_queue`. Nothing new; they are the model

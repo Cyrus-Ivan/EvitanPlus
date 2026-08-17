@@ -123,14 +123,34 @@ transaction-level discounts — so returning every line refunds exactly `transac
    This apportions any transaction-level discount across lines. Reconcile the last line
    so `SUM(line_paid) == transaction.total` exactly (assign the rounding remainder to the
    final line).
-2. Per-unit paid: `unit_paid(S) = line_paid(S) / S.quantity`.
-3. Line refund: `refund_amount = round(unit_paid(S) * new_qty, 2)`.
-4. **Cent reconciliation on the last unit:** if `already + new_qty == S.quantity` (this
-   event returns the final outstanding units of `S`), set
-   `refund_amount = line_paid(S) - SUM(prior refund_amounts for S)` so cumulative refunds
-   for a fully returned line equal `line_paid(S)` with no drift.
+2. **Line refund, computed cumulatively** — what this line is owed *in total* once this
+   event is included, minus what it has already been given:
+   ```
+   owed_after(S)   = round(line_paid(S) * (already + new_qty) / S.quantity)
+   refund_amount   = owed_after(S) - SUM(prior refund_amounts for S)
+   ```
+   `already` is the quantity of `S` already returned **or** written off as defective —
+   both consume sold quantity.
 
-Result: fully returning every line of a transaction refunds exactly `transaction.total`.
+Result: fully returning every line of a transaction refunds exactly `transaction.total`,
+and a line returned in stages refunds `line_paid(S)` in total however it is split.
+
+Three properties come out of the cumulative form directly, and they are the reason for it:
+`refund_amount` is **monotone** in `already + new_qty`, is **never negative**, and **never
+exceeds `line_paid(S)`** — because `owed_after` is bounded by `line_paid(S)` at
+`already + new_qty == S.quantity` and the prior refunds sum to a previous `owed_after`.
+
+> *(This section previously described a per-unit algorithm: `unit_paid = line_paid / quantity`,
+> `refund_amount = round(unit_paid * new_qty, 2)`, plus a fourth step that reconciled cents on
+> the **final** unit only. It could over-refund and then write a **negative** refund. Every
+> intermediate event ignored what had already been given back, so when the paid share is
+> smaller than the sold quantity — 6 × ₱1.00 under a deep percentage discount leaves
+> `line_paid` at 3c against `S.quantity` 6 — `round()` pushed each intermediate unit up, the
+> running total passed the share, and the final true-up went negative on a column with no
+> `CHECK`. The cumulative form above trues up on **every** event rather than the last one,
+> which is what makes the separate final-unit step redundant. Corrected in the pre-release
+> hardening sweep; `tests/Feature/Sales/SaleReturnTest.php` and
+> `tests/Feature/Sales/MoneyFixtureTest.php` pin it.)*
 
 ---
 

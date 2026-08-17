@@ -131,6 +131,27 @@ Full procedure — gates, `--pretend`, the re-grant step, confirming with
   passwords need ten characters with letters and numbers, the Owner's included —
   a shop-floor guess now reaches a database role that can rewrite the whole
   business's catalog and prices.
+- **Screens stay quick when the network is down.** A till whose connection has
+  dropped used to pause on every page while it waited for the business database
+  to answer. It now asks the machine whether there is a network at all before
+  trying to use one, so a disconnected branch loads its screens about as fast as
+  a connected one and carries on selling from its own copy of the data.
+
+### Fixed
+
+Both of these shipped in v1.0.0.
+
+- **A partial return taken in stages could refund too much.** Returning some of a
+  line's units now and the rest later — on a sale with a large discount — could
+  pay back more than the customer handed over, and record the last return as a
+  negative amount. Each return is now worked out from the line's whole return
+  history rather than from that one event, so the total refunded can never pass
+  what was paid for the line.
+- **A printer that was on but not accepting data could hang the app.** A USB or
+  Bluetooth receipt printer with a full buffer would leave the app waiting
+  indefinitely instead of reporting a problem. Printing now gives up and tells
+  you, and a failed test print or reprint shows a message rather than an error
+  page. As before, a printing failure never affects a completed sale.
 
 ### Removed
 
